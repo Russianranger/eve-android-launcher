@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "name": "EVE.js",
+  "version": "0.12.9",
+  "clientBuild": 3396210,
+  "archiveName": "EveJS-v0.12.9.zip",
+  "archiveSha256": "4a1204c733847f91b6d1a32128896a0e42a6c3c8c4413173b4855ad3af14e07c",
+  "license": "AGPL-3.0-only",
+  "excludedPaths": [
+    "content-packs/"
+  ],
+  "modifications": [],
+  "sourceArchive": {
+    "file": "../evejs-source.tar.gz",
+    "sha256": "03d24b49eb9477050092dd57a0a3f6a58bb5cbca4809e1d481ce3d6b385720b6",
+    "sizeBytes": 24592135,
+    "format": "gnu-tar-gzip",
+    "parts": [
+      {
+        "file": "../evejs-source.tar.gz.part01",
+        "sizeBytes": 2097144,
+        "sha256": "33bf895efed33a9eb70d6e97068d90a2c4343cd3da218b133e4f52cbcbb55a20"
+      },
+      {
+        "file": "../evejs-source.tar.gz.part02",
+        "sizeBytes": 2097144,
+        "sha256": "c4c09d5ff1a7273a43f1e530e72d9a5f1d85e961a13d24174f5c1a0ad0af982b"
+      },
+      {
+        "file": "../evejs-source.tar.gz.part03",
+        "sizeBytes": 2097144,
+        "sha256": "2c24555d11e448f8fe015fa03a81811d096000f997ee9e131a03b5e646ad5b82"
+      },
+      {
+        "file": "../evejs-source.tar.gz.part04",
+        "sizeBytes": 2097144,
+        "sha256": "9d9399dd204e2286e3ca57e950a7f809a920603bdab463bb1687575d910f09c8"
+      },
+      {
+        "file": "../evejs-source.tar.gz.part05",
+        "sizeBytes": 2097144,
+        "sha256": "8cf80d2862d10da4b9fe2b24e6a28ad98441ca58ef3560a6970915df552e83f6"
+      },
+      {
+        "file": "../evejs-source.tar.gz.part06",
+        "sizeBytes": 2097144,
+        "sha256": "18353626dfad870d70c001f175e02c5402b64608b76e8ae4d0e266bd427bdc95"
+      },
+      {
+        "file": "../evejs-source.tar.gz.part07",
+        "sizeBytes": 2097144,
+        "sha256": "41b480e9a2ea4b527c175fc50a979687fb54f8b3c73f74781c1b414ccadebb8e"
+      },
+      {
+        "file": "../evejs-source.tar.gz.part08",
+        "sizeBytes": 2097144,
+        "sha256": "47345eabbc459dcdbeb4ecbb68841c4d0206171177817c91640a44fdafad698f"
+      },
+      {
+        "file": "../evejs-source.tar.gz.part09",
+        "sizeBytes": 2097144,
+        "sha256": "2e9c1266160aa4d09056b0330f7fabd012ecce4a7920e8c073ea29da8844ef5b"
+      },
+      {
+        "file": "../evejs-source.tar.gz.part10",
+        "sizeBytes": 2097144,
+        "sha256": "823987c5ab28428db5b92182a3451ed84381667296f04376e6b032c62ec52426"
+      },
+      {
+        "file": "../evejs-source.tar.gz.part11",
+        "sizeBytes": 2097144,
+        "sha256": "cc3afc277b5c41c68e2437f6e8fc91557b7864972232b3afb489f719362c7049"
+      },
+      {
+        "file": "../evejs-source.tar.gz.part12",
+        "sizeBytes": 1523551,
+        "sha256": "0bd64532dce813f37c93068f52d0a8bd16df87d96dc2ba75feb7c2584d0da57c"
+      }
+    ]
+  }
+}

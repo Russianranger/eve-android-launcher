@@ -1,0 +1,222 @@
+name: Build EVE Android launcher and qualify server
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  # Do not cancel a first main build before its stable preview key is cached.
+  group: eve-android-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and materialize pinned EVE.js source shards
+        run: python3 scripts/prepare-evejs-source.py
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Run launcher backend regression tests and source checks
+        run: |
+          mkdir -p out
+          python3 -m unittest discover -s tests -v 2>&1 | tee out/backend-tests.log
+          python3 tests/server-package-tests.py 2>&1 | tee -a out/backend-tests.log
+          bash scripts/check-archive-host.sh 2>&1 | tee -a out/backend-tests.log
+          python3 -m compileall -q backend scripts tests
+          find scripts backend -type f -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-verification
+          path: out/backend-tests.log
+  server:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and materialize pinned EVE.js source shards
+        run: python3 scripts/prepare-evejs-source.py
+      - name: Check the immutable qualified runtime release
+        id: pinned
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p out
+          status=$(curl -sS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' -o out/runtime-release.json -w '%{http_code}' "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/runtime-v1")
+          case "$status" in
+            200) echo 'exists=true' >> "$GITHUB_OUTPUT" ;;
+            404) echo 'exists=false' >> "$GITHUB_OUTPUT" ;;
+            *) echo "Cannot verify pinned runtime: HTTP $status" >&2; exit 1 ;;
+          esac
+      - name: Reuse the qualified runtime only when its inputs match
+        if: steps.pinned.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download runtime-v1 --pattern 'server-runtime-*' --dir out
+          python3 - <<'PY'
+          import hashlib, json, subprocess
+          from pathlib import Path
+          manifest = json.loads(Path('out/server-runtime-manifest.json').read_text())
+          actual = subprocess.check_output(['python3', 'scripts/runtime-inputs-sha256.py'], text=True).strip()
+          if manifest.get('runtimeInputsSha256') != actual:
+              raise SystemExit('Packaged server inputs changed. Bump the runtime release before publishing; runtime-v1 is immutable.')
+          archive = Path('out') / manifest['file']
+          if hashlib.sha256(archive.read_bytes()).hexdigest() != manifest['sha256']:
+              raise SystemExit('Pinned server runtime SHA-256 mismatch')
+          PY
+          python3 scripts/check-server-package.py out/server-runtime-arm64.tar.gz
+      - name: Build and qualify the initial native ARM64 server runtime
+        if: steps.pinned.outputs.exists != 'true'
+        run: bash scripts/build-server-runtime.sh 2>&1 | tee out/server-build.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: server-verification
+          path: |
+            out/server-build.log
+            out/server-runtime-check.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-runtime
+          compression-level: 0
+          path: |
+            out/server-runtime-arm64.tar.gz
+            out/server-runtime-manifest.json
+            out/server-runtime-source.tar.gz
+            out/server-runtime-check.json
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      EVE_PREVIEW_KEYSTORE: ${{ github.workspace }}/runtime-work/signing/preview.keystore
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - uses: actions/cache@v4
+        id: signing
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: runtime-work/signing/preview.keystore
+          key: eve-preview-signing-v1
+      - name: Check the first published certificate anchor
+        id: anchor
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p runtime-work
+          status=$(curl -sS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' -o runtime-work/anchor.json -w '%{http_code}' "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/v0.1.0")
+          case "$status" in
+            200) echo 'exists=true' >> "$GITHUB_OUTPUT" ;;
+            404) echo 'exists=false' >> "$GITHUB_OUTPUT" ;;
+            *) echo "Cannot verify preview signing anchor: HTTP $status" >&2; exit 1 ;;
+          esac
+      - name: Prepare the private preview signing key
+        env:
+          ANCHOR_EXISTS: ${{ steps.anchor.outputs.exists }}
+        run: |
+          mkdir -p "$(dirname "$EVE_PREVIEW_KEYSTORE")"
+          if [ ! -f "$EVE_PREVIEW_KEYSTORE" ]; then
+            if [ "$ANCHOR_EXISTS" = true ]; then
+              echo 'The published preview signing key is unavailable. Restore the existing Actions signing cache before another update.' >&2
+              exit 1
+            fi
+            keytool -genkeypair -keystore "$EVE_PREVIEW_KEYSTORE" -storetype JKS -alias androiddebugkey -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=EVE Android Launcher Preview'
+          fi
+          chmod 600 "$EVE_PREVIEW_KEYSTORE"
+      - name: Build pinned PRoot and preserve its corresponding sources
+        run: |
+          mkdir -p out
+          ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018" bash scripts/build-proot.sh 2>&1 | tee out/proot-build.log
+      - name: Build and lint the Android APK
+        run: gradle --no-daemon :app:assembleDebug :app:lintDebug 2>&1 | tee out/android-build.log
+      - name: Verify the APK contents, identity and public certificate
+        run: |
+          python3 scripts/check-apk.py app/build/outputs/apk/debug/app-debug.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs app/build/outputs/apk/debug/app-debug.apk > out/apk-certificate.txt
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging app/build/outputs/apk/debug/app-debug.apk > out/apk-badging.txt
+          grep -q "package: name='io.github.russianranger.eve'" out/apk-badging.txt
+          grep -q "versionName='0.1.0'" out/apk-badging.txt
+      - name: Preserve the first published signing certificate
+        if: github.ref == 'refs/heads/main' && steps.anchor.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.1.0 --pattern EVE-Android-Launcher-0.1.0.apk --dir runtime-work/anchor
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs runtime-work/anchor/EVE-Android-Launcher-0.1.0.apk > out/anchor-certificate.txt
+          previous=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' out/anchor-certificate.txt)
+          current=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' out/apk-certificate.txt)
+          test -n "$previous" && test "$previous" = "$current"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-verification
+          path: |
+            app/build/reports/
+            out/*build.log
+            out/apk-certificate.txt
+            out/apk-badging.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proot-corresponding-source
+          path: out/proot-corresponding-source.tar.gz
+  release:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [verify, server, apk]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: proot-corresponding-source
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-runtime
+          path: dist
+      - name: Publish immutable server runtime and initial launcher preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mv dist/app-debug.apk dist/EVE-Android-Launcher-0.1.0.apk
+          git archive --format=zip --output=dist/EVE-Android-Launcher-0.1.0-source.zip HEAD
+          cp docs/TESTING.md dist/EVE-Android-Launcher-0.1.0-Testing.md
+          (cd dist && sha256sum *.apk *.zip *.tar.gz *.json *.md) > dist/SHA256SUMS.txt
+          if ! gh release view runtime-v1 >/dev/null 2>&1; then
+            gh release create runtime-v1 --target "$GITHUB_SHA" --draft --prerelease --title 'EVE Android ARM64 server runtime 1' --notes 'Pinned EVE.js 0.12.9 ARM64 runtime qualified through prepare, server readiness and supervised shutdown. Matching EVE client build: 3396210. Retail EVE client assets are not included. Corresponding sources are included.'
+            gh release upload runtime-v1 dist/server-runtime-arm64.tar.gz dist/server-runtime-manifest.json dist/server-runtime-source.tar.gz dist/server-runtime-check.json
+            gh release edit runtime-v1 --draft=false
+          fi
+          if ! gh release view v0.1.0 >/dev/null 2>&1; then
+            gh release create v0.1.0 --target "$GITHUB_SHA" --draft --prerelease --title 'EVE Android Launcher 0.1.0 — Server setup preview' --notes-file docs/RELEASE-NOTES.md
+          fi
+          gh release upload v0.1.0 dist/* --clobber
+          gh release edit v0.1.0 --draft=false

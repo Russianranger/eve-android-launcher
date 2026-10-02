@@ -1,0 +1,17 @@
+[network]
+port = 40110
+
+[rpc]
+enabled = true
+port = 40111
+
+[storage]
+database_path = "/opt/evejs-seed/market/market.sqlite"
+
+[runtime]
+read_connection_pool_size = 2
+sqlite_read_cache_size_kib = 16384
+sqlite_mmap_size_mb = 256
+
+[logging]
+log_level = "info"

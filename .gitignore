@@ -1,0 +1,14 @@
+.gradle/
+local.properties
+**/build/
+out/
+runtime-work/
+*.keystore
+*.apk
+__pycache__/
+*.pyc
+/vendor/evejs/*
+!/vendor/evejs/LICENSE
+!/vendor/evejs/README.md
+!/vendor/evejs/UPSTREAM.json
+/vendor/evejs-source.tar.gz

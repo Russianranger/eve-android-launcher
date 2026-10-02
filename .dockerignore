@@ -1,0 +1,8 @@
+.git/
+out/
+runtime-work/
+**/__pycache__/
+**/*.pyc
+.gradle/
+app/build/
+app/.cxx/

@@ -135,8 +135,12 @@ public final class MainActivity extends Activity {
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
         if (result != RESULT_OK || data == null || data.getData() == null) return;
+        if (request != CLIENT_ZIP && request != SUPPORT_ZIP) return;
         Uri uri = data.getData();
-        try { getContentResolver().takePersistableUriPermission(uri, data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION)); } catch (SecurityException ignored) { /* Existing one-shot grant still covers this operation. */ }
+        try {
+            if (request == CLIENT_ZIP) getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            else getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        } catch (SecurityException ignored) { /* Existing one-shot grant still covers this operation. */ }
         run(request == CLIENT_ZIP ? "import-client" : "export-logs", uri);
     }
     @Override public void onResume() { super.onResume(); resumed = true; if (!RuntimeService.active && !RuntimeService.busy && RuntimeManager.get(this).serverAlive()) run("recover-server", null); handler.post(refresh); }

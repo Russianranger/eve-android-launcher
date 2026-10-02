@@ -33,7 +33,7 @@ RUN npm_config_build_from_source=true npm ci --omit=dev \
 
 FROM node-build AS seed-build
 RUN apt-get update \
- && apt-get install --yes --no-install-recommends curl unzip \
+ && apt-get install --yes --no-install-recommends ca-certificates curl unzip \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/evejs
 COPY vendor/evejs ./

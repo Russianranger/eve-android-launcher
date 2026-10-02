@@ -6,6 +6,11 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+defaults:
+  run:
+    # Explicit Bash supplies -eo pipefail; verification/build errors must not
+    # disappear behind the diagnostic tee pipelines below.
+    shell: bash
 concurrency:
   # Do not cancel a first main build before its stable preview key is cached.
   group: eve-android-${{ github.ref }}

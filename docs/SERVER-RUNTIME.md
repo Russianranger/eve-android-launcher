@@ -25,11 +25,18 @@ bash scripts/build-server-runtime.sh
 ```
 
 The build refuses an x86 host; QEMU execution does not qualify the Android ARM64
-runtime. Docker uses the upstream Node 24 Bookworm and Rust 1.95 Bookworm images.
+runtime. Docker uses Node **24.18.1 Bookworm** and Rust 1.95 Bookworm images.
 The npm and Rust dependencies use their committed lock files. better-sqlite3 is
 compiled from source for the installed Node ABI and ARM64 architecture. Exact
 runtime Node/Debian versions and source package versions are recorded in the
-artifact rather than inferred from a moving image tag.
+artifact rather than inferred from a moving image tag. Node is pinned because
+later 24.x headers introduced an ObjectWrap cleanup-hook regression that aborts
+the locked better-sqlite3 addon during ordinary garbage collection. Our native
+24.21.0 world boot reproduced the same assertion documented in
+[Node issue #65446](https://github.com/nodejs/node/issues/65446). The build and
+runtime use matching 24.18.1 headers and binaries; the upstream npm lock remains
+unchanged. An allocation-driven 300,000-statement SQLite probe runs during the
+native addon build and before full server qualification.
 
 The matching CCP JSONL static-data archive is downloaded in CI and its checksum
 recorded. The world tables are generated once during the image build. The v1
@@ -60,7 +67,7 @@ for the same device and loopback connection.
 ## Qualification and release files
 
 Before export, `scripts/check-server-runtime.py` executes the native Node/SQLite
-probe, prepares persistent state, verifies repeat preparation preserves it,
+statement-collection probe, prepares persistent state, verifies repeat preparation preserves it,
 boots the real Rust market daemon and Node world, checks application readiness,
 and stops them through the same sentinel used by Android. It rejects an unclean
 shutdown. This establishes ARM64 Linux server qualification; Android process,

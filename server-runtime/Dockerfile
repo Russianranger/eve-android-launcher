@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 # Build on a native Linux ARM64 runner. Never publish a QEMU-qualified runtime.
-ARG NODE_IMAGE=node:24-bookworm-slim
+# Later 24.x headers introduce a crashing ObjectWrap cleanup hook for the
+# upstream locked better-sqlite3 addon: https://github.com/nodejs/node/issues/65446
+ARG NODE_IMAGE=node:24.18.1-bookworm-slim
 ARG RUST_IMAGE=rust:1.95-bookworm
 
 FROM ${RUST_IMAGE} AS rust-build
@@ -27,9 +29,10 @@ COPY vendor/evejs/package.json vendor/evejs/package-lock.json ./
 RUN npm ci --omit=dev
 WORKDIR /opt/evejs/server
 COPY vendor/evejs/server/package.json vendor/evejs/server/package-lock.json ./
+COPY server-runtime/sqlite-probe.js /tmp/sqlite-probe.js
 # Force source compilation, including SQLite, for the exact Node ABI and ARM64.
 RUN npm_config_build_from_source=true npm ci --omit=dev \
- && node -e 'const D=require("better-sqlite3");const db=new D(":memory:");if(process.arch!=="arm64"||db.prepare("select 42 as answer").get().answer!==42)process.exit(1);db.close()'
+ && node --max-old-space-size=64 /tmp/sqlite-probe.js
 
 FROM node-build AS seed-build
 RUN apt-get update \
@@ -57,6 +60,7 @@ COPY --from=rust-build /build/target/release/market-server /usr/local/bin/market
 COPY --from=rust-build /build/target/release/market-seed /usr/local/bin/market-seed
 COPY --from=seed-build /opt/evejs-seed /opt/evejs-seed
 COPY server-runtime/THIRD-PARTY-NOTICES.md /usr/share/eve-android/THIRD-PARTY-NOTICES.md
+COPY server-runtime/sqlite-probe.js /usr/share/eve-android/sqlite-probe.js
 COPY server-runtime/write-marker.py /tmp/write-marker.py
 RUN mkdir -p /state /tmp /root /opt/eve-android \
  && chmod 1777 /tmp \

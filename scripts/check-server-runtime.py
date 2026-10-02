@@ -30,21 +30,15 @@ def main():
     output = pathlib.Path(args.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     report = {'schemaVersion': 1, 'passed': False, 'qualification': 'native-arm64-linux-docker', 'androidQualified': False, 'checks': []}
-    native_probe = '''
-const D=require('/opt/evejs/server/node_modules/better-sqlite3');
-const db=new D(':memory:');
-if(process.arch!=='arm64'||db.prepare('SELECT 42 AS value').get().value!==42)process.exit(1);
-db.close();
-console.log(JSON.stringify({node:process.version,architecture:process.arch,nativeSqlite:true}));
-'''
     container = None
     temporary = None
     state = None
     user = ['--user', str(os.getuid()) + ':' + str(os.getgid())]
     try:
-        result = docker('run', '--rm', args.image, 'node', '-e', native_probe)
+        result = docker('run', '--rm', args.image, 'node', '--max-old-space-size=64', '/usr/share/eve-android/sqlite-probe.js')
         report['native'] = json.loads(result.stdout)
-        report['checks'].append('ARM64 Node and compiled better-sqlite3 execute natively')
+        assert report['native']['allocationDrivenGc'] is True and report['native']['statementCount'] == 300000
+        report['checks'].append('ARM64 Node and compiled better-sqlite3 survive allocation-driven statement collection')
         temporary = tempfile.mkdtemp(prefix='eve-server-smoke-', dir=output.parent)
         state = pathlib.Path(temporary) / 'state'
         (state / 'config').mkdir(parents=True)

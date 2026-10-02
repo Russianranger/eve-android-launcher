@@ -102,7 +102,9 @@ class ServerRuntimeTests(unittest.TestCase):
             path.write_text("// fixture source; never executed\n")
         (self.seed / "gameStore/data/itemTypes").mkdir(parents=True)
         (self.seed / "gameStore/data/itemTypes/data.json").write_text('{"entries": []}')
-        (self.seed / "gameStore/manifest.json").write_text(json.dumps({"build": 3396210, "generatedTables": ["itemTypes"]}))
+        (self.seed / "gameStore/data/authoredSpaceProps").mkdir()
+        (self.seed / "gameStore/data/authoredSpaceProps/Manifest.json").write_text('{"source": "EvEJS local bootstrap", "props": []}')
+        (self.seed / "gameStore/manifest.json").write_text(json.dumps({"build": 3396210, "generatedTables": ["itemTypes"], "placeholderTables": ["authoredSpaceProps"]}))
         (self.seed / "market").mkdir()
         with sqlite3.connect(self.seed / "market/market.sqlite") as connection:
             connection.execute("CREATE TABLE saved_order (value TEXT)")
@@ -216,6 +218,24 @@ class ServerRuntimeTests(unittest.TestCase):
         self.assertFalse(self.runtime.receipt.exists())
         self.assertFalse((self.state / "gameStore").exists())
         self.assertEqual(MODULE.load_json(self.runtime.status_file)["phase"], "failed")
+
+    def test_authored_space_placeholder_requires_its_actual_metadata_artifact(self):
+        # Matches DatabaseCreator's authoredSpaceProps placeholder branch exactly.
+        self.runtime.validate_world(self.seed / "gameStore")
+        folder = self.seed / "gameStore/data/authoredSpaceProps"
+        (folder / "Manifest.json").unlink()
+        (folder / "data.json").write_text('{"props": []}')
+        with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "authoredSpaceProps/Manifest.json missing"):
+            self.runtime.prepare()
+        self.assertFalse(self.runtime.receipt.exists())
+        self.assertFalse((self.state / "gameStore").exists())
+
+    def test_authored_space_placeholder_rejects_invalid_metadata(self):
+        path = self.seed / "gameStore/data/authoredSpaceProps/Manifest.json"
+        path.write_text('{"props": {"incomplete": true}}')
+        with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "invalid props metadata"):
+            self.runtime.prepare()
+        self.assertFalse(self.runtime.receipt.exists())
 
     def test_cancellation_during_copy_leaves_no_receipt_or_half_tree(self):
         original = self.runtime.copy_file

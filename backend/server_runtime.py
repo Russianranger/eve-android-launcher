@@ -280,10 +280,19 @@ class Runtime:
             if not isinstance(values, list):
                 raise RuntimeErrorDetail(f"invalid world manifest {key}")
             for table in values:
-                if not isinstance(table, str) or Path(table).name != table:
+                if not isinstance(table, str) or table in ("", ".", "..") or Path(table).name != table:
                     raise RuntimeErrorDetail("unsafe world table name in manifest")
-                if not (data / table / "data.json").is_file():
-                    raise RuntimeErrorDetail(f"world static data is incomplete ({table} missing)")
+                # DatabaseCreator emits authored-space placeholder metadata as
+                # Manifest.json. Its generated/static branches and every other
+                # placeholder use writeTable(), which emits data.json.
+                filename = "Manifest.json" if key == "placeholderTables" and table == "authoredSpaceProps" else "data.json"
+                artifact = data / table / filename
+                if not artifact.is_file():
+                    raise RuntimeErrorDetail(f"world static data is incomplete ({table}/{filename} missing)")
+                if filename == "Manifest.json":
+                    metadata = load_json(artifact)
+                    if not isinstance(metadata, dict) or not isinstance(metadata.get("props"), list):
+                        raise RuntimeErrorDetail("authoredSpaceProps/Manifest.json has invalid props metadata")
 
     def validate_market(self, path: Path) -> None:
         if not path.is_file() or path.stat().st_size == 0:

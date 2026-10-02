@@ -11,7 +11,13 @@ import time
 
 
 def docker(*arguments, timeout=600, check=True):
-    return subprocess.run(['docker', *map(str, arguments)], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, check=check)
+    try:
+        return subprocess.run(['docker', *map(str, arguments)], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, check=check)
+    except subprocess.CalledProcessError as error:
+        # A failed prepare may never start a container whose logs we can fetch.
+        # Preserve the command's captured reason instead of only its exit code.
+        print((error.stdout or '')[-30000:])
+        raise
 
 
 def main():
@@ -104,6 +110,10 @@ console.log(JSON.stringify({node:process.version,architecture:process.arch,nativ
         if container:
             docker('rm', '--force', container, check=False)
         if state is not None:
+            status_path = state / 'run/status.json'
+            if status_path.exists():
+                report['lastStatus'] = json.loads(status_path.read_text())
+                shutil.copyfile(status_path, output.parent / 'server-status-smoke.json')
             for name in ('server-console.log', 'market-console.log'):
                 source = state / 'logs' / name
                 if source.exists():

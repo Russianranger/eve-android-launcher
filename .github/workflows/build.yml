@@ -80,6 +80,20 @@ jobs:
       - name: Build and qualify the initial native ARM64 server runtime
         if: steps.pinned.outputs.exists != 'true'
         run: bash scripts/build-server-runtime.sh 2>&1 | tee out/server-build.log
+      - name: Require complete server artifacts and passing native qualification
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          for name in ('server-runtime-arm64.tar.gz', 'server-runtime-manifest.json',
+                       'server-runtime-source.tar.gz', 'server-runtime-check.json'):
+              artifact = Path('out') / name
+              if not artifact.is_file() or artifact.stat().st_size == 0:
+                  raise SystemExit(f'Missing or empty server artifact: {name}')
+          report = json.loads(Path('out/server-runtime-check.json').read_text())
+          if report.get('passed') is not True:
+              raise SystemExit('Native ARM64 server qualification did not pass')
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -87,10 +101,12 @@ jobs:
           path: |
             out/server-build.log
             out/server-runtime-check.json
+            out/*smoke.log
       - uses: actions/upload-artifact@v4
         with:
           name: server-runtime
           compression-level: 0
+          if-no-files-found: error
           path: |
             out/server-runtime-arm64.tar.gz
             out/server-runtime-manifest.json
@@ -181,10 +197,12 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: android-apk
+          if-no-files-found: error
           path: app/build/outputs/apk/debug/app-debug.apk
       - uses: actions/upload-artifact@v4
         with:
           name: proot-corresponding-source
+          if-no-files-found: error
           path: out/proot-corresponding-source.tar.gz
   release:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'

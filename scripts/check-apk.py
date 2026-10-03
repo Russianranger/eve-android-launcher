@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 import wine_trust_overlay
+import client_graphics
 
 
 def check(path: Path) -> None:
@@ -19,6 +20,9 @@ def check(path: Path) -> None:
             "assets/client_runtime.py", "assets/eve-client-gate.exe",
             "assets/wine_trust_overlay.py", "assets/wine-trust-overlay.json",
             "assets/wine-crypt32-aarch64.dll", "assets/wine-crypt32-i386.dll",
+            "assets/pe_image.py", "assets/process_metrics.py", "assets/client_graphics.py", "assets/graphics_present.py",
+            "assets/client-graphics-bundle.json", "assets/turnip-26.0.0.so", "assets/vulkan-probe",
+            "assets/dxvk-d3d11-arm64ec.dll", "assets/dxvk-dxgi-arm64ec.dll", "assets/eve-d3d11-probe.exe",
         )
         for name in required:
             data = archive.read(name)
@@ -44,6 +48,9 @@ def check(path: Path) -> None:
             for name in ("wine-trust-overlay.json", "wine-crypt32-aarch64.dll", "wine-crypt32-i386.dll"):
                 (assets / name).write_bytes(archive.read("assets/" + name))
             wine_trust_overlay.verify(assets / "wine-trust-overlay.json")
+            for name in (*client_graphics.FILES, "client-graphics-bundle.json"):
+                (assets / name).write_bytes(archive.read("assets/" + name))
+            client_graphics.verify_bundle(assets)
     print(f"Verified ARM64 runtime and server/client backend assets: {path}")
 
 

@@ -1,13 +1,12 @@
-# Initial client runtime qualification
+# Client runtime qualification
 
-The preview APK prepares a private client cache and installs the exact FEX / Wine ARM64EC runtime already used by the UO launcher. The Thor server lifecycle, Wine/FEX x64 execution probe and exact client import have passed. The 0.1.2 preview implements supervised EVE startup with a basic display; physical login, rendering, audio, controls and acceptable performance remain unqualified.
+The preview APK prepares a private client cache and installs the exact FEX / Wine ARM64EC runtime already used by the UO launcher. The Thor server lifecycle, Wine/FEX x64 execution probe, exact client import, private TLS, local login and character selection have passed. The 0.1.5 preview prioritizes Adreno rendering and input responsiveness; acceptable performance, audio and controller support still need device qualification.
 
 The accepted 0.1.1 recovery imported build 3396210 with all 125,116 indexed
 resources in 6 minutes 14 seconds, peaking at 150.6 MiB preparation-worker RSS.
-Preserve that cache and the existing runtime/prefix. The current device gate
-is supervised EVE process startup and local login using the basic display,
-Wine certificate trust and actual client endpoint routing.
-Graphics optimization, audio and controller support follow that gate. Detailed
+Preserve that cache and the existing runtime/prefix. Startup/local login passed
+in 0.1.4. Client rendering/input optimization is the current gate; audio and
+controller support follow. Detailed
 physical evidence is recorded in [the handoff](HANDOFF.md).
 
 ## Exact client required
@@ -102,9 +101,10 @@ loopback, rewrites wildcard binds to loopback and maps localhost:443 to port 260
 including IPv6 mapped loopback. Direct syscall denial is checked before Wine is
 started. Import/probe/server processes do not enable this option.
 
-Basic WineD3D/llvmpipe is used for this diagnostic pass, with a 1280×720 touch/text
-RFB display. No full runtime/translator rebuild or accelerated graphics migration is
-required. The service retains foreground ownership across Activity changes.
+The performance preview uses native ARM64EC DXVK 2.5.3 and Turnip 26 on Adreno,
+with a 1280×720 touch/text RFB display and explicit WineD3D/llvmpipe recovery.
+The existing Wine/FEX runtime remains installed. See [graphics qualification and
+measurement limits](CLIENT-PERFORMANCE.md). The service retains foreground ownership across Activity changes.
 PID/start-time journals protect cleanup/recovery; child logs rotate at 8 MiB with
 two previous copies, and memory reserve checks stop before available RAM falls
 below 1 GiB. Support ZIPs include session/trust/startup receipts and bounded logs.

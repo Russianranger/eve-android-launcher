@@ -60,6 +60,9 @@ final class SupportExport {
             .put("freeBytes", runtime.home.getUsableSpace()).put("server", runtime.serverStatus())
             .put("client", new ClientRuntime(context).status()).put("operation", RuntimeService.operation)
             .put("message", RuntimeService.message).put("error", RuntimeService.error).put("androidExits", exits(context));
+        android.os.PowerManager power = context.getSystemService(android.os.PowerManager.class);
+        metadata.put("powerSaveModeAtExport", power.isPowerSaveMode());
+        if (Build.VERSION.SDK_INT >= 29) metadata.put("thermalStatusAtExport", power.getCurrentThermalStatus());
         try (ZipOutputStream zip = new ZipOutputStream(output)) {
             entry(zip, "support.json", metadata.toString(2));
             for (Map.Entry<String, File> item : files(context).entrySet()) {

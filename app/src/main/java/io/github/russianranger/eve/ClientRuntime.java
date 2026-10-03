@@ -38,6 +38,15 @@ final class ClientRuntime {
         manager = RuntimeManager.get(this.context);
     }
 
+    String renderer() {
+        return context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).getBoolean("use-adreno", true) ? "turnip-dxvk" : "software";
+    }
+
+    void useAdreno(boolean enabled) {
+        if (alive() || RuntimeService.busy) throw new IllegalStateException("Stop the client before changing its renderer");
+        context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).edit().putBoolean("use-adreno", enabled).apply();
+    }
+
     private JSONObject json(File file) throws Exception {
         return new JSONObject(RuntimeManager.read(file, 131072));
     }
@@ -51,7 +60,7 @@ final class ClientRuntime {
     }
 
     JSONObject status() throws Exception {
-        JSONObject out = new JSONObject().put("runtime", RUNTIME).put("installed", installed())
+        JSONObject out = new JSONObject().put("runtime", RUNTIME).put("installed", installed()).put("selectedGraphicsMode", renderer())
                 .put("supported_build", 3396210).put("client_launch_qualified", false)
                 .put("phase", "missing_client").put("message", "Import the complete EVE build 3396210 shared cache first");
         File status = new File(manager.clientState, "status.json");
@@ -253,15 +262,16 @@ final class ClientRuntime {
         if (!probe.optBoolean("translated_x64_probe_passed")) throw new IOException("Pass Probe Wine / FEX before starting the client");
         manager.assets();
         RuntimeManager.mkdir(new File(manager.clientState, "run"));
+        String graphicsMode = renderer();
         new File(manager.clientState, "run/stop").delete();
         JSONObject pending = new JSONObject().put("phase", "starting").put("ready", false).put("cleanShutdown", false)
-                .put("message", "Starting the basic EVE client session…").put("client_launch_qualified", false)
+                .put("message", "Starting EVE with " + (graphicsMode.equals("turnip-dxvk") ? "Adreno GPU rendering…" : "software recovery rendering…")).put("graphicsMode", graphicsMode).put("client_launch_qualified", false)
                 .put("login_qualified", false).put("graphics_qualified", false);
         RuntimeManager.text(new File(manager.clientState, "run/status.json"), pending.toString());
-        session = manager.guest(manager.clientRoot, bindings(true), Arrays.asList("/usr/bin/python3.11", "/opt/eve-android/client_runtime.py", "start",
-                "--content", "/client", "--state", "/client-state", "--server-state", "/server-state"),
+        session = manager.guest(manager.clientRoot, sessionBindings(graphicsMode), Arrays.asList("/usr/bin/python3.11", "/opt/eve-android/client_runtime.py", "start",
+                "--content", "/client", "--state", "/client-state", "--server-state", "/server-state", "--graphics-mode", graphicsMode),
                 new File(manager.clientState, "logs/client-supervisor.log"), true);
-        long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(3);
+        long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(6);
         try {
             while (System.nanoTime() < deadline) {
                 RuntimeManager.cancelled();
@@ -274,7 +284,7 @@ final class ClientRuntime {
                 }
                 Thread.sleep(500);
             }
-            throw new IOException("Client has not become ready within 3 minutes; export support logs");
+            throw new IOException("Client has not become ready within 6 minutes; export support logs");
         } catch (Exception error) {
             requestStop();
             throw error;
@@ -362,6 +372,38 @@ final class ClientRuntime {
                     || !RuntimeManager.sha256(original).equals(item.getString("baselineSha256")))
                 throw new IOException("The private Wine trust fix is missing or damaged; export support logs");
             result.put(source, "/" + target);
+        }
+        return result;
+    }
+
+    private Map<File, String> sessionBindings(String mode) throws Exception {
+        Map<File, String> result = bindings(true);
+        if (mode.equals("software")) return result;
+        if (!mode.equals("turnip-dxvk")) throw new IOException("Unsupported client renderer");
+        if (!new File(manager.clientState, "prefix/system.reg").isFile()
+                || !new File(manager.clientState, "prefix/drive_c/windows/system32").isDirectory())
+            throw new IOException("Pass the Wine / FEX probe to initialize the prefix before GPU rendering");
+        JSONObject manifest = json(new File(manager.backend, "client-graphics-bundle.json"));
+        if (manifest.optInt("format") != 1 || !manifest.optString("bundle").equals("eve-turnip-dxvk-1")
+                || !manifest.optString("runtime").equals(RUNTIME)
+                || !manifest.optString("wine_commit").equals("a6844d10622fc1a973ec1f22fc4f78a0fcd6cb29")
+                || !manifest.optString("mesa").equals("26.0.0") || !manifest.optString("dxvk").equals("2.5.3"))
+            throw new IOException("GPU assets do not match the pinned runtime");
+        JSONObject files = manifest.getJSONObject("files");
+        String[] names = {"turnip-26.0.0.so", "vulkan-probe", "dxvk-d3d11-arm64ec.dll", "dxvk-dxgi-arm64ec.dll", "eve-d3d11-probe.exe"};
+        if (files.length() != names.length) throw new IOException("Incomplete GPU bundle");
+        for (String name : names) {
+            File source = new File(manager.backend, name);
+            JSONObject item = files.getJSONObject(name);
+            if (!source.isFile() || Files.isSymbolicLink(source.toPath()) || source.length() != item.getLong("sizeBytes")
+                    || !RuntimeManager.sha256(source).equals(item.getString("sha256")))
+                throw new IOException("Missing or damaged GPU asset: " + name);
+            if (name.startsWith("dxvk-")) {
+                String dll = name.equals("dxvk-d3d11-arm64ec.dll") ? "d3d11" : "dxgi";
+                // Avoid following the old prefix's Wine builtin symlink. The
+                // source is private/read-only and the bind lasts this session.
+                result.put(source, "/client-state/prefix/drive_c/windows/system32/" + dll + ".dll!");
+            }
         }
         return result;
     }

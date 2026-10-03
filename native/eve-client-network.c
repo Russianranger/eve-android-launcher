@@ -134,8 +134,11 @@ int eve_client_network_callback(Extension *extension, ExtensionEvent event,
 	Tracee *tracee = TRACEE(extension);
 	static FilteredSysnum filtered[] = {
 		{ PR_socket, FILTER_SYSEXIT }, { PR_socketpair, FILTER_SYSEXIT },
-		{ PR_connect, FILTER_SYSEXIT }, { PR_bind, FILTER_SYSEXIT },
-		{ PR_sendto, FILTER_SYSEXIT }, { PR_sendmsg, FILTER_SYSEXIT },
+		/* These checks only replace immutable input arguments at entry. PRoot
+		 * restores the stack before the next syscall without an exit stop.
+		 * sendmmsg still needs exit notification for msg_len copyback. */
+		{ PR_connect, 0 }, { PR_bind, 0 },
+		{ PR_sendto, 0 }, { PR_sendmsg, 0 },
 		{ PR_sendmmsg, FILTER_SYSEXIT }, { PR_socketcall, FILTER_SYSEXIT },
 		{ PR_io_uring_setup, FILTER_SYSEXIT }, { PR_io_uring_enter, FILTER_SYSEXIT },
 		{ PR_io_uring_register, FILTER_SYSEXIT }, FILTERED_SYSNUM_END

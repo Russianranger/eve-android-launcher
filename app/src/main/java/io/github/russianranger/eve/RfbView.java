@@ -13,11 +13,21 @@ final class RfbView extends View implements RfbClient.Screen {
     private final RectF destination = new RectF();
     private Bitmap image;
     private volatile Pointer pointer;
+    private volatile DisplayPerformance performance;
+    private final PointerMotion motion;
     private int lastX, lastY;
     private boolean touching;
 
-    RfbView(Context context) { super(context); setBackgroundColor(Color.BLACK); setFocusable(true); }
-    void setPointer(Pointer value) { pointer = value; }
+    RfbView(Context context) {
+        super(context); setBackgroundColor(Color.BLACK); setFocusable(true);
+        motion = new PointerMotion((x, y, mask) -> { Pointer target = pointer; if (target != null) target.send(x, y, mask); },
+            new PointerMotion.Scheduler() {
+                @Override public void post(Runnable task) { postOnAnimation(task); }
+                @Override public void remove(Runnable task) { removeCallbacks(task); }
+            });
+    }
+    void setPointer(Pointer value) { motion.cancel(); pointer = value; }
+    void setPerformance(DisplayPerformance value) { performance = value; }
     @Override public void resize(int width, int height) {
         synchronized (lock) {
             if (image != null && image.getWidth() == width && image.getHeight() == height) return;
@@ -37,8 +47,10 @@ final class RfbView extends View implements RfbClient.Screen {
         destination.set((getWidth() - w) / 2, (getHeight() - h) / 2, (getWidth() + w) / 2, (getHeight() + h) / 2);
     }
     @Override protected void onDraw(Canvas canvas) {
+        long started = System.nanoTime(); DisplayPerformance measured = performance;
         super.onDraw(canvas);
         synchronized (lock) { fit(); if (image != null) canvas.drawBitmap(image, null, destination, paint); }
+        if (measured != null) { measured.draws.incrementAndGet(); measured.drawNanos.addAndGet(System.nanoTime() - started); }
     }
     private boolean position(float x, float y, boolean clamp) {
         synchronized (lock) {
@@ -49,29 +61,29 @@ final class RfbView extends View implements RfbClient.Screen {
             return true;
         }
     }
-    private void send(int mask) { Pointer target = pointer; if (target != null) target.send(lastX, lastY, mask); }
+    private void edge(int mask) { motion.edge(lastX, lastY, mask); }
     @Override public boolean onTouchEvent(MotionEvent event) {
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 if (!position(event.getX(), event.getY(), false)) return false;
-                touching = true; getParent().requestDisallowInterceptTouchEvent(true); send(1); return true;
+                touching = true; getParent().requestDisallowInterceptTouchEvent(true); edge(1); return true;
             case MotionEvent.ACTION_MOVE:
                 if (!touching) return false;
-                if (position(event.getX(), event.getY(), true)) send(1); return true;
+                if (position(event.getX(), event.getY(), true)) motion.move(lastX, lastY, 1); return true;
             case MotionEvent.ACTION_UP:
                 if (!touching) return false;
-                position(event.getX(), event.getY(), true); touching = false; send(0); performClick(); return true;
+                position(event.getX(), event.getY(), true); touching = false; edge(0); performClick(); return true;
             case MotionEvent.ACTION_CANCEL:
-                touching = false; send(0); return true;
+                touching = false; edge(0); return true;
             default: return touching;
         }
     }
     @Override public boolean onHoverEvent(MotionEvent event) {
-        if (position(event.getX(), event.getY(), false)) { send(0); return true; }
+        if (!touching && position(event.getX(), event.getY(), false)) { motion.move(lastX, lastY, 0); return true; }
         return super.onHoverEvent(event);
     }
     @Override public boolean performClick() { super.performClick(); return true; }
-    void rightClick() { send(4); send(0); }
-    void releasePointer() { touching = false; send(0); }
-    void dispose() { synchronized (lock) { if (image != null) { image.recycle(); image = null; } } }
+    void rightClick() { touching = false; edge(4); edge(0); }
+    void releasePointer() { touching = false; edge(0); }
+    void dispose() { motion.cancel(); pointer = null; performance = null; synchronized (lock) { if (image != null) { image.recycle(); image = null; } } }
 }

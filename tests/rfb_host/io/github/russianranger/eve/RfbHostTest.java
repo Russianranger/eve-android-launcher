@@ -3,6 +3,9 @@ package io.github.russianranger.eve;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.*;
 
 /** Deterministic peer fixtures for the startup display's RFB boundary. */
 public final class RfbHostTest {
@@ -65,5 +68,76 @@ public final class RfbHostTest {
         RfbClient oversized = new RfbClient(new ByteArrayInputStream(together(hello(2, 1), clipboard.toByteArray())), new ByteArrayOutputStream(), screen);
         oversized.handshake(); rejects(oversized::readUpdate, "unbounded clipboard allocation accepted");
     }
-    public static void main(String[] args) throws Exception { rawFrameAndInput(); malformedFrames(); System.out.println("Client display RFB host fixtures passed"); }
+    private static final class CountingOutput extends ByteArrayOutputStream {
+        int writes, flushes;
+        @Override public synchronized void write(byte[] bytes, int offset, int length) { writes++; super.write(bytes, offset, length); }
+        @Override public void flush() { flushes++; }
+        void clear() { reset(); writes = flushes = 0; }
+    }
+    private static void key(DataInputStream wire, int symbol, boolean down) throws IOException {
+        check(wire.readUnsignedByte() == 4 && wire.readUnsignedByte() == (down ? 1 : 0)
+            && wire.readUnsignedShort() == 0 && wire.readInt() == symbol, "atomic chord / Unicode event order");
+    }
+    private static void compoundInput() throws Exception {
+        CountingOutput output = new CountingOutput();
+        RfbClient client = new RfbClient(new ByteArrayInputStream(hello(2, 1)), output, new Screen());
+        client.handshake(); output.clear();
+        client.text("ab\ud83d\ude42", true);
+        check(output.writes == 1 && output.flushes == 1, "compound text requires one write/flush");
+        DataInputStream wire = new DataInputStream(new ByteArrayInputStream(output.toByteArray()));
+        key(wire, 0xffe3, true); key(wire, 'a', true); key(wire, 'a', false); key(wire, 0xffe3, false);
+        for (int symbol : new int[]{'a', 'b', 0x0101f642}) { key(wire, symbol, true); key(wire, symbol, false); }
+        check(wire.available() == 0, "no duplicate text input");
+        output.clear(); client.tap(0xff0d);
+        check(output.writes == 1 && output.flushes == 1 && output.size() == 16, "paired tap batching");
+        output.clear(); client.text("12345678901234567890", false);
+        check(output.writes == 1 && output.flushes == 1 && output.size() == 320, "20-character text batching");
+        output.clear(); rejects(() -> client.text("a".repeat(4097), true), "oversized text accepted");
+        check(output.size() == 0, "oversized text sends no select-all chord");
+    }
+    private static void blockedReceiveDoesNotBlockInput() throws Exception {
+        PipedInputStream pipe = new PipedInputStream(4096);
+        PipedOutputStream peer = new PipedOutputStream(pipe); peer.write(hello(2, 1)); peer.flush();
+        CountDownLatch waiting = new CountDownLatch(1);
+        InputStream monitored = new FilterInputStream(pipe) {
+            @Override public int read(byte[] bytes, int offset, int length) throws IOException {
+                if (pipe.available() == 0) waiting.countDown();
+                return in.read(bytes, offset, length);
+            }
+        };
+        DisplayPerformance performance = new DisplayPerformance(); CountingOutput output = new CountingOutput();
+        RfbClient client = new RfbClient(monitored, output, new Screen(), performance); client.handshake(); output.clear();
+        ExecutorService threads = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> receiving = threads.submit(() -> { try { client.readUpdate(); } catch (IOException expected) { } });
+            check(waiting.await(1, TimeUnit.SECONDS), "reader entered native receive before input test");
+            Future<?> sending = threads.submit(() -> { try { client.tap(0xff09); } catch (IOException error) { throw new RuntimeException(error); } });
+            sending.get(1, TimeUnit.SECONDS);
+            check(!receiving.isDone(), "receive remains blocked while input completes");
+            check(output.size() == 16 && output.writes == 1, "blocked receive still sends paired input");
+            peer.close(); receiving.get(2, TimeUnit.SECONDS);
+            check(performance.socketReads.get() >= 2 && performance.socketBytes.get() == hello(2,1).length, "native receive accounting");
+            check(performance.json().contains("\"socket_read_ms\"") && !performance.json().contains("password"), "content-free diagnostic schema");
+        } finally { peer.close(); pipe.close(); threads.shutdownNow(); }
+    }
+    private static void motionKeepsButtonEdges() {
+        List<String> delivered = new ArrayList<>(); List<Runnable> callbacks = new ArrayList<>();
+        PointerMotion motion = new PointerMotion((x,y,mask) -> delivered.add(x+":"+y+":"+mask), new PointerMotion.Scheduler() {
+            public void post(Runnable task) { callbacks.add(task); }
+            public void remove(Runnable task) { callbacks.remove(task); }
+        });
+        motion.edge(1,1,1); motion.move(2,2,1); motion.move(3,3,1);
+        check(callbacks.size() == 1, "motion uses one animation callback");
+        Runnable pending = callbacks.remove(0); pending.run();
+        motion.move(4,4,1); Runnable cancelled = callbacks.get(0); motion.edge(5,5,0); cancelled.run();
+        motion.move(6,6,0); motion.edge(7,7,4); motion.edge(7,7,0);
+        check(callbacks.isEmpty(), "button edges cancel pending motion");
+        check(delivered.equals(Arrays.asList("1:1:1","3:3:1","5:5:0","7:7:4","7:7:0")), "down/latest-drag/up/right-click ordering");
+        motion.move(8,8,0); Runnable abandoned = callbacks.get(0); motion.cancel(); abandoned.run();
+        check(delivered.size() == 5, "dispose cancels pending input");
+    }
+    public static void main(String[] args) throws Exception {
+        rawFrameAndInput(); malformedFrames(); compoundInput(); blockedReceiveDoesNotBlockInput(); motionKeepsButtonEdges();
+        System.out.println("Client display RFB/input/motion/performance host fixtures passed");
+    }
 }

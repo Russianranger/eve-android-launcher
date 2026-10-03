@@ -1,0 +1,15 @@
+**
+!client-runtime/
+!client-runtime/graphics/
+!client-runtime/graphics/Dockerfile
+!client-runtime/graphics/Dockerfile.dockerignore
+!client-runtime/graphics/arm64ec.txt
+!client-runtime/graphics/fetch-sources.py
+!scripts/
+!scripts/build-client-graphics.sh
+!scripts/build-client-graphics-probe.sh
+!native/
+!native/eve-d3d11-probe.c
+!backend/
+!backend/pe_image.py
+!backend/graphics_present.py

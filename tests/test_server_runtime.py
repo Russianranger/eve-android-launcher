@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 
 BACKEND = Path(__file__).resolve().parents[1] / "backend/server_runtime.py"
@@ -83,6 +84,122 @@ def free_port() -> int:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         return listener.getsockname()[1]
+
+
+class ProcessSnapshotTests(unittest.TestCase):
+    def record(self, pid, group, ticks=0, start="100", state="S"):
+        return {"pid": pid, "group": group, "startTicks": start, "state": state,
+                "session": group, "cpuTicks": ticks, "rssKiB": 40}
+
+    def test_one_scan_groups_live_members_and_skips_exited_gate(self):
+        paths = [Path("/proc/11"), Path("/proc/12"), Path("/proc/13"), Path("/proc/self")]
+        records = [self.record(11, 11), self.record(12, 12), self.record(13, 11, state="Z")]
+        with mock.patch.object(MODULE.Path, "iterdir", return_value=iter(paths)), \
+                mock.patch.object(MODULE, "_read_process", side_effect=records) as read:
+            sample = MODULE.ProcessSnapshot.capture((11, 12, 99, 11))
+        self.assertEqual(read.call_count, 3)
+        self.assertEqual([value["pid"] for value in sample.members(11)], [11])
+        self.assertEqual([value["pid"] for value in sample.members(12)], [12])
+        self.assertEqual(sample.members(99), [])
+
+    def test_empty_groups_need_no_proc_scan(self):
+        with mock.patch.object(MODULE.Path, "iterdir") as scan:
+            sample = MODULE.ProcessSnapshot.capture(())
+        scan.assert_not_called()
+        self.assertEqual(sample.cpu_usage(None), {})
+
+    def test_cpu_rate_uses_live_identity_and_can_exceed_one_core(self):
+        before = MODULE.ProcessSnapshot(10, {7: [self.record(7, 7, 10), self.record(8, 7, 40),
+                                               self.record(9, 7, 100), self.record(10, 7, 50)]})
+        after = MODULE.ProcessSnapshot(12, {7: [self.record(7, 7, 310), self.record(8, 7, 240),
+                                              self.record(9, 7, 999, start="reused"),
+                                              self.record(10, 7, 20), self.record(11, 7, 500)]})
+        with mock.patch.object(MODULE, "CLOCK_TICKS", 100):
+            value = after.cpu_usage(before)[7]
+        self.assertEqual(value["cpuCorePercent"], 250)
+        self.assertEqual(value["sampleSeconds"], 2)
+        self.assertEqual(value["cpuTicks"], 2069)
+        self.assertIsNone(after.cpu_usage(None)[7]["cpuCorePercent"])
+        self.assertIsNone(after.cpu_usage(after)[7]["cpuCorePercent"])
+
+    def test_invalid_metrics_do_not_discard_valid_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "31"
+            path.mkdir()
+            fields = ["S", "1", "31", "31"] + ["0"] * 18
+            fields[19] = "1234"
+            fields[11], fields[12], fields[21] = "15", "20", "10"
+            (path / "stat").write_text("31 (name with ) punctuation) " + " ".join(fields))
+            with mock.patch.object(MODULE, "NAMESPACE_MAPPING", False):
+                record = MODULE._read_process(path)
+                self.assertEqual(record["cpuTicks"], 35)
+                self.assertEqual(record["rssKiB"], 10 * MODULE.PAGE_KIB)
+                fields[11] = "bad"
+                (path / "stat").write_text("31 (name) " + " ".join(fields))
+                record = MODULE._read_process(path)
+            self.assertEqual(record["startTicks"], "1234")
+            self.assertNotIn("cpuTicks", record)
+
+    def test_status_shares_snapshot_for_multiple_owned_groups(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = MODULE.Runtime(MODULE.Settings(state=Path(directory)))
+            runtime.identities = {"serverIdentity": {"pid": 7, "startTicks": "100"},
+                                  "marketIdentity": {"pid": 8, "startTicks": "100"}}
+            snapshot = MODULE.ProcessSnapshot(20, {7: [self.record(7, 7, 10)],
+                                                   8: [self.record(8, 8, 20)]})
+            with mock.patch.object(MODULE.ProcessSnapshot, "capture", return_value=snapshot) as capture:
+                runtime.status("ready", "fixture", ready=True)
+            self.assertEqual(list(capture.call_args.args[0]), [7, 8])
+            self.assertEqual(runtime.previous_status["serverMembers"], [{"pid": 7, "startTicks": "100"}])
+            self.assertEqual(runtime.previous_status["processRssKiB"], {"server": 40, "market": 40})
+
+    def test_status_never_adopts_members_of_a_recycled_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = MODULE.Runtime(MODULE.Settings(state=Path(directory)))
+            runtime.identities = {"serverIdentity": {"pid": 7, "startTicks": "100"},
+                                  "serverMembers": [{"pid": 7, "startTicks": "100"},
+                                                    {"pid": 9, "startTicks": "100"}]}
+            snapshot = MODULE.ProcessSnapshot(20, {7: [self.record(7, 7, start="reused"),
+                                                   self.record(8, 7), self.record(9, 7)]})
+            with mock.patch.object(MODULE.ProcessSnapshot, "capture", return_value=snapshot):
+                runtime.status("stopping", "fixture")
+            self.assertEqual(runtime.identities["serverMembers"], [{"pid": 9, "startTicks": "100"}])
+            journal = MODULE.load_json(runtime.process_journal)
+            self.assertEqual(journal["serverMembers"], [{"pid": 9, "startTicks": "100"}])
+            self.assertEqual(runtime.previous_status["processRssKiB"], {"server": 40})
+
+    def test_shutdown_refuses_recycled_group_and_preserves_known_orphan_cleanup(self):
+        runtime = MODULE.Runtime()
+        runtime.identities = {"serverIdentity": {"pid": 7, "startTicks": "100"},
+                              "serverMembers": [{"pid": 9, "startTicks": "100"}]}
+        process = mock.Mock(pid=7, returncode=0)
+        process.poll.return_value = 0
+        foreign = [self.record(7, 7, start="reused"), self.record(8, 7)]
+        with mock.patch.object(MODULE, "group_members", return_value=foreign), \
+                mock.patch.object(MODULE.os, "killpg") as signal_group:
+            with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "refusing unrelated"):
+                runtime.shutdown_child(process, 0)
+            signal_group.assert_not_called()
+        orphan = [self.record(9, 7)]
+        with mock.patch.object(MODULE, "group_members", side_effect=[orphan, orphan, [], []]), \
+                mock.patch.object(MODULE.os, "killpg") as signal_group:
+            self.assertTrue(runtime.shutdown_child(process, 0))
+            signal_group.assert_called_once_with(7, signal.SIGTERM)
+
+    def test_dying_leader_records_children_before_poll_releases_its_pid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = MODULE.Runtime(MODULE.Settings(state=Path(directory)))
+            runtime.identities = {"serverIdentity": {"pid": 7, "startTicks": "100"}}
+            process = mock.Mock(pid=7, returncode=31)
+            def reaped():
+                journal = MODULE.load_json(runtime.process_journal)
+                self.assertEqual(journal["serverMembers"], [{"pid": 9, "startTicks": "100"}])
+                return 31
+            process.poll.side_effect = reaped
+            with mock.patch.object(MODULE, "process_record", return_value=self.record(7, 7, state="Z")), \
+                    mock.patch.object(MODULE, "group_members", return_value=[self.record(9, 7)]):
+                with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "exited unexpectedly"):
+                    runtime.child_running(process, "server")
 
 
 class ServerRuntimeTests(unittest.TestCase):

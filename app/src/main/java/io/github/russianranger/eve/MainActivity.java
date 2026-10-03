@@ -23,6 +23,8 @@ public final class MainActivity extends Activity {
     private LinearLayout body;
     private TextView stateText, workText, logText;
     private String tab = "Server";
+    private CheckBox useAdreno;
+    private boolean updatingRenderer;
     private final List<Button> controls = new ArrayList<>();
     private boolean resumed;
     private long logGeneration;
@@ -84,13 +86,24 @@ public final class MainActivity extends Activity {
             LinearLayout session = card("Server session", "Readiness checks the game connection, gateway and market. The notification keeps the session accessible while you switch apps.");
             action(session, "Start server", "start-server"); action(session, "Save and stop server", "stop-server");
         } else if (tab.equals("Client")) {
-            LinearLayout state = card("Client startup and login", "Start the local server first. This pass tests the pinned EVE process and login through a basic touch display.");
+            LinearLayout state = card("Client performance", "Start the local server first. GPU rendering and responsive text entry are the focus of this preview.");
             stateText = label("", 14, 0xff6ee4f0); state.addView(stateText);
             LinearLayout client = card("Supported EVE client", "Requires EVE 24.01 build 3396210. Import a ZIP containing tq, ResFiles and index_tranquility.txt. Preserve the complete shared cache.");
             action(client, "Install Wine / FEX runtime", "install-client"); action(client, "Import complete client ZIP", "pick-client");
             action(client, "Resume interrupted client import", "resume-client");
             action(client, "Validate and prepare client", "validate-client"); action(client, "Probe Wine / FEX", "probe-client");
-            LinearLayout session = card("Client session", "After validation and the Wine / FEX probe, start EVE and open its display. Touch clicks and text entry are available for the local login test.");
+            LinearLayout session = card("Client session", "Use Adreno GPU rendering for the performance test. Software recovery uses the previous slower renderer. Stop the client before changing this option.");
+            useAdreno = new CheckBox(this); useAdreno.setText("Use Adreno GPU rendering"); useAdreno.setTextColor(0xffeef8fa);
+            useAdreno.setChecked(new ClientRuntime(this).renderer().equals("turnip-dxvk"));
+            useAdreno.setOnCheckedChangeListener((button, checked) -> {
+                if (updatingRenderer) return;
+                try { new ClientRuntime(this).useAdreno(checked); }
+                catch (IllegalStateException error) {
+                    updatingRenderer = true; useAdreno.setChecked(new ClientRuntime(this).renderer().equals("turnip-dxvk")); updatingRenderer = false;
+                    Toast.makeText(this, error.getMessage(), Toast.LENGTH_SHORT).show();
+                }
+            });
+            session.addView(useAdreno);
             action(session, "Start EVE client", "start-client"); action(session, "Open client display", "view-client"); action(session, "Stop EVE client", "stop-client");
         } else {
             LinearLayout tools = card("Diagnostics", "Export this support ZIP after the first server test, including failures. It contains bounded logs and status receipts.");
@@ -110,6 +123,7 @@ public final class MainActivity extends Activity {
                 String text = "Runtime: " + (server.optBoolean("installed") ? "installed" : "not installed") + "\nWorld: " + (server.optBoolean("prepared") ? "prepared" : "not prepared") + "\n" + (server.optBoolean("ready") ? "SERVER READY" : server.optString("message", "Server stopped")) + "\nFree storage: " + runtime.home.getUsableSpace() / 1073741824L + " GiB";
                 stateText.setText(text);
             } else if (stateText != null && tab.equals("Client")) {
+                if (useAdreno != null) useAdreno.setEnabled(!RuntimeService.busy && !new ClientRuntime(this).alive());
                 JSONObject state = new ClientRuntime(this).status(); stateText.setText(state.optString("message", state.toString(2)));
             }
         } catch (Exception e) { if (stateText != null) stateText.setText("Status unavailable: " + e.getMessage()); }

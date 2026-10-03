@@ -1,21 +1,28 @@
-# EVE Android Launcher 0.1.4 — Wine certificate validation fix
+# EVE Android Launcher 0.1.5 — client performance
 
-The 0.1.3 certificate identity fix passed on the Thor. Its next attempt imported
-and read back the private CA, negotiated TLS with the server, then stopped before
-EVE launch with WinHTTP error 12157. The pinned Wine crypt32 wrongly applied an
-excluded directoryName constraint to the server leaf's empty subject.
+0.1.4 passed private Wine TLS, startup, local login and character selection on
+Thor, but CPU rendering made the display and text entry nearly unusable.
 
-This update packages a narrow crypt32 correction from the same Wine commit and
-compiler. The APK verifies the installed baseline and supplies the patched DLLs
-through private client-session binds. A second small correction preserves
-permitted-name detection across mixed DNS/IP constraints. Hostname, signature, expiry, exact CA,
-DNS/IP and nonempty-subject constraints remain enforced. A real Wine regression
-compares the baseline rejection with thirteen valid/invalid certificate cases.
+This update adds native ARM64EC DXVK 2.5.3 with pinned Turnip 26.0.0 for Adreno,
+using the existing Wine/FEX installation. Hardware-only checks verify the native
+DLLs, shader pixels and three visible display frames before EVE runs. The initial
+30 FPS cap and one-frame queue favor responsiveness. Versioned shader caches
+persist; software rendering remains an explicit recovery option.
 
-Update without uninstalling or clearing app data. Preserve the accepted runtimes,
-client cache, Wine prefix and world. No reimport, revalidation or repeat Wine/FEX
-probe is needed. Start server → SERVER READY → Start EVE client → Open client
-display → attempt local test login → Stop client → Save and stop server → export
-the newest support ZIP. See [testing instructions](https://github.com/Russianranger/eve-android-launcher/blob/main/docs/TESTING.md).
+Text and key taps are sent in batches; pointer motion is coalesced without
+losing button releases. Text defaults to replacing the selected field. Supervisor
+status uses one process snapshot, and reserve checks read only available memory.
+Four socket filters avoid unnecessary exit tracing while retaining the native
+loopback/localhost:443 policy, immutable destination copies and sendmmsg copyback.
+Support logs add separate CPU, receive/decode, Android presentation and input
+latency counters without credentials or screenshots.
 
-Physical TLS, EVE startup/display and local login remain the next device gate.
+Update in place. Preserve runtimes, client cache, prefix and world; no reimport,
+revalidation or repeated Wine/FEX probe is needed. Use a fresh local test account
+such as EvePerf1; ThorTest is retired. Start server → GPU client → login/character
+selection → clean stop → warm-cache repeat → save/stop server → export support ZIP.
+See [testing instructions](TESTING.md) and [implementation evidence](CLIENT-PERFORMANCE.md).
+
+Native ARM CI checks graphics interoperability, visible synthetic frames, CPU
+rejection, exact assets and real PRoot network syscalls. Actual Thor EVE performance
+still requires the next device test; CI results do not establish handheld FPS.

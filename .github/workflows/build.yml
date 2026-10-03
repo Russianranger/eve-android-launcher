@@ -5,7 +5,7 @@ on:
   pull_request:
   workflow_dispatch:
 env:
-  EVE_APP_VERSION: '0.1.4'
+  EVE_APP_VERSION: '0.1.5'
 permissions:
   contents: read
 defaults:
@@ -36,6 +36,8 @@ jobs:
           python3 tests/server-package-tests.py 2>&1 | tee -a out/backend-tests.log
           bash scripts/check-archive-host.sh 2>&1 | tee -a out/backend-tests.log
           bash scripts/check-client-display-host.sh 2>&1 | tee -a out/backend-tests.log
+          python3 backend/graphics_present.py --self-test 2>&1 | tee -a out/backend-tests.log
+          python3 tests/check-arm64ec-parser.py 2>&1 | tee -a out/backend-tests.log
           python3 -m compileall -q backend scripts tests
           find scripts backend -type f -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
       - uses: actions/upload-artifact@v4
@@ -117,13 +119,24 @@ jobs:
             out/server-runtime-check.json
   wine_trust:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - name: Build only pinned Wine crypt32 and qualify the original failure
         run: |
           mkdir -p out
           bash scripts/build-wine-trust-overlay.sh 2>&1 | tee out/wine-trust-build.log
+      - name: Build native ARM64EC DXVK and qualify shaders through Xvnc
+        run: bash scripts/build-client-graphics.sh 2>&1 | tee out/client-graphics-build.log
+      - name: Prepare pinned native PRoot network policy fixtures
+        run: bash scripts/check-proot-network-host.sh --prepare "$PWD/runtime-work/proot-network" 2>&1 | tee out/proot-network-prepare.log
+      - name: Qualify native PRoot network policy without external networking
+        run: |
+          docker run --rm --init --network none --cap-add SYS_PTRACE \
+            --security-opt seccomp=unconfined -v "$PWD:$PWD" -w "$PWD" \
+            eve-client-graphics:local /usr/bin/env PATH=/usr/bin:/bin \
+            bash scripts/check-proot-network-host.sh \
+            --run "$PWD/runtime-work/proot-network" 2>&1 | tee out/proot-network-build.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -147,6 +160,47 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           path: out/wine-trust-corresponding-source.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: client-graphics-verification
+          path: |
+            out/client-graphics-build.log
+            out/client-graphics-check.json
+            out/qualified-runtime-identity.json
+            out/d3d11-*.json
+            out/d3d11-*.log
+            out/vulkan-fixture.*
+            out/turnip-no-kgsl.*
+            out/eve-d3d11-probe*.log
+            out/xvnc.log
+            out/prefix.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-proot-network-verification
+          path: |
+            out/proot-network-*.log
+            runtime-work/proot-network/network-policy-result.json
+            runtime-work/proot-network/native/build-manifest.json
+            runtime-work/proot-network/native/*.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-graphics-assets
+          if-no-files-found: error
+          path: |
+            backend/client-graphics-bundle.json
+            backend/turnip-26.0.0.so
+            backend/vulkan-probe
+            backend/dxvk-d3d11-arm64ec.dll
+            backend/dxvk-dxgi-arm64ec.dll
+            backend/eve-d3d11-probe.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-graphics-corresponding-source
+          compression-level: 0
+          if-no-files-found: error
+          path: out/client-graphics-corresponding-source.tar.gz
   apk:
     needs: [wine_trust]
     runs-on: ubuntu-24.04
@@ -158,6 +212,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: wine-trust-assets
+          path: backend
+      - uses: actions/download-artifact@v4
+        with:
+          name: client-graphics-assets
           path: backend
       - uses: actions/setup-java@v4
         with:
@@ -277,6 +335,10 @@ jobs:
           path: dist
       - uses: actions/download-artifact@v4
         with:
+          name: client-graphics-corresponding-source
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
           name: server-runtime
           path: dist
       - name: Publish new launcher preview without replacing previous releases
@@ -292,6 +354,6 @@ jobs:
           git archive --format=zip --output="dist/EVE-Android-Launcher-$EVE_APP_VERSION-source.zip" HEAD
           cp docs/TESTING.md "dist/EVE-Android-Launcher-$EVE_APP_VERSION-Testing.md"
           (cd dist && sha256sum *.apk *.zip *.tar.gz *.json *.md) > dist/SHA256SUMS.txt
-          gh release create "$tag" --target "$GITHUB_SHA" --draft --prerelease --title "EVE Android Launcher $EVE_APP_VERSION — Wine certificate validation fix" --notes-file docs/RELEASE-NOTES.md
+          gh release create "$tag" --target "$GITHUB_SHA" --draft --prerelease --title "EVE Android Launcher $EVE_APP_VERSION — client performance" --notes-file docs/RELEASE-NOTES.md
           gh release upload "$tag" dist/*
           gh release edit "$tag" --draft=false

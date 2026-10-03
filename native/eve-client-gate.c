@@ -117,6 +117,8 @@ int wmain(int argc, WCHAR **argv)
     DWORD body_length = 0, read_length;
     char body[BODY_LIMIT + 1] = {0};
     char ca_hash[65] = {0};
+    char computer_name[256] = {0};
+    DWORD computer_name_length = sizeof(computer_name);
     const char *stage = "arguments";
     BOOL success = FALSE, trust_passed = FALSE, tls_passed = FALSE;
     HCERTSTORE store = NULL;
@@ -266,6 +268,10 @@ cleanup:
     if (session) WinHttpCloseHandle(session);
     free(der);
     free(pem);
+    /* Capture the exact Wine name after storing the TLS result/error. The
+     * launcher may bind this verified local alias in its private hosts file. */
+    if (!GetComputerNameExA(ComputerNamePhysicalDnsFullyQualified, computer_name,
+                            &computer_name_length)) computer_name[0] = '\0';
     printf("{\"format\":1,\"helper\":\"eve-client-gate-1\",\"success\":%s,"
            "\"phase\":\"%s\",\"wine_cryptoapi_trust\":%s,\"localhost443_tls\":%s,"
            "\"root_store\":\"CurrentUser\\\\ROOT\",\"ca_der_sha256\":\"%s\","
@@ -277,6 +283,8 @@ cleanup:
     json_string(body);
     printf(",\"stage\":");
     json_string(stage);
+    printf(",\"computer_name_dns_fqdn\":");
+    json_string(computer_name);
     printf(",\"win32_error\":%lu}\n", (unsigned long)error);
     return success ? 0 : 1;
 }

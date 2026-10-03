@@ -15,6 +15,7 @@ import errno
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import signal
 import socket
@@ -26,6 +27,8 @@ import time
 from typing import Any
 
 import client_prepare
+import client_graphics
+from process_metrics import available_memory_kib
 import wine_trust_overlay
 import server_runtime
 from server_runtime import (BusyError, RuntimeErrorDetail, atomic_json, fetch_health,
@@ -36,6 +39,7 @@ from server_runtime import (BusyError, RuntimeErrorDetail, atomic_json, fetch_he
 NETWORK_POLICY = "loopback-v1"
 LOG_LIMIT = 8 * 1024**2
 LOG_HISTORY = 2
+OWNED_ROLES = ("client", "graphicsD3d", "graphicsVulkan", "gate", "wineServer", "display")
 
 
 @dataclass(frozen=True)
@@ -59,11 +63,17 @@ class Settings:
     shutdown_timeout: float = 15
     tick: float = .25
     minimum_available_kib: int = 1024**2
+    graphics_mode: str = "turnip-dxvk"
+    graphics_folder: Path = Path("/opt/eve-android")
+    graphics_timeout: float = 90
+    hosts_file: Path = Path("/etc/hosts")
     # Constructor-only fixture injection. Retail CLI cannot substitute commands.
     display_command: tuple[str, ...] | None = None
     wineserver_command: tuple[str, ...] | None = None
     gate_command: tuple[str, ...] | None = None
     client_command: tuple[str, ...] | None = None
+    vulkan_command: tuple[str, ...] | None = None
+    d3d_command: tuple[str, ...] | None = None
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -110,6 +120,9 @@ class Runtime:
         self.cancelled = False
         self.server_identities: dict[str, Any] = {}
         self.tls_report: dict[str, Any] = {}
+        self.graphics_bundle: dict[str, Any] = {}
+        self.graphics_reports: dict[str, Any] = {}
+        self.previous_snapshot = None
 
     def request_stop(self, *_: Any) -> None:
         self.cancelled = True
@@ -134,31 +147,46 @@ class Runtime:
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
-    def status(self, phase: str, message: str, ready: bool = False, **details: Any) -> None:
-        memory = memory_metrics()
+    def refresh_owned_processes(self, persist: bool = False):
+        snapshot = server_runtime.ProcessSnapshot.capture(process.pid for process in self.children.values())
+        changed = False
+        owned = {}
         for role, process in self.children.items():
-            members = group_members(process.pid)
-            self.identities[role + "Members"] = [
+            members = snapshot.members(process.pid)
+            identity = self.identities.get(role + "Identity", {})
+            leader_matches = any(item["pid"] == process.pid and item["startTicks"] == identity.get("startTicks")
+                                 and item["session"] == process.pid for item in members)
+            if not leader_matches:
+                known = {(item["pid"], item["startTicks"]) for item in self.identities.get(role + "Members", [])}
+                members = [item for item in members if (item["pid"], item["startTicks"]) in known]
+            owned[process.pid] = members
+            identities = [
                 {"pid": item["pid"], "startTicks": item["startTicks"]}
                 for item in members
             ]
-            rss = 0
-            for member in members[:64]:
-                proc_pid = server_runtime.PROC_PID_CACHE.get(member["pid"], member["pid"])
-                try:
-                    with Path("/proc/" + str(proc_pid) + "/status").open() as source:
-                        for line in source:
-                            if line.startswith("VmRSS:"):
-                                rss += int(line.split()[1])
-                                break
-                except (OSError, ValueError):
-                    pass
-            memory[role + "GroupRssKiB"] = rss
+            changed = changed or identities != self.identities.get(role + "Members")
+            self.identities[role + "Members"] = identities
+        if persist and changed and self.children:
+            atomic_json(self.journal, self.identities)
+        return server_runtime.ProcessSnapshot(captured_at=snapshot.captured_at, groups=owned)
+
+    def status(self, phase: str, message: str, ready: bool = False, **details: Any) -> None:
+        memory = memory_metrics()
+        snapshot = self.refresh_owned_processes()
+        cpu = snapshot.cpu_usage(self.previous_snapshot)
+        self.previous_snapshot = snapshot
+        process_cpu = {}
+        for role, process in self.children.items():
+            memory[role + "GroupRssKiB"] = sum(item.get("rssKiB", 0) for item in snapshot.members(process.pid))
+            process_cpu[role] = cpu.get(process.pid, {})
         report = {"schemaVersion": 1, "phase": phase, "message": message,
                   "ready": ready, "client_launch_qualified": False,
                   "login_qualified": False, "graphics_qualified": False,
                   "networkPolicy": NETWORK_POLICY, "displayPort": self.s.display_port,
                   "resolution": "1280x720", "updatedAt": time.time(),
+                  "graphicsMode": self.s.graphics_mode,
+                  "renderer": "DXVK / Turnip (Adreno)" if self.s.graphics_mode == "turnip-dxvk" else "WineD3D / llvmpipe",
+                  "graphicsPreflight": self.graphics_reports, "processCpu": process_cpu,
                   "memory": memory, **self.identities, **details}
         atomic_json(self.status_file, report)
         if self.children:
@@ -180,7 +208,7 @@ class Runtime:
                     "EVE_CLIENT_SENTRY_DSN": "http://evejs@127.0.0.1:26002/1",
                     "NO_PROXY": "127.0.0.1,localhost,::1", "no_proxy": "127.0.0.1,localhost,::1",
                     "SSL_CERT_FILE": "Z:\\client-state\\trust\\evejs-ca.pem"})
-        return env
+        return client_graphics.configure_environment(env, self.s.graphics_mode, self.s.graphics_folder, self.s.state)
 
     def require_server(self) -> None:
         value = read_json(self.s.server_state / "run/status.json")
@@ -229,6 +257,12 @@ class Runtime:
             raise RuntimeErrorDetail("Pass Probe Wine / FEX before launching EVE")
         if not (self.s.state / "prefix/system.reg").is_file():
             raise RuntimeErrorDetail("The existing Wine prefix is missing; run the Wine/FEX probe first")
+        try:
+            self.graphics_bundle = client_graphics.prepare(self.s.graphics_folder, self.s.state, self.s.content, self.s.graphics_mode)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            raise RuntimeErrorDetail("Client graphics bundle could not be prepared: " + str(error)) from error
+        if self.s.graphics_mode == "turnip-dxvk":
+            atomic_json(self.s.state / "client-graphics-bundle.json", self.graphics_bundle)
         receipt = read_json(client_prepare.contained_file(self.s.content, "eve-client-content.json"))
         if (receipt.get("format") != 1 or receipt.get("build") != client_prepare.BUILD
                 or receipt.get("resources", {}).get("complete") is not True
@@ -263,7 +297,7 @@ class Runtime:
         self.memory_check()
         return {"contentBuild": client_prepare.BUILD, "binarySha256": expected_hashes,
                 "caPemSha256": current_sha, "caDerSha256": current_der_sha,
-                "wineTrustOverlay": overlay["overlay"]}
+                "wineTrustOverlay": overlay["overlay"], "graphicsMode": self.s.graphics_mode}
 
     @staticmethod
     def verify_network_gate() -> None:
@@ -284,7 +318,7 @@ class Runtime:
                 raise RuntimeErrorDetail("The native client network gate permitted outbound traffic")
 
     def memory_check(self) -> None:
-        available = memory_metrics().get("memAvailableKiB")
+        available = available_memory_kib()
         if available is not None and available < self.s.minimum_available_kib:
             raise RuntimeErrorDetail("EVE startup stopped before exhausting Android memory; export support logs")
 
@@ -321,7 +355,73 @@ class Runtime:
         thread = threading.Thread(target=pump, daemon=True)
         self.pumps.append(thread)
         thread.start()
+        self.refresh_owned_processes(persist=True)
         return process
+
+    def wait_graphics(self, role: str, command: tuple[str, ...], env: dict[str, str], timeout: float) -> None:
+        process = self.spawn(role, command, env=env)
+        deadline = time.monotonic() + timeout
+        while process.poll() is None:
+            self.cancellation_point()
+            self.check_child("display")
+            self.check_child("wineServer")
+            self.memory_check()
+            self.refresh_owned_processes(persist=True)
+            if time.monotonic() >= deadline:
+                raise RuntimeErrorDetail(role + " qualification timed out; export support logs or use software recovery")
+            time.sleep(self.s.tick)
+        self.refresh_owned_processes(persist=True)
+        for pump in self.pumps:
+            pump.join(timeout=.3)
+        if process.returncode != 0:
+            raise RuntimeErrorDetail(role + " qualification failed; inspect client-" + role + ".log or use software recovery")
+
+    def run_graphics(self) -> dict[str, Any]:
+        if self.s.graphics_mode == "software":
+            return {"mode": "software", "hardwarePreflightPassed": False}
+        env = self.environment()
+        # The initialized, accepted prefix is required before these session-only
+        # file binds. Recheck after Wine bootstrap/TLS so a refresh cannot corrupt
+        # an asset and then be mistaken for a working native renderer.
+        client_graphics.verify_mapped(self.s.graphics_folder, self.s.state)
+        self.status("starting", "Checking the Adreno GPU and Turnip Vulkan display", displayReady=True)
+        native = self.s.vulkan_command or client_graphics.native_command(self.s.graphics_folder)
+        self.wait_graphics("graphicsVulkan", native, env, min(30, self.s.graphics_timeout))
+        vulkan = client_graphics.parse_vulkan(client_prepare.bounded_text(self.logs / "client-graphicsVulkan.log", limit=65536))
+        self.status("starting", "Checking native D3D11 shaders and their visible display frames", displayReady=True)
+        display_report = self.run / "graphics-display.json"
+        helper_log = self.logs / "client-graphicsD3d-helper.log"
+        helper_errors = self.logs / "client-graphicsD3d-helper-errors.log"
+        display_report.unlink(missing_ok=True)
+        for path in (helper_log, helper_errors):
+            rotate_log(path)
+        helper_env = dict(env)
+        helper_env.pop("DXVK_HUD", None)
+        helper_env["WINEDLLOVERRIDES"] += ";d3dcompiler_47=b"
+        helper = client_graphics.d3d_command(self.s.graphics_folder, self.graphics_bundle, self.s.wine)
+        command = self.s.d3d_command or (
+            sys.executable, str(self.s.graphics_folder / "graphics_present.py"),
+            "--port", str(self.s.display_port), "--timeout", str(max(1, self.s.graphics_timeout-10)),
+            "--report", str(display_report), "--stdout", str(helper_log), "--stderr", str(helper_errors), "--", *helper)
+        self.wait_graphics("graphicsD3d", command, helper_env, self.s.graphics_timeout)
+        d3d = client_graphics.parse_d3d(client_prepare.bounded_text(helper_log, limit=65536), self.graphics_bundle)
+        visible = client_graphics.parse_display(client_prepare.bounded_text(display_report, limit=65536))
+        client_graphics.verify_mapped(self.s.graphics_folder, self.s.state)
+        report = {"mode": "turnip-dxvk", "observedAt": time.time(), "supervisorIdentity": self.identities.get("supervisorIdentity"), "hardwarePreflightPassed": True,
+                  "vulkan": vulkan, "d3d11": d3d, "display": visible,
+                  "qualificationScope": "native hardware D3D11 helper and local display; EVE performance requires observation"}
+        atomic_json(self.s.state / "graphics-preflight.json", report)
+        return report
+
+    def update_local_hosts(self) -> None:
+        aliases = set()
+        for value in (socket.gethostname(), self.tls_report.get("computer_name_dns_fqdn", "")):
+            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,251}", value):
+                aliases.update((value, value.split(".", 1)[0]))
+        aliases = {item for item in aliases if item.casefold() != "localhost"}
+        suffix = " " + " ".join(sorted(aliases)) if aliases else ""
+        # Private guest hosts only; preserve localhost as the canonical name.
+        self.s.hosts_file.write_text("127.0.0.1 localhost" + suffix + "\n::1 localhost" + suffix + "\n")
 
     def run_gate(self) -> dict[str, Any]:
         command = self.s.gate_command or (self.s.wine, str(self.s.gate), "Z:\\client-state\\trust\\evejs-ca.pem")
@@ -334,6 +434,7 @@ class Runtime:
             self.check_child("display")
             self.check_child("wineServer")
             self.memory_check()
+            self.refresh_owned_processes(persist=True)
             if time.monotonic() >= deadline:
                 raise RuntimeErrorDetail("Wine certificate / localhost TLS qualification timed out; inspect client-gate.log")
             time.sleep(self.s.tick)
@@ -480,7 +581,7 @@ class Runtime:
         if identity_alive(journal.get("supervisorIdentity")):
             raise BusyError("The recorded EVE client supervisor is still alive")
         clean = True
-        for role in ("client", "gate", "wineServer", "display"):
+        for role in OWNED_ROLES:
             identity = journal.get(role + "Identity")
             if isinstance(identity, dict):
                 clean = self.cleanup_identity(identity, journal.get(role + "Members", [])) and clean
@@ -496,7 +597,7 @@ class Runtime:
             with contextlib.suppress(OSError, subprocess.TimeoutExpired):
                 subprocess.run((self.s.wineserver, "-k"), env=self.environment(), stdin=subprocess.DEVNULL,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-        for role in ("client", "gate", "wineServer", "display"):
+        for role in OWNED_ROLES:
             process = self.children.get(role)
             if process is None:
                 continue
@@ -524,7 +625,8 @@ class Runtime:
                 display_command = self.s.display_command or (
                     self.s.display, ":" + str(self.s.display_number), "-geometry", "1280x720", "-depth", "24",
                     "-rfbport", str(self.s.display_port), "-localhost", "yes", "-SecurityTypes", "None",
-                    "-nolisten", "tcp", "-ac", "-AlwaysShared", "-FrameRate", "15", "-desktop", "EVE Local Preview")
+                    "-nolisten", "tcp", "-ac", "-AlwaysShared", "-FrameRate",
+                    "30" if self.s.graphics_mode == "turnip-dxvk" else "15", "-desktop", "EVE Local Preview")
                 self.status("starting", "Starting the private client display")
                 self.spawn("display", display_command)
                 self.wait_display()
@@ -532,12 +634,22 @@ class Runtime:
                 self.spawn("wineServer", self.s.wineserver_command or (self.s.wineserver, "-f", "-p"))
                 self.wait_wineserver()
                 self.tls_report = self.run_gate()
+                if self.s.gate_command is None:
+                    self.update_local_hosts()
+                self.graphics_reports = self.run_graphics()
                 self.cancellation_point()
                 client_command = self.s.client_command or (
                     self.s.wine, "Z:\\client\\tq\\bin64\\exefile.exe", "/noCrashReportUpload",
                     "/resfileserver=http://127.0.0.1:26002/resfiles/", "/port:26000")
                 self.status("starting", "Launching EVE build 3396210 through the existing Wine/FEX runtime", displayReady=True,
                             wineTrustQualified=True, localhostTlsQualified=True)
+                if self.s.graphics_mode == "turnip-dxvk":
+                    client_graphics.verify_mapped(self.s.graphics_folder, self.s.state)
+                    for name in ("exefile_d3d11.log", "exefile_dxgi.log"):
+                        rotate_log(self.logs / name)
+                # GPU qualification can take minutes; the previously accepted
+                # server session must still be alive before starting EVE.
+                self.require_server()
                 self.spawn("client", client_command, cwd=self.s.content / "tq")
                 deadline = time.monotonic() + self.s.observe_seconds
                 while time.monotonic() < deadline:
@@ -552,7 +664,8 @@ class Runtime:
                     "format": 1, "observedAt": time.time(), **qualification,
                     "processStartupObserved": True, "login_qualified": False,
                     "graphics_qualified": False, "wine_cryptoapi_trust": True, "localhost443_tls": True,
-                    "networkPolicy": NETWORK_POLICY, "renderer": "WineD3D / llvmpipe", "displayPort": self.s.display_port})
+                    "networkPolicy": NETWORK_POLICY, "renderer": "DXVK / Turnip (Adreno)" if self.s.graphics_mode == "turnip-dxvk" else "WineD3D / llvmpipe",
+                    "graphicsPreflight": self.graphics_reports, "displayPort": self.s.display_port})
                 last_health = 0.0
                 while not self.stopping():
                     self.check_child("display")
@@ -596,8 +709,10 @@ def main(argv=None) -> int:
     parser.add_argument("--content", type=Path, default=Path("/client"))
     parser.add_argument("--state", type=Path, default=Path("/client-state"))
     parser.add_argument("--server-state", type=Path, default=Path("/server-state"))
+    parser.add_argument("--graphics-mode", choices=client_graphics.MODES, default="turnip-dxvk")
     options = parser.parse_args(argv)
-    runtime = Runtime(Settings(content=options.content, state=options.state, server_state=options.server_state))
+    runtime = Runtime(Settings(content=options.content, state=options.state, server_state=options.server_state,
+                               graphics_mode=options.graphics_mode))
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, runtime.request_stop)
     try:

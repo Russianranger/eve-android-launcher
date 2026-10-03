@@ -5,7 +5,9 @@ import android.graphics.Color;
 import android.os.*;
 import android.text.InputType;
 import android.view.*;
+import android.view.inputmethod.EditorInfo;
 import android.widget.*;
+import java.io.File;
 import java.io.IOException;
 import java.net.*;
 import java.util.concurrent.*;
@@ -16,6 +18,16 @@ public final class ClientDisplayActivity extends Activity {
     private final Object socketLock = new Object();
     private final ThreadPoolExecutor input = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS,
         new ArrayBlockingQueue<>(128), task -> new Thread(task, "eve-display-input"), new ThreadPoolExecutor.AbortPolicy());
+    private final ScheduledThreadPoolExecutor diagnostics = new ScheduledThreadPoolExecutor(1,
+        task -> new Thread(task, "eve-display-diagnostics"));
+    private static final Object performanceFileLock = new Object();
+    private static long savedPerformanceId;
+    private static boolean savedPerformanceEnded;
+    private File performanceFile;
+    private HandlerThread frameThread;
+    private Window.OnFrameMetricsAvailableListener frameListener;
+    private AlertDialog activeTextDialog;
+    private volatile DisplayPerformance performance;
     private RfbView screen;
     private TextView status;
     private volatile Socket socket;
@@ -39,6 +51,35 @@ public final class ClientDisplayActivity extends Activity {
         status.setText("Connecting to local client display…"); root.addView(status);
         screen = new RfbView(this); screen.setPointer((x, y, mask) -> submit(client -> client.pointer(x, y, mask)));
         root.addView(screen, new LinearLayout.LayoutParams(-1, 0, 1)); setContentView(root);
+        performanceFile = new File(RuntimeManager.get(this).clientState, "logs/display-performance.json");
+        diagnostics.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
+        diagnostics.setContinueExistingPeriodicTasksAfterShutdownPolicy(false);
+        diagnostics.scheduleAtFixedRate(() -> persistPerformance(performance), 10, 10, TimeUnit.SECONDS);
+        frameThread = new HandlerThread("eve-display-frame-metrics"); frameThread.start();
+        frameListener = (window, frame, dropped) -> {
+            DisplayPerformance measured = performance;
+            if (measured != null && measured.active.get()) measured.frame(frame.getMetric(FrameMetrics.TOTAL_DURATION),
+                frame.getMetric(FrameMetrics.DRAW_DURATION), frame.getMetric(FrameMetrics.SYNC_DURATION),
+                Build.VERSION.SDK_INT >= 31 ? frame.getMetric(FrameMetrics.GPU_DURATION) : -1, dropped);
+        };
+        getWindow().addOnFrameMetricsAvailableListener(frameListener, new Handler(frameThread.getLooper()));
+    }
+    private void persistPerformance(DisplayPerformance measured) {
+        if (measured == null) return;
+        synchronized (performanceFileLock) {
+            boolean ended = !measured.active.get();
+            if (measured.id < savedPerformanceId || (measured.id == savedPerformanceId && savedPerformanceEnded && !ended)) return;
+            try {
+                RuntimeManager.text(performanceFile, measured.json(!ended));
+                savedPerformanceId = measured.id; savedPerformanceEnded = ended;
+            } catch (IOException ignored) { } // Diagnostics must not interrupt display or input.
+        }
+    }
+    private void finishPerformance(DisplayPerformance measured) {
+        if (measured == null) return;
+        measured.finish();
+        try { diagnostics.execute(() -> persistPerformance(measured)); }
+        catch (RejectedExecutionException stopped) { }
     }
     private void button(LinearLayout tools, String title, Runnable action) {
         Button button = new Button(this); button.setText(title); button.setAllCaps(false);
@@ -49,30 +90,44 @@ public final class ClientDisplayActivity extends Activity {
     private void submit(Input action) {
         RfbClient target = connection; long token = generation;
         if (target == null || !visible) return;
+        DisplayPerformance measured = performance; long enqueued = System.nanoTime();
+        if (measured != null) measured.inputQueued(input.getQueue().size() + 1);
         try {
             input.execute(() -> {
                 if (!visible || generation != token || connection != target) return;
+                long started = System.nanoTime();
+                if (measured != null) measured.inputStarted(started - enqueued);
                 try { action.send(target); }
                 catch (IOException error) { failedInput(target, token); }
+                finally { if (measured != null) measured.inputFinished(System.nanoTime() - started); }
             });
         } catch (RejectedExecutionException saturated) {
+            if (measured != null) measured.rejectedInputs.incrementAndGet();
             // Never silently drop a button release. Reconnect resets the pointer state.
             failedInput(target, token);
             input.getQueue().clear();
         }
     }
-    private void press(int key) { submit(client -> { client.key(key, true); client.key(key, false); }); }
+    private void press(int key) { submit(client -> client.tap(key)); }
     private void textEntry() {
+        if (activeTextDialog != null) return;
         EditText text = new EditText(this);
         // Do not offer prediction or retain passwords in diagnostics.
         text.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        text.setSingleLine(true);
-        new AlertDialog.Builder(this).setTitle("Send text to selected EVE field").setView(text)
+        text.setSingleLine(true); text.setSaveEnabled(false); text.setFreezesText(false);
+        text.setImeOptions(EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
+        text.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
+        CheckBox replace = new CheckBox(this); replace.setText("Replace selected field"); replace.setChecked(true);
+        LinearLayout fields = new LinearLayout(this); fields.setOrientation(LinearLayout.VERTICAL); fields.setPadding(dp(16), 0, dp(16), 0);
+        fields.addView(text); fields.addView(replace);
+        activeTextDialog = new AlertDialog.Builder(this).setTitle("Send text to selected EVE field").setView(fields)
             .setPositiveButton("Send", (dialog, which) -> {
                 String value = text.getText().toString(); text.setText("");
                 if (value.length() > 4096) { Toast.makeText(this, "Send up to 4096 characters at once", Toast.LENGTH_SHORT).show(); return; }
-                submit(client -> { for (int i = 0; i < value.length();) { int code = value.codePointAt(i); i += Character.charCount(code); int key = code <= 255 ? code : 0x01000000 | code; client.key(key, true); client.key(key, false); } });
-            }).setNegativeButton("Cancel", (dialog, which) -> text.setText("")).show();
+                boolean replacing = replace.isChecked(); submit(client -> client.text(value, replacing));
+            }).setNegativeButton("Cancel", (dialog, which) -> text.setText("")).create();
+        activeTextDialog.setOnDismissListener(dialog -> { text.setText(""); activeTextDialog = null; });
+        activeTextDialog.show();
     }
     private void displayStatus(long token, String message) { handler.post(() -> { if (visible && generation == token) status.setText(message); }); }
     private void failedInput(RfbClient target, long token) {
@@ -85,6 +140,7 @@ public final class ClientDisplayActivity extends Activity {
         synchronized (socketLock) {
             visible = false; generation++; previous = socket; client = connection; socket = null; connection = null;
         }
+        DisplayPerformance measured = performance; performance = null; screen.setPerformance(null); finishPerformance(measured);
         input.getQueue().clear();
         try { input.execute(() -> { try { if (client != null) client.pointer(0, 0, 0); } catch (IOException ignored) { } finally { close(previous); } }); }
         catch (RejectedExecutionException stopped) { close(previous); }
@@ -101,11 +157,13 @@ public final class ClientDisplayActivity extends Activity {
                 break;
             }
             Socket attempt = new Socket();
+            DisplayPerformance measured = null;
             boolean connected = false;
             try {
                 synchronized (socketLock) { if (!visible || generation != token) break; socket = attempt; }
                 attempt.connect(new InetSocketAddress("127.0.0.1", 5907), 3000);
                 attempt.setTcpNoDelay(true); attempt.setSoTimeout(15000);
+                measured = new DisplayPerformance();
                 RfbClient client = new RfbClient(attempt.getInputStream(), attempt.getOutputStream(), new RfbClient.Screen() {
                     @Override public void resize(int width, int height) { if (generation == token) screen.resize(width, height); }
                     @Override public void pixels(int x, int y, int width, int height, int[] pixels) { if (generation == token) screen.pixels(x, y, width, height, pixels); }
@@ -114,12 +172,15 @@ public final class ClientDisplayActivity extends Activity {
                         screen.updated();
                         if (!receivedFrame) { receivedFrame = true; displayStatus(token, "Local display connected · touch to click · use Text for login fields"); }
                     }
-                });
+                }, measured);
                 client.handshake();
                 if (!visible || generation != token) break;
                 receivedFrame = false;
                 client.pointer(0, 0, 0);
-                synchronized (socketLock) { if (!visible || generation != token) break; connection = client; }
+                synchronized (socketLock) {
+                    if (!visible || generation != token) break;
+                    connection = client; performance = measured; screen.setPerformance(measured);
+                }
                 attempt.setSoTimeout(0);
                 connected = true;
                 RuntimeService.append(this, "Client display connected on loopback port 5907");
@@ -134,7 +195,10 @@ public final class ClientDisplayActivity extends Activity {
                 }
             } finally {
                 try { attempt.close(); } catch (IOException ignored) { }
-                synchronized (socketLock) { if (generation == token) { connection = null; socket = null; } }
+                synchronized (socketLock) {
+                    if (generation == token) { connection = null; socket = null; performance = null; screen.setPerformance(null); }
+                }
+                finishPerformance(measured);
             }
             if (!visible || generation != token) break;
             try { Thread.sleep(1500); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
@@ -146,10 +210,15 @@ public final class ClientDisplayActivity extends Activity {
         new Thread(() -> connect(token), "eve-display-reader").start();
     }
     @Override public void onPause() {
+        if (activeTextDialog != null) activeTextDialog.dismiss();
         screen.releasePointer(); disconnect();
         super.onPause();
     }
-    @Override public void onDestroy() { disconnect(); input.shutdown(); screen.dispose(); super.onDestroy(); }
+    @Override public void onDestroy() {
+        disconnect(); input.shutdown(); screen.dispose();
+        getWindow().removeOnFrameMetricsAvailableListener(frameListener); frameThread.quitSafely(); diagnostics.shutdown();
+        super.onDestroy();
+    }
     private int keysym(KeyEvent event) {
         switch (event.getKeyCode()) {
             case KeyEvent.KEYCODE_ENTER: return 0xff0d;
@@ -165,6 +234,7 @@ public final class ClientDisplayActivity extends Activity {
         }
     }
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (activeTextDialog != null || !hasWindowFocus()) return super.dispatchKeyEvent(event);
         if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) return super.dispatchKeyEvent(event);
         int key = keysym(event);
         if (key != 0 && (event.getAction() == KeyEvent.ACTION_DOWN || event.getAction() == KeyEvent.ACTION_UP)) {

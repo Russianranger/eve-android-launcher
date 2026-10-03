@@ -34,6 +34,13 @@ int main(void)
     assert(inet_pton(AF_INET, "192.0.2.1", &remote.sin_addr) == 1);
     assert(eve_client_network_callback(&extension, INITIALIZATION, 0, 0) == 0);
     assert(extension.filtered_sysnums != NULL);
+    /* Exactly these four argument-only calls avoid the additional exit stop.
+     * sendmmsg must retain one because it copies lengths back to the caller. */
+    assert(extension.filtered_sysnums[2].number == PR_connect && extension.filtered_sysnums[2].flags == 0);
+    assert(extension.filtered_sysnums[3].number == PR_bind && extension.filtered_sysnums[3].flags == 0);
+    assert(extension.filtered_sysnums[4].number == PR_sendto && extension.filtered_sysnums[4].flags == 0);
+    assert(extension.filtered_sysnums[5].number == PR_sendmsg && extension.filtered_sysnums[5].flags == 0);
+    assert(extension.filtered_sysnums[6].number == PR_sendmmsg && extension.filtered_sysnums[6].flags == FILTER_SYSEXIT);
     assert(eve_client_network_callback(&extension, INHERIT_PARENT, 0, 0) == 1);
     assert(eve_client_network_callback(&extension, INHERIT_CHILD, 0, 0) == 0);
     start(PR_connect, (word_t)&remote, sizeof(remote));

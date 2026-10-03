@@ -140,23 +140,33 @@ No Node, immutable server package or existing Wine/FEX binary upgrade is needed.
   startup/login test and return one new support ZIP. Host regression and CI
   results must be recorded before distributing the update.
 
+## October 3 accepted startup/login and performance continuation
+
+`eve-support-20261003-154109.zip` confirms 0.1.4 private Wine trust/localhost TLS
+passed. Server logs recorded successful local authentication and character
+selection; the user reached those screens and reported severe rendering/input
+slowness. Clean shutdown left no owned client/display processes. This accepts
+startup/login while performance remains a separate gate. ThorTest is retired
+from future testing; retain its data and use a fresh disposable account.
+
+The requested research hour ran 20:42:57–21:42:57 UTC. 0.1.5 implements native
+ARM64EC DXVK 2.5.3/Turnip 26, persistent caches,30FPS/one-frame queue settings,
+buffered/replacement text input, motion coalescing, grouped process metrics,
+entry-only socket filters and privacy-safe display/input telemetry. See
+[findings and verification limits](CLIENT-PERFORMANCE.md). CI requires real ARM
+Wine/FEX shader/display and native PRoot syscall proof before distribution.
+
 ## Next milestones
 
-1. Accepted: server install/preparation/background/restart, Wine/FEX x64 execution
-   probe, and 0.1.1 exact-client import/recovery. Preserve installed runtimes,
-   imported cache, prefix and world/player data; no repeat import is needed.
-2. Physically qualify the supervised startup test for the prepared EVE 24.01 build 3396210
-   through the existing Wine/FEX runtime, with bounded logs and clean stop.
-   Use the basic display/input to observe startup and attempt local
-   login. Qualify private Wine trust, actual client endpoint routing (including
-   direct localhost TLS443), and outbound traffic containment. The current
-   gateway readiness check on port 26003 does not prove the client's direct port 443 path.
-3. After process startup/local login evidence, improve graphics, audio and
-   controller support, then qualify character select, station, undock, warp,
-   dock and persistent reopen. Do not start broad graphics optimization before
-   the basic client startup/login gate.
+1. Preserve accepted server/world lifecycle, Wine/FEX probe, exact 125,116-resource
+   import, private TLS, client startup and local login/character selection.
+2. Physically qualify 0.1.5 Adreno rendering and usable input, cold/warm-cache
+   startup, display reopen and clean shutdown using a fresh local account.
+3. After performance is usable, qualify character creation/station/undock/warp/dock
+   and persistent reopen, then audio and controller support.
 
 Runtime-v1 is immutable. Server package source/build input changes require a new
 runtime tag and matching app URL. APK backend scripts are bound independently
 and can update without replacing player data. Preview key is retained privately
 in Actions cache; CI must not silently replace the signing identity.
+

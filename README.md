@@ -8,15 +8,14 @@ The initial server preview provides a prepared native ARM64 server runtime,
 durable local world and Jita market, foreground session ownership, readiness
 checks, supervised shutdown and support-log export. It also installs the pinned
 Wine/FEX client runtime and validates complete user-supplied client imports.
-The 0.1.2 preview added supervised EVE startup, a basic touch/text display and
-private Wine TLS checks. The 0.1.3 CA identity fix passed on the Thor; 0.1.4
-adds a targeted Wine crypt32 correction for the valid server certificate rejected
-in the next attempt. Physical startup/local login, graphics performance, audio
-and controller qualification remain pending.
+0.1.4 passed private Wine TLS, EVE startup, local authentication and character
+selection on the Thor. CPU rendering was too slow for usable text entry. 0.1.5
+prioritizes native Adreno rendering, persistent shader caches, batched input and
+performance diagnostics. Audio, controllers and gameplay qualification follow.
 
 ## First server test
 
-Download the APK from [the preview release](https://github.com/Russianranger/eve-android-launcher/releases/tag/v0.1.4).
+Download the APK from [the preview release](https://github.com/Russianranger/eve-android-launcher/releases/tag/v0.1.5).
 In the Server tab, choose **Install server runtime**, **Prepare local world**,
 then **Start server**. Wait for **SERVER READY**, briefly switch apps, then use
 **Save and stop server**. Start it again and export support logs from the Logs tab.
@@ -47,29 +46,29 @@ Do not clear app data or reinstall the already working runtimes.
 The Thor recovery test has now passed: exact build 3396210, all 125,116 resources,
 6 minutes 14 seconds, and 150.6 MiB peak worker RSS with no reported low-memory
 condition. See [the accepted physical evidence](docs/HANDOFF.md). Keep the
-prepared cache. The 0.1.4 startup preview uses that prepared cache. Graphics
-optimization, audio and controllers follow the physical startup/login gate.
+prepared cache. The current preview uses that prepared cache. Startup/login passed; client
+performance is the current device gate.
 
-## Client startup preview in 0.1.4
+## Client performance preview in 0.1.5
 
-The October 3 support logs show successful revalidation of all 125,116 resources
-and an unchanged recorded server CA hash, followed by a false CA-change error.
-Preparation rewrote CRLF PEM text as LF, and launch compared raw byte hashes.
-The fix compares decoded DER certificate identity and accepts existing receipts
-and equivalent private copies. Update in place; no reimport, revalidation,
-runtime reinstall or repeat Wine/FEX probe is needed for the accepted installation.
+Update in place, start the server and wait for **SERVER READY**, then leave
+**Use Adreno GPU rendering** checked and start/open EVE. Native ARM64EC DXVK 2.5.3
+uses the pinned Turnip 26 driver through the existing Wine/FEX runtime. It does not
+replace that runtime or reset the accepted prefix/content/world. Before EVE,
+hardware-only preflight checks Vulkan, shader pixels and visible display frames.
+The initial render/display cap is 30 FPS with a one-frame DXGI queue. Shader caches
+persist across launches. Software recovery retains the previous WineD3D/llvmpipe path.
 
-Update the APK, start the server and wait for **SERVER READY**, then choose
-**Start EVE client** and **Open client display**. Touch selects/clicks and **Text**
-sends the username/password to a selected local login field. The session uses
-WineD3D/llvmpipe for the first startup diagnosis; speed is not yet a gate.
+Touch selects a field; **Text** defaults to replacing its contents and sends one
+buffered batch. Use a fresh disposable local account such as `EvePerf1`; do not
+reuse ThorTest. Detailed CPU/input/display metrics join the bounded support ZIP.
+Host/CI helper results establish interoperability, while actual EVE speed and
+responsiveness remain a physical device test. See [the test sequence](docs/TESTING.md)
+and [optimization evidence](docs/CLIENT-PERFORMANCE.md).
 
-Before EVE runs, the launcher confirms native loopback enforcement, imports and
-reads back the current private CA in Wine, and verifies direct localhost TLS.
-Only the client session remaps localhost:443 to the existing gateway on port 26003.
-The foreground service supervises EVE, Wine and the display; stopping the server
-first stops the client. Logs and identity-aware cleanup receipts are exported.
-See [startup/login test steps and pass criteria](docs/TESTING.md).
+The accepted native loopback policy, private CA checks and Wine crypt32 overlay
+remain active. Client stop targets only recorded owned process identities; world
+save behavior is preserved.
 
 ## Client preparation
 

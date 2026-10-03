@@ -46,8 +46,10 @@ same shards, alongside dependency sources and build instructions.
 The Windows client runtime is prepared separately from the server. Wine/FEX,
 graphics drivers, and their corresponding source archives must be distributed
 together whenever a preview bundles any such binary. The initial launcher
-did not include those components in its APK; 0.1.4 includes only the focused
-crypt32 session overlay described below.
+did not include those components in its APK. Version 0.1.4 added the focused
+crypt32 session overlay described below; 0.1.5 also packages the native graphics
+components described in the following section. The existing Wine/FEX runtime
+is preserved.
 
 ## Wine crypt32 session overlay
 
@@ -59,3 +61,61 @@ identity, build configuration and build instructions are published as
 `wine-trust-corresponding-source.tar.gz` with the APK. The immutable UO
 Wine/FEX runtime and its matching sources remain available at their existing
 v0.2.0 release. No game files are included.
+
+## Native ARM64EC DXVK and Turnip graphics
+
+Version 0.1.5 packages only DXVK's D3D11 and DXGI DLLs, built as native ARM64EC
+from [DXVK 2.5.3](https://github.com/doitsujin/dxvk/tree/c707d9026f33b6ab89639f154b6ac5f6326fa037),
+commit `c707d9026f33b6ab89639f154b6ac5f6326fa037`. DXVK is distributed under
+its zlib/libpng license, copyright Philip Rebohle, Joshua Ashton, Robin Kertels
+and Jeffrey Ellison. The unchanged upstream license is included in the APK and
+launcher source as `docs/licenses/dxvk-2.5.3-LICENSE.txt`.
+
+`client-graphics-corresponding-source.tar.gz`, published with the APK, retains
+the complete pinned DXVK source, its original license and notices, and the
+three source dependencies used by this Windows build:
+
+| Source dependency | Pinned commit | License notices |
+| --- | --- | --- |
+| Khronos Vulkan-Headers | `46dc0f6e514f5730784bb2cac2a7c731636839e8` | Original license files and per-file notices retained in `dxvk/include/vulkan`. |
+| Khronos SPIRV-Headers | `8b246ff75c6615ba4532fe4fde20f1be090c3764` | Original license files and per-file notices retained in `dxvk/include/spirv`. |
+| Joshua Ashton's libdisplay-info fork | `275e6459c7ab1ddd4b125f28d0440716e4888078` | Original license files and per-file notices retained in `dxvk/subprojects/libdisplay-info`. |
+
+The APK reuses the native ARM64 glibc Mesa 26.0.0 Turnip driver and the native
+Vulkan device/X11 presentation probe from the immutable
+[UO launcher v0.2.17 release](https://github.com/Russianranger/uo-android-launcher/releases/tag/v0.2.17).
+The selected files come from `runtime-bridges.zip`, SHA-256
+`e4acf8e2dd432e11ec4aac3ad86137890b664df90cd467455b64209dfb56e1ba`.
+The build verifies both that archive and each selected file; no other component
+from the bridge archive is installed.
+
+Mesa's component license and copyright notices remain in its exact unmodified
+source archive; most Mesa code is MIT-licensed, with individual source files
+specifying their own terms. Its original license texts and source copyright
+notice inventory are also packaged as `docs/licenses/mesa-26.0.0-notices.txt`.
+That inventory covers the complete Mesa distribution and is broader than the
+selected Turnip driver. The Mesa 26.0.0 source SHA-256 is
+`2a44e98e64d5c36cec64633de2d0ec7eff64703ee25b35364ba8fcaa84f33f72`.
+Its build-time Khronos glslang 15.1.0 source archive, SHA-256
+`4bdcd8cdb330313f0d4deed7be527b0ac1c115ff272e492853a6e98add61b4bc`,
+is retained with its upstream license notices. glslang is not installed in the
+APK or client runtime. The Turnip driver is open-source Mesa built for Qualcomm
+KGSL; no proprietary Qualcomm driver is included.
+
+The Vulkan probe is the original TRASC project's `vulkan/vulkan_probe.c`,
+carried in that same UO release. Its exact source, original accompanying
+third-party notices, and original Dockerfiles/build script are retained in
+`turnip-original-source` inside `client-graphics-corresponding-source.tar.gz`.
+The original source package is `runtime-corresponding-sources.tar.gz`, SHA-256
+`492043660b1370e1910c8b8ca2b93be1f637f4929034f575591f14e67e015243`;
+the graphics build extracts its nested `vulkan-sources.tar.gz`. The probe has
+no separate license declaration in its source; these notices preserve its
+original attribution without assigning it a new license.
+
+The graphics source release also contains the native ARM64EC cross file,
+source provenance, exact build/qualification scripts, and the original EVE
+D3D11 qualification helper source. DXVK uses the same SHA-256-pinned
+LLVM-MinGW 20250920 compiler as the existing Wine crypt32 overlay. The EVE
+helper is launcher code compiled as x64 with that toolchain; the existing
+MinGW-w64 notices above also apply. The graphics overlay adds no Wine/FEX
+runtime upgrade and no game executables, resources or credentials.

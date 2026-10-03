@@ -13,13 +13,18 @@ final class RfbClient {
     private final DataInputStream in;
     private final DataOutputStream out;
     private final Screen screen;
+    private final DisplayPerformance performance;
     private volatile int width, height;
     private int[] pixelBuffer = new int[0];
     private byte[] rowBuffer = new byte[0];
 
     RfbClient(InputStream input, OutputStream output, Screen screen) {
-        in = new DataInputStream(new BufferedInputStream(input, 65536));
-        out = new DataOutputStream(output);
+        this(input, output, screen, new DisplayPerformance());
+    }
+    RfbClient(InputStream input, OutputStream output, Screen screen, DisplayPerformance performance) {
+        this.performance = performance;
+        in = new DataInputStream(new BufferedInputStream(performance.measure(input), 65536));
+        out = new DataOutputStream(new BufferedOutputStream(output, 8192));
         this.screen = screen;
     }
     private byte[] bytes(int count) throws IOException {
@@ -58,9 +63,19 @@ final class RfbClient {
     }
     private void resize(int w, int h) throws IOException {
         if (w < 1 || h < 1 || w > 4096 || h > 2160 || (long) w * h > 4194304) throw new IOException("Unsupported display dimensions");
-        width = w; height = h; screen.resize(w, h);
+        width = w; height = h; performance.width.set(w); performance.height.set(h); screen.resize(w, h);
     }
     void readUpdate() throws IOException {
+        long started = System.nanoTime(), receiving = performance.socketNanos.get(), publishing = performance.publishNanos.get();
+        try { readMessage(); }
+        finally {
+            // Native reads include server wait. Bitmap publication is accounted separately.
+            long work = System.nanoTime() - started - (performance.socketNanos.get() - receiving)
+                - (performance.publishNanos.get() - publishing);
+            performance.decodeNanos.addAndGet(Math.max(0, work));
+        }
+    }
+    private void readMessage() throws IOException {
         int message = in.readUnsignedByte();
         if (message == 2) return; // Bell.
         if (message == 3) { bytes(3); bytes(in.readInt()); return; } // No clipboard integration.
@@ -82,9 +97,12 @@ final class RfbClient {
                     pixelBuffer[row * w + column] = 0xff000000 | ((rowBuffer[at + 2] & 255) << 16) | ((rowBuffer[at + 1] & 255) << 8) | (rowBuffer[at] & 255);
                 }
             }
+            long publishing = System.nanoTime();
             screen.pixels(x, y, w, h, pixelBuffer);
+            performance.publishNanos.addAndGet(System.nanoTime() - publishing);
+            performance.rectangles.incrementAndGet(); performance.pixels.addAndGet(length);
         }
-        if (count > 0) screen.updated();
+        if (count > 0) { performance.updates.incrementAndGet(); screen.updated(); }
         request(true);
     }
     private void request(boolean incremental) throws IOException {
@@ -94,7 +112,28 @@ final class RfbClient {
         }
     }
     void key(int keysym, boolean down) throws IOException {
-        synchronized (out) { out.writeByte(4); out.writeByte(down ? 1 : 0); out.writeShort(0); out.writeInt(keysym); out.flush(); }
+        synchronized (out) { writeKey(keysym, down); out.flush(); }
+    }
+    private void writeKey(int keysym, boolean down) throws IOException {
+        out.writeByte(4); out.writeByte(down ? 1 : 0); out.writeShort(0); out.writeInt(keysym);
+    }
+    void tap(int keysym) throws IOException {
+        synchronized (out) { writeKey(keysym, true); writeKey(keysym, false); out.flush(); }
+    }
+    void text(String value, boolean replace) throws IOException {
+        if (value.length() > 4096) throw new IOException("Text exceeds input limits");
+        synchronized (out) {
+            if (replace) {
+                writeKey(0xffe3, true); // Control_L + a selects the currently focused field.
+                writeKey('a', true); writeKey('a', false); writeKey(0xffe3, false);
+            }
+            for (int i = 0; i < value.length();) {
+                int code = value.codePointAt(i); i += Character.charCount(code);
+                int keysym = code <= 255 ? code : 0x01000000 | code;
+                writeKey(keysym, true); writeKey(keysym, false);
+            }
+            out.flush();
+        }
     }
     void pointer(int x, int y, int mask) throws IOException {
         synchronized (out) {

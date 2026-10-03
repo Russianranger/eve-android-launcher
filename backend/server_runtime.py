@@ -21,7 +21,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 import urllib.error
 import urllib.request
 import uuid
@@ -108,6 +108,8 @@ def _namespace_mapping_needed() -> bool:
 # process when the proc mount comes from another namespace.
 NAMESPACE_MAPPING = _namespace_mapping_needed()
 PROC_PID_CACHE: dict[int, int] = {}
+CLOCK_TICKS = os.sysconf("SC_CLK_TCK")
+PAGE_KIB = os.sysconf("SC_PAGE_SIZE") // 1024
 
 
 def _read_process(path: Path) -> dict[str, Any] | None:
@@ -127,11 +129,21 @@ def _read_process(path: Path) -> dict[str, Any] | None:
                     name, values = line.split(":", 1)
                     names[name] = int(values.split()[-1])
             pid, group, session = names["NSpid"], names["NSpgid"], names["NSsid"]
-        return {
+        record = {
             "pid": pid, "state": fields[0], "parent": int(fields[1]),
             "group": group, "session": session,
             "startTicks": fields[19],
         }
+        # Metrics are optional: a short/malformed sample must not invalidate the
+        # process identity used by ownership and shutdown checks.
+        try:
+            ticks = int(fields[11]) + int(fields[12])
+            rss = int(fields[21])
+            if ticks >= 0 and rss >= 0:
+                record.update(cpuTicks=ticks, rssKiB=rss * PAGE_KIB)
+        except (ValueError, IndexError):
+            pass
+        return record
     except (OSError, ValueError, IndexError, KeyError):
         return None
 
@@ -182,6 +194,58 @@ def group_members(group: int) -> list[dict[str, Any]]:
     return members
 
 
+@dataclass(frozen=True)
+class ProcessSnapshot:
+    """One fresh /proc scan shared by status metrics for owned process groups.
+
+    This is a reporting sample. Ownership and signals still use fresh identity
+    reads through process_record/group_members, never a cached snapshot.
+    """
+
+    captured_at: float
+    groups: dict[int, list[dict[str, Any]]]
+
+    @classmethod
+    def capture(cls, groups: Iterable[int]) -> "ProcessSnapshot":
+        wanted = {int(group) for group in groups}
+        members: dict[int, list[dict[str, Any]]] = {group: [] for group in wanted}
+        if wanted:
+            for path in Path("/proc").iterdir():
+                if not path.name.isdigit():
+                    continue
+                record = _read_process(path)
+                if record and record["group"] in wanted and record["state"] != "Z":
+                    members[record["group"]].append(record)
+                    if NAMESPACE_MAPPING:
+                        PROC_PID_CACHE[record["pid"]] = int(path.name)
+        return cls(time.monotonic(), members)
+
+    def members(self, group: int) -> list[dict[str, Any]]:
+        return self.groups.get(group, [])
+
+    def cpu_usage(self, previous: "ProcessSnapshot | None") -> dict[int, dict[str, Any]]:
+        elapsed = self.captured_at - previous.captured_at if previous else None
+        result = {}
+        for group, members in self.groups.items():
+            counters = [member["cpuTicks"] for member in members if "cpuTicks" in member]
+            value = {"cpuTicks": sum(counters), "cpuCorePercent": None,
+                     "sampleSeconds": elapsed if elapsed is not None and elapsed > 0 else None}
+            if previous and elapsed is not None and elapsed > 0:
+                old = {(member["pid"], member["startTicks"]): member.get("cpuTicks")
+                       for member in previous.members(group)}
+                deltas = []
+                for member in members:
+                    before = old.get((member["pid"], member["startTicks"]))
+                    after = member.get("cpuTicks")
+                    if before is not None and after is not None and after >= before:
+                        deltas.append(after - before)
+                if deltas:
+                    # 100% means one logical CPU; a group can use several CPUs.
+                    value["cpuCorePercent"] = 100 * sum(deltas) / elapsed / CLOCK_TICKS
+            result[group] = value
+        return result
+
+
 def fetch_health(url: str) -> dict[str, Any]:
     # Avoid proxy environment variables and never redirect a local probe off-device.
     class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -212,6 +276,7 @@ class Runtime:
         self.cancelled = False
         self.previous_status: dict[str, Any] = {}
         self.identities: dict[str, Any] = {}
+        self.previous_snapshot: ProcessSnapshot | None = None
 
     def request_stop(self, *_: Any) -> None:
         self.cancelled = True
@@ -221,16 +286,38 @@ class Runtime:
             raise Cancelled("server operation cancelled")
 
     def status(self, phase: str, message: str, ready: bool = False, **details: Any) -> None:
+        owned = {role: self.identities[role + "Identity"]["pid"]
+                 for role in ("server", "market") if self.identities.get(role + "Identity")}
+        snapshot = ProcessSnapshot.capture(owned.values())
+        trusted_groups = {}
         for role in ("server", "market"):
             identity = self.identities.get(role + "Identity")
             if identity:
+                members = snapshot.members(identity["pid"])
+                leader_matches = any(member["pid"] == identity["pid"] and
+                                     member["startTicks"] == identity.get("startTicks") and
+                                     member["session"] == identity["pid"] for member in members)
+                if not leader_matches:
+                    # A recycled PID/PGID must never extend our durable signal
+                    # ownership. Keep only previously recorded live orphans.
+                    known = {(member["pid"], member["startTicks"])
+                             for member in self.identities.get(role + "Members", [])}
+                    members = [member for member in members
+                               if (member["pid"], member["startTicks"]) in known]
+                trusted_groups[identity["pid"]] = members
                 self.identities[role + "Members"] = [
                     {"pid": member["pid"], "startTicks": member["startTicks"]}
-                    for member in group_members(identity["pid"])
+                    for member in members
                 ]
+        snapshot = ProcessSnapshot(snapshot.captured_at, trusted_groups)
+        cpu = snapshot.cpu_usage(self.previous_snapshot)
+        self.previous_snapshot = snapshot
         self.previous_status = {
             "schemaVersion": SCHEMA_VERSION, "phase": phase, "message": message,
             "ready": ready, "updatedAt": time.time(), **self.identities, **details,
+            "processCpu": {role: cpu[group] for role, group in owned.items()},
+            "processRssKiB": {role: sum(member.get("rssKiB", 0) for member in snapshot.members(group))
+                              for role, group in owned.items()},
         }
         atomic_json(self.status_file, self.previous_status)
         if self.identities.get("marketIdentity") or self.identities.get("serverIdentity"):
@@ -551,7 +638,22 @@ log_level = "info"
                                     stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
 
     def child_running(self, process: subprocess.Popen | None, name: str) -> None:
-        if process is not None and process.poll() is not None:
+        if process is None:
+            return
+        # poll() reaps a dead leader and releases its PID. Capture any freshly
+        # forked authorities while that zombie still proves the isolated group
+        # belongs to this exact child, rather than adopting an unverified group
+        # after its numeric PGID could be reused. Ordinary live ticks do no scan.
+        identity = self.identities.get(name + "Identity", {})
+        record = process_record(process.pid)
+        if record and record["state"] == "Z" and record["startTicks"] == identity.get("startTicks") and \
+                record["group"] == process.pid and record["session"] == process.pid:
+            self.identities[name + "Members"] = [
+                {"pid": member["pid"], "startTicks": member["startTicks"]}
+                for member in group_members(process.pid)
+            ]
+            atomic_json(self.process_journal, self.identities)
+        if process.poll() is not None:
             raise RuntimeErrorDetail(f"{name} process exited unexpectedly with code {process.returncode}")
 
     def wait_health(self, children: dict[str, subprocess.Popen], market_only: bool, timeout: float) -> dict[str, Any]:
@@ -576,6 +678,23 @@ log_level = "info"
             time.sleep(self.s.tick)
         raise RuntimeErrorDetail(f"{'market' if market_only else 'world'} readiness timed out: {last_error}")
 
+    def signal_owned_group(self, identity: Any, known_members: list[dict[str, Any]], signum: int) -> None:
+        if not isinstance(identity, dict) or not isinstance(identity.get("pid"), int) or identity["pid"] <= 1:
+            raise RuntimeErrorDetail("invalid owned server identity; refusing process cleanup")
+        pid = identity["pid"]
+        current = group_members(pid)
+        if not current:
+            return
+        root = next((member for member in current if member["pid"] == pid and
+                     member["startTicks"] == identity.get("startTicks")), None)
+        if root and root["session"] != pid:
+            raise RuntimeErrorDetail("owned server process no longer has its isolated session")
+        known = {(member["pid"], member["startTicks"]) for member in known_members}
+        if root is None and not any((member["pid"], member["startTicks"]) in known for member in current):
+            raise RuntimeErrorDetail("unverified server process group remains; refusing unrelated process cleanup")
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(pid, signum)
+
     def shutdown_child(self, process: subprocess.Popen | None, grace: float) -> bool:
         if process is None:
             return True
@@ -591,23 +710,21 @@ log_level = "info"
                 clean = False
         elif process.returncode != 0:
             clean = False
+        role = next((role for role in ("server", "market")
+                     if self.identities.get(role + "Identity", {}).get("pid") == process.pid), None)
         # Node forks multiple authorities/services. Reap every live member of the
         # isolated session even after an unexpected root exit.
         if group_members(process.pid):
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            self.signal_owned_group(self.identities.get((role or "") + "Identity"),
+                                    self.identities.get((role or "") + "Members", []), signal.SIGTERM)
             deadline = time.monotonic() + self.s.residual_shutdown_timeout
             while group_members(process.pid) and time.monotonic() < deadline:
                 process.poll()
                 time.sleep(self.s.tick)
             if group_members(process.pid):
                 clean = False
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                self.signal_owned_group(self.identities.get((role or "") + "Identity"),
+                                        self.identities.get((role or "") + "Members", []), signal.SIGKILL)
                 deadline = time.monotonic() + 3
                 while group_members(process.pid) and time.monotonic() < deadline:
                     process.poll()

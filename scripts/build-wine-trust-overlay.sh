@@ -13,13 +13,50 @@ cleanup() {
 trap cleanup EXIT
 docker build --platform linux/arm64 --target qualification \
   -f client-runtime/wine-trust/Dockerfile -t "$overlay_image" .
-overlay_container=$(docker create "$overlay_image")
-docker cp "$overlay_container:/out/assets/." backend/
-docker cp "$overlay_container:/out/wine-trust-corresponding-source.tar.gz" out/
-docker cp "$overlay_container:/out/wine-trust-regression.log" out/
-docker cp "$overlay_container:/out/wine-trust-baseline.log" out/
-docker cp "$overlay_container:/out/baseline-trust.json" out/
-docker cp "$overlay_container:/out/patched-trust.json" out/
+overlay_container=$(docker create --init -i --cap-add SYS_PTRACE \
+  --security-opt seccomp=unconfined "$overlay_image" /bin/bash -s)
+qualification_status=0
+docker start -ai "$overlay_container" <<'QUALIFICATION' || qualification_status=$?
+set -Eeuo pipefail
+xvfb-run -a /bin/bash -s <<'WINE_TESTS'
+set -Eeuo pipefail
+trap 'timeout --kill-after=5 15 /opt/wine/bin/wineserver -k || true' EXIT
+# Match the already-qualified UO runtime's disposable-prefix initialization.
+# Suppress Wine's optional browser/.NET installers before starting CryptoAPI.
+timeout --kill-after=10 180 /opt/wine/bin/wine wineboot -u \
+  < /dev/null > /out/wine-trust-prefix.log 2>&1
+timeout --kill-after=5 15 /opt/wine/bin/wineserver -k
+timeout --kill-after=5 15 /opt/wine/bin/wineserver -w
+python3 /wine-tests/wine_trust_regression.py \
+  --wine /opt/wine/bin/wine --helper /wine-tests/eve-wine-trust-test.exe \
+  --fixtures /wine-tests/fixtures --expect-unpatched --output /out/baseline-trust.json \
+  > /out/wine-trust-baseline.log 2>&1
+timeout --kill-after=5 15 /opt/wine/bin/wineserver -k
+timeout --kill-after=5 15 /opt/wine/bin/wineserver -w
+cp /out/assets/wine-crypt32-aarch64.dll /opt/wine/lib/wine/aarch64-windows/crypt32.dll
+cp /out/assets/wine-crypt32-i386.dll /opt/wine/lib/wine/i386-windows/crypt32.dll
+python3 /wine-tests/wine_trust_regression.py \
+  --wine /opt/wine/bin/wine --helper /wine-tests/eve-wine-trust-test.exe \
+  --fixtures /wine-tests/fixtures --output /out/patched-trust.json \
+  > /out/wine-trust-regression.log 2>&1
+WINE_TESTS
+QUALIFICATION
+# Read the container's exit status explicitly as well as Docker's attach status.
+container_status=$(docker inspect --format '{{.State.ExitCode}}' "$overlay_container")
+if [[ "$qualification_status" -eq 0 ]]; then qualification_status=$container_status; fi
+# Copy diagnostics even when a probe failed, before EXIT removes the container.
+docker cp "$overlay_container:/out/." out/
+if [[ "$qualification_status" -ne 0 ]]; then
+  python3 - <<'PYFAIL'
+from pathlib import Path
+for path in sorted(Path('out').glob('wine-trust-*.log')):
+    print(f'Wine qualification diagnostic: {path.name}', flush=True)
+    print(path.read_text(errors='replace')[-16000:], flush=True)
+PYFAIL
+  exit "$qualification_status"
+fi
+cp out/assets/wine-crypt32-aarch64.dll out/assets/wine-crypt32-i386.dll \
+  out/assets/wine-trust-overlay.json backend/
 python3 - <<'PY'
 import hashlib, json, struct
 from pathlib import Path

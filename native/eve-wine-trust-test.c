@@ -19,6 +19,12 @@
 
 #define CERTIFICATE_LIMIT (128u * 1024u)
 
+static void diagnostic_stage(const char *stage)
+{
+    fprintf(stderr, "Wine trust probe: %s\n", stage);
+    fflush(stderr);
+}
+
 static PCCERT_CONTEXT read_certificate(const WCHAR *path)
 {
     HANDLE file;
@@ -66,11 +72,15 @@ int wmain(int argc, WCHAR **argv)
     const char *stage = "arguments";
     int exit_code = 2;
 
+    setvbuf(stdout, NULL, _IONBF, 0);
+    diagnostic_stage(stage);
+
     if (argc != 4) {
         error = ERROR_INVALID_PARAMETER;
         goto cleanup;
     }
     stage = "read_test_certificates";
+    diagnostic_stage(stage);
     root = read_certificate(argv[1]);
     leaf = read_certificate(argv[2]);
     if (!root || !leaf) {
@@ -78,6 +88,7 @@ int wmain(int argc, WCHAR **argv)
         goto cleanup;
     }
     stage = "import_test_current_user_root";
+    diagnostic_stage(stage);
     store = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0,
                           CERT_SYSTEM_STORE_CURRENT_USER, L"ROOT");
     if (!store || !CertAddCertificateContextToStore(store, root,
@@ -92,6 +103,7 @@ int wmain(int argc, WCHAR **argv)
     }
     store = NULL;
     stage = "read_back_test_root";
+    diagnostic_stage(stage);
     store = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0,
                           CERT_SYSTEM_STORE_CURRENT_USER | CERT_STORE_READONLY_FLAG,
                           L"ROOT");
@@ -103,6 +115,7 @@ int wmain(int argc, WCHAR **argv)
     }
 
     stage = "build_leaf_chain";
+    diagnostic_stage(stage);
     parameters.cbSize = sizeof(parameters);
     parameters.RequestedUsage.Usage.cUsageIdentifier = 1;
     parameters.RequestedUsage.Usage.rgpszUsageIdentifier = &usage;
@@ -113,6 +126,7 @@ int wmain(int argc, WCHAR **argv)
         goto cleanup;
     }
     stage = "verify_ssl_policy";
+    diagnostic_stage(stage);
     policy.cbSize = sizeof(policy);
     status.cbSize = sizeof(status);
     ssl.cbSize = sizeof(ssl);
@@ -137,6 +151,7 @@ int wmain(int argc, WCHAR **argv)
     exit_code = 0;
 
 cleanup:
+    diagnostic_stage("cleanup");
     if (exit_code)
         printf("{\"completed\":false,\"stage\":\"%s\",\"win32_error\":%lu}\n", stage, error);
     if (chain) CertFreeCertificateChain(chain);
@@ -144,5 +159,6 @@ cleanup:
     if (store) CertCloseStore(store, 0);
     if (leaf) CertFreeCertificateContext(leaf);
     if (root) CertFreeCertificateContext(root);
+    diagnostic_stage("complete");
     return exit_code;
 }

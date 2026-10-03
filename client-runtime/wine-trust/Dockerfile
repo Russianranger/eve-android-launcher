@@ -88,18 +88,9 @@ RUN python3 /wine-tests/wine_trust_fixtures.py /wine-tests/fixtures \
  && aarch64-w64-mingw32-gcc -std=c11 -Os -Wall -Wextra -Werror -municode -static-libgcc \
       -Wl,--no-insert-timestamp /wine-tests/eve-wine-trust-test.c -lcrypt32 \
       -o /wine-tests/eve-wine-trust-test.exe
-ENV WINEPREFIX=/wine-regression-prefix WINEDEBUG=-all WINEDLLOVERRIDES=crypt32=b
-RUN xvfb-run -a python3 /wine-tests/wine_trust_regression.py \
-      --wine /opt/wine/bin/wine --helper /wine-tests/eve-wine-trust-test.exe \
-      --fixtures /wine-tests/fixtures --expect-unpatched --output /out/baseline-trust.json \
-      > /out/wine-trust-baseline.log 2>&1 \
- || { cat /out/wine-trust-baseline.log; exit 1; }
-RUN /opt/wine/bin/wineserver -k \
- && cp /out/assets/wine-crypt32-aarch64.dll /opt/wine/lib/wine/aarch64-windows/crypt32.dll \
- && cp /out/assets/wine-crypt32-i386.dll /opt/wine/lib/wine/i386-windows/crypt32.dll
-RUN xvfb-run -a python3 /wine-tests/wine_trust_regression.py \
-      --wine /opt/wine/bin/wine --helper /wine-tests/eve-wine-trust-test.exe \
-      --fixtures /wine-tests/fixtures --output /out/patched-trust.json \
-      > /out/wine-trust-regression.log 2>&1 \
- || { cat /out/wine-trust-regression.log; exit 1; }
+ENV WINEPREFIX=/wine-regression-prefix WINEARCH=win64 WINEDEBUG=-all,err+all \
+    WINEDLLOVERRIDES="winemenubuilder,mshtml,mscoree=;d3d11,dxgi,crypt32=b" \
+    WINEESYNC=0 WINEFSYNC=0 FEX_DISABLETELEMETRY=1
+# The driver runs these tests in a retained container, rather than a Docker RUN
+# layer, so prefix/probe logs survive an initialization or policy-test failure.
 CMD ["/bin/true"]

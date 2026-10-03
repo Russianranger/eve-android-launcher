@@ -13,12 +13,57 @@ import argparse
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
+import tempfile
+
+
+def captured_wine(command: list[str], environment: dict[str, str], case: str,
+                  timeout: float = 90) -> subprocess.CompletedProcess:
+    """Wait for the owned Wine process, not pipes inherited by its services.
+
+    Wine can leave wineserver/services holding its stdout/stderr after the test
+    process exits. communicate() then waits for pipe EOF even with a completed
+    helper. Regular files retain diagnostics without imposing that dependency.
+    """
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stdout, \
+            tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr:
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                                   stdout=stdout, stderr=stderr,
+                                   env=environment, start_new_session=True)
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=10)
+            stdout.seek(0)
+            stderr.seek(0)
+            raise AssertionError(
+                f"{case}: Wine process did not exit within {timeout:g}s; "
+                f"pid={process.pid}, prefix={environment.get('WINEPREFIX')}, "
+                f"overrides={environment.get('WINEDLLOVERRIDES')}\n"
+                f"stdout:\n{stdout.read()[-64000:]}\n"
+                f"stderr:\n{stderr.read()[-64000:]}") from None
+        stdout.seek(0)
+        stderr.seek(0)
+        return subprocess.CompletedProcess(command, process.returncode,
+                                           stdout.read(), stderr.read())
 
 
 def run(args) -> None:
     if not os.environ.get("WINEPREFIX"):
         raise SystemExit("Set a disposable WINEPREFIX for this test")
+    environment = os.environ.copy()
+    # Match the launcher's offline Wine initialization; absent Gecko/Mono must
+    # not open an installation prompt while preparing the disposable prefix.
+    environment["WINEDLLOVERRIDES"] = "winemenubuilder,mshtml,mscoree=;crypt32=b"
+    environment.setdefault("WINEARCH", "win64")
+    environment.setdefault("WINEDEBUG", "-all,err+all")
+    environment["WINEESYNC"] = "0"
+    environment["WINEFSYNC"] = "0"
     cases = json.loads((args.fixtures / "cases.json").read_text())
     if args.expect_unpatched:
         cases = [case for case in cases if case["expected_pass"]]
@@ -26,8 +71,9 @@ def run(args) -> None:
     for case in cases:
         root = "Z:" + str((args.fixtures / "root.der").resolve()).replace("/", "\\")
         leaf = "Z:" + str((args.fixtures / case["leaf"]).resolve()).replace("/", "\\")
-        process = subprocess.run([str(args.wine), str(args.helper.resolve()), root, leaf, case["hostname"]],
-                                 capture_output=True, text=True, timeout=90)
+        print(f"Running Wine trust case: {case['name']}", flush=True)
+        process = captured_wine([str(args.wine), str(args.helper.resolve()), root,
+                                 leaf, case["hostname"]], environment, case["name"])
         results = []
         for line in process.stdout.splitlines():
             try:

@@ -1,0 +1,92 @@
+--- a/src/cli/proot.c
++++ b/src/cli/proot.c
+@@ -331,6 +331,12 @@
+         return 0;
+ }
+ 
++static int handle_option_eve_client_network(Tracee *tracee, const Cli *cli UNUSED, const char *value UNUSED)
++{
++	/* Fail closed instead of silently dropping this opt-in policy. */
++	return initialize_extension(tracee, eve_client_network_callback, NULL);
++}
++
+ static int handle_option_p(Tracee *tracee, const Cli *cli UNUSED, const char *value UNUSED)
+ {
+         (void) initialize_extension(tracee, port_switch_callback, NULL);
+--- a/src/cli/proot.h
++++ b/src/cli/proot.h
+@@ -67,6 +67,7 @@
+ static int handle_option_sysvipc(Tracee *tracee, const Cli *cli, const char *value);
++static int handle_option_eve_client_network(Tracee *tracee, const Cli *cli, const char *value);
+ static int handle_option_kill_on_exit(Tracee *tracee, const Cli *cli, const char *value);
+ static int handle_option_L(Tracee *tracee, const Cli *cli, const char *value);
+ static int handle_option_H(Tracee *tracee, const Cli *cli, const char *value);
+ static int handle_option_p(Tracee *tracee, const Cli *cli, const char *value);
+ 
+@@ -243,6 +243,14 @@
+ 	  .description = "Replace hard links with symlinks, pretending they are really hardlinks",
+ 	  .detail = "\tEmulates hard links with symbolic links when SELinux policies\n\
+ \tdo not allow hard links.",
++	},
++	{ .class = "Extension options",
++	  .arguments = {
++		{ .name = "--eve-client-network", .separator = '\0', .value = NULL },
++		{ .name = NULL, .separator = '\0', .value = NULL } },
++	  .handler = handle_option_eve_client_network,
++	  .description = "Restrict EVE client sockets to loopback; map localhost TLS 443 to 26003.",
++	  .detail = "\tApplies to all traced child processes; ordinary/server sessions are unchanged.",
+ 	},
+ 	{ .class = "Extension options",
+ 	  .arguments = {
+--- a/src/extension/extension.h
++++ b/src/extension/extension.h
+@@ -208,6 +208,7 @@
+ }
+ 
+ /* Built-in extensions.  */
++extern int eve_client_network_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);
+ extern int kompat_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);
+ extern int fake_id0_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);
+ extern int hidden_files_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);
+--- a/src/GNUmakefile
++++ b/src/GNUmakefile
+@@ -60,6 +60,7 @@
+ 	ptrace/user.o		\
+ 	ptrace/wait.o		\
+ 	extension/extension.o	\
++	extension/eve_client_network/eve_client_network.o \
+ 	extension/ashmem_memfd/ashmem_memfd.o \
+ 	extension/kompat/kompat.o \
+ 	extension/fake_id0/chown.o \
+--- a/src/syscall/sysnums.list
++++ b/src/syscall/sysnums.list
+@@ -448,3 +448,7 @@
+ SYSNUM(x32_waitid)
+ SYSNUM(x32_writev)
+ 
++
++SYSNUM(io_uring_setup)
++SYSNUM(io_uring_enter)
++SYSNUM(io_uring_register)
+--- a/src/syscall/sysnums-arm64.h
++++ b/src/syscall/sysnums-arm64.h
+@@ -281,5 +281,8 @@
+ 	[ 435 ] = PR_clone3,
+ 	[ 437 ] = PR_openat2,
+ 	[ 439 ] = PR_faccessat2,
++	[ 425 ] = PR_io_uring_setup,
++	[ 426 ] = PR_io_uring_enter,
++	[ 427 ] = PR_io_uring_register,
+ };
+ 
+--- a/src/syscall/sysnums-x86_64.h
++++ b/src/syscall/sysnums-x86_64.h
+@@ -337,5 +337,8 @@
+         [ 435 ] = PR_clone3,
+ 	[ 437 ] = PR_openat2,
+ 	[ 439 ] = PR_faccessat2,
++	[ 425 ] = PR_io_uring_setup,
++	[ 426 ] = PR_io_uring_enter,
++	[ 427 ] = PR_io_uring_register,
+ };
+ 

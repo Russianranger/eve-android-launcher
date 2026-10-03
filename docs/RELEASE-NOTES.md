@@ -1,23 +1,26 @@
-# EVE Android Launcher 0.1.1 — Client import recovery
+# EVE Android Launcher 0.1.2 — Client startup preview
 
-Fixes client import termination under Android memory pressure. Preparation now
-checks file sizes before binary reads, bounds metadata/index lines, uses a disk
-resource-name index, releases ZIP metadata before validation, and keeps only one
-binary patch buffer at a time. Python preparation is limited to 512 MiB; Android
-memory monitoring pauses work while retaining the ZIP and partial extraction.
+Adds the first supervised launch of the prepared EVE 24.01 build 3396210 through
+the existing Wine 10.13/FEX runtime. A basic 1280×720 loopback display provides
+touch clicks, text entry and Tab/Enter/Esc for local startup and login testing.
 
-The new **Resume interrupted client import** action can recover imports left by
-0.1.0. Existing extracted files must pass ZIP CRC and size checks before reuse;
-all exact-build, binary hash, resource and certificate checks remain enabled.
-Stage-specific progress and worker/system memory diagnostics are exported.
+The startup gate checks exact binaries/current preparation receipts, server
+readiness, native outbound socket rejection, private Wine CA import/readback and
+strict direct localhost TLS. An opt-in PRoot policy keeps client IP sockets local
+and maps localhost:443 to the existing server gateway on port 26003; server sessions,
+preparation and the independent Wine/FEX probe retain their previous behavior.
 
-Update the APK, leave the server stopped, resume the retained import, then export
-support logs. If no complete private ZIP survived, import the original ZIP again.
-Server/player data and the existing Wine/FEX installation are preserved.
+The foreground service owns both sessions, supports separate client stop and
+recovery, and stops the client before saving/stopping the server. Child logs are
+bounded and session receipts include process identities, routing/trust results
+and memory diagnostics. Low available memory stops the client safely.
 
-The server runtime remains immutable runtime-v1 with Node 24.18.1. The initial
-Thor server test and Wine/FEX x64 probe passed. EVE login and graphical gameplay
-remain subsequent milestones. Supported client: EVE 24.01 build 3396210.
+Update without clearing app data. Keep your accepted runtime installations,
+imported client cache, Wine prefix and saved world. Start server → SERVER READY →
+Start EVE client → Open client display → attempt local test login → Stop client →
+Save and stop server → export support logs. See the included testing instructions.
 
-The release includes the APK, launcher source, testing instructions, checksums,
-and the existing corresponding server/PRoot sources and qualified server package.
+Physical EVE startup/login remains a device gate. Process/display readiness alone
+is not a login qualification. Graphics optimization, audio and controllers follow
+that evidence. The immutable server runtime remains runtime-v1/Node 24.18.1;
+0.1.0 and 0.1.1 releases remain available unchanged.

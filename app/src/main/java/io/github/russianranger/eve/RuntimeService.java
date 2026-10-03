@@ -8,7 +8,7 @@ import android.net.Uri;
 import android.os.*;
 import java.io.*;
 
-/** A single worker owns setup; the service remains foreground while the server runs. */
+/** A single worker owns setup; the service remains foreground for both runtime sessions. */
 public final class RuntimeService extends Service {
     static volatile boolean busy;
     static volatile boolean active;
@@ -16,13 +16,14 @@ public final class RuntimeService extends Service {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private volatile Thread worker;
     private volatile boolean destroyed;
+    private volatile String pendingStop;
     private PowerManager.WakeLock wake;
     private long lastNotice;
     private final Runnable monitor = new Runnable() {
         @Override public void run() {
             if (destroyed) return;
             RuntimeManager runtime = RuntimeManager.get(RuntimeService.this);
-            if (!busy && !runtime.serverAlive()) { finish(); return; }
+            if (!busy && !runtime.serverAlive() && !new ClientRuntime(RuntimeService.this).alive()) { finish(); return; }
             if (wake != null && !wake.isHeld()) wake.acquire(12 * 60 * 60 * 1000L);
             handler.postDelayed(this, 1000);
         }
@@ -35,7 +36,13 @@ public final class RuntimeService extends Service {
     private Notification notification(String text) {
         PendingIntent open = PendingIntent.getActivity(this, 1, new Intent(this, MainActivity.class), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         PendingIntent stop = PendingIntent.getService(this, 2, new Intent(this, RuntimeService.class).setAction("stop-server"), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        return new Notification.Builder(this, "eve-runtime").setSmallIcon(R.drawable.ic_launcher).setContentTitle("EVE local runtime").setContentText(text).setContentIntent(open).setOngoing(true).addAction(new Notification.Action.Builder(null, "Stop", stop).build()).build();
+        Notification.Builder notice = new Notification.Builder(this, "eve-runtime").setSmallIcon(R.drawable.ic_launcher)
+                .setContentTitle("EVE local runtime").setContentText(text).setContentIntent(open).setOngoing(true);
+        if (new ClientRuntime(this).alive()) {
+            PendingIntent stopClient = PendingIntent.getService(this, 3, new Intent(this, RuntimeService.class).setAction("stop-client"), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            notice.addAction(new Notification.Action.Builder(null, "Stop client", stopClient).build());
+        }
+        return notice.addAction(new Notification.Action.Builder(null, "Save and stop server", stop).build()).build();
     }
     private void update(String text) {
         message = text;
@@ -51,18 +58,24 @@ public final class RuntimeService extends Service {
         manager.createNotificationChannel(new NotificationChannel("eve-runtime", "Local EVE runtime", NotificationManager.IMPORTANCE_LOW));
         startForeground(1, notification(message));
         active = true;
-        if (intent == null || intent.getAction() == null) { if (!RuntimeManager.get(this).serverAlive()) finish(); return START_NOT_STICKY; }
+        if (intent == null || intent.getAction() == null) {
+            if (!RuntimeManager.get(this).serverAlive() && !new ClientRuntime(this).alive()) finish();
+            return START_NOT_STICKY;
+        }
         String action = intent.getAction();
         if (worker != null) {
-            if (action.equals("stop-server")) {
-                try { RuntimeManager.get(this).requestServerStop(); } catch (Exception e) { append(this, "Stop request failed: " + e.getMessage()); }
+            if (action.equals("stop-server") || (action.equals("stop-client") &&
+                    (new ClientRuntime(this).alive() || operation.equals("start-client")))) {
+                if (pendingStop == null || action.equals("stop-server")) pendingStop = action;
+                try { if (new ClientRuntime(this).alive()) new ClientRuntime(this).requestStop(); }
+                catch (Exception e) { append(this, "Client stop request failed: " + e.getMessage()); }
                 worker.interrupt(); update("Stopping the current operation…");
             }
             return START_NOT_STICKY;
         }
         busy = true; operation = action; error = "";
         if (wake == null) wake = getSystemService(PowerManager.class).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "eve:runtime");
-        // Renew while a user-started server session exists; never acquire without a foreground notice.
+        // Renew while a user-started runtime session exists; never acquire without a foreground notice.
         if (!wake.isHeld()) wake.acquire(12 * 60 * 60 * 1000L);
         Uri uri = intent.getData();
         worker = new Thread(() -> {
@@ -70,11 +83,21 @@ public final class RuntimeService extends Service {
             append(this, "Started " + action);
             try {
                 switch (action) {
-                    case "install-server": runtime.installServer(this::update); break;
-                    case "prepare-server": runtime.prepareServer(this::update); break;
+                    case "install-server":
+                        if (client.alive()) throw new IOException("Stop the client before installing the server runtime");
+                        runtime.installServer(this::update); break;
+                    case "prepare-server":
+                        if (client.alive()) throw new IOException("Stop the client before preparing the server world");
+                        runtime.prepareServer(this::update); break;
                     case "start-server": runtime.startServer(this::update); break;
-                    case "stop-server": runtime.stopServer(this::update); break;
+                    case "stop-server":
+                        if (client.alive() || new File(runtime.clientState, "run/processes.json").isFile()) client.stop(this::update);
+                        runtime.stopServer(this::update); break;
                     case "recover-server": update(runtime.serverStatus().optString("message", "Recovered local server session")); break;
+                    case "recover-client": update(client.sessionStatus().optString("message", "Recovered local client session")); break;
+                    case "recover-session":
+                        update(client.alive() ? client.sessionStatus().optString("message", "Recovered local client session")
+                                : runtime.serverStatus().optString("message", "Recovered local server session")); break;
                     case "install-client": client.install(this::update); break;
                     case "import-client":
                         if (uri == null) throw new IOException("Select a complete client ZIP");
@@ -83,6 +106,8 @@ public final class RuntimeService extends Service {
                     case "validate-client": client.validate(this::update); break;
                     case "resume-client": client.resume(this::update); break;
                     case "probe-client": client.probe(this::update); break;
+                    case "start-client": client.start(this::update); break;
+                    case "stop-client": client.stop(this::update); break;
                     case "export-logs":
                         if (uri == null) throw new IOException("Choose where to save the support ZIP");
                         try (OutputStream output = getContentResolver().openOutputStream(uri, "wt")) { if (output == null) throw new IOException("Support ZIP cannot be saved"); SupportExport.write(this, output); }
@@ -97,7 +122,12 @@ public final class RuntimeService extends Service {
             } finally {
                 getSharedPreferences("last-operation", MODE_PRIVATE).edit().putString("message", message).putString("error", error).apply();
                 busy = false; worker = null;
-                if (!destroyed) handler.post(() -> { handler.removeCallbacks(monitor); handler.post(monitor); });
+                if (!destroyed) handler.post(() -> {
+                    handler.removeCallbacks(monitor);
+                    String next = pendingStop; pendingStop = null;
+                    if (next != null) onStartCommand(new Intent(RuntimeService.this, RuntimeService.class).setAction(next), 0, startId);
+                    else handler.post(monitor);
+                });
             }
         }, "eve-" + action);
         worker.start(); return START_NOT_STICKY;
@@ -115,6 +145,10 @@ public final class RuntimeService extends Service {
         active = false;
         handler.removeCallbacks(monitor);
         if (worker != null) worker.interrupt();
+        ClientRuntime client = new ClientRuntime(this);
+        if (client.alive()) {
+            try { client.requestStop(); } catch (IOException e) { append(this, "Client service shutdown: " + e.getMessage()); }
+        }
         if (RuntimeManager.get(this).serverAlive()) {
             try { RuntimeManager.get(this).requestServerStop(); } catch (IOException e) { append(this, "Service shutdown: " + e.getMessage()); }
         }

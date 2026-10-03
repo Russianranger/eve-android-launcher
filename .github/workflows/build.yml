@@ -5,7 +5,7 @@ on:
   pull_request:
   workflow_dispatch:
 env:
-  EVE_APP_VERSION: '0.1.1'
+  EVE_APP_VERSION: '0.1.2'
 permissions:
   contents: read
 defaults:
@@ -35,6 +35,7 @@ jobs:
           python3 -m unittest discover -s tests -v 2>&1 | tee out/backend-tests.log
           python3 tests/server-package-tests.py 2>&1 | tee -a out/backend-tests.log
           bash scripts/check-archive-host.sh 2>&1 | tee -a out/backend-tests.log
+          bash scripts/check-client-display-host.sh 2>&1 | tee -a out/backend-tests.log
           python3 -m compileall -q backend scripts tests
           find scripts backend -type f -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
       - uses: actions/upload-artifact@v4
@@ -168,6 +169,11 @@ jobs:
         run: |
           mkdir -p out
           ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018" bash scripts/build-proot.sh 2>&1 | tee out/proot-build.log
+      - name: Build the private Wine certificate and TLS gate
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64-posix
+          bash scripts/build-client-gate.sh 2>&1 | tee out/client-gate-build.log
       - name: Build and lint the Android APK
         run: gradle --no-daemon :app:assembleDebug :app:lintDebug 2>&1 | tee out/android-build.log
       - name: Verify the APK contents, identity and public certificate
@@ -240,6 +246,6 @@ jobs:
           git archive --format=zip --output="dist/EVE-Android-Launcher-$EVE_APP_VERSION-source.zip" HEAD
           cp docs/TESTING.md "dist/EVE-Android-Launcher-$EVE_APP_VERSION-Testing.md"
           (cd dist && sha256sum *.apk *.zip *.tar.gz *.json *.md) > dist/SHA256SUMS.txt
-          gh release create "$tag" --target "$GITHUB_SHA" --draft --prerelease --title "EVE Android Launcher $EVE_APP_VERSION — Client import recovery" --notes-file docs/RELEASE-NOTES.md
+          gh release create "$tag" --target "$GITHUB_SHA" --draft --prerelease --title "EVE Android Launcher $EVE_APP_VERSION — Client startup preview" --notes-file docs/RELEASE-NOTES.md
           gh release upload "$tag" dist/*
           gh release edit "$tag" --draft=false

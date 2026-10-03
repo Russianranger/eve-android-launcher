@@ -1,12 +1,12 @@
 # Initial client runtime qualification
 
-The preview APK prepares a private client cache and installs the exact FEX / Wine ARM64EC runtime already used by the UO launcher. The Thor server lifecycle, Wine/FEX x64 execution probe and exact client import have passed. EVE launch is not implemented in 0.1.1; login, rendering, audio, controls and acceptable performance remain unqualified.
+The preview APK prepares a private client cache and installs the exact FEX / Wine ARM64EC runtime already used by the UO launcher. The Thor server lifecycle, Wine/FEX x64 execution probe and exact client import have passed. The 0.1.2 preview implements supervised EVE startup with a basic display; physical login, rendering, audio, controls and acceptable performance remain unqualified.
 
 The accepted 0.1.1 recovery imported build 3396210 with all 125,116 indexed
 resources in 6 minutes 14 seconds, peaking at 150.6 MiB preparation-worker RSS.
-Preserve that cache and the existing runtime/prefix. The next development gate
-is supervised EVE process startup and local login, including the minimum display
-needed to observe it, Wine certificate trust and actual client endpoint routing.
+Preserve that cache and the existing runtime/prefix. The current device gate
+is supervised EVE process startup and local login using the basic display,
+Wine certificate trust and actual client endpoint routing.
 Graphics optimization, audio and controller support follow that gate. Detailed
 physical evidence is recorded in [the handoff](HANDOFF.md).
 
@@ -68,6 +68,40 @@ display/input bridge. The server currently checks its local gateway on port 2600
 that is not evidence that the patched client's direct localhost:443 requests work.
 Then qualify DX11/Turnip rendering, station/space transitions, controls/audio and
 save/reopen. Preserve the already accepted server, probe and import results.
+
+## Supervised startup in 0.1.2
+
+`client_runtime.py` binds the existing prepared content at `/client`, preserves the
+private prefix and requires the accepted exact client/probe receipts. It checks
+the current binaries and CA without repeating the complete asset-cache scan.
+It launches a private TigerVNC display, a foreground Wine server, the original
+x64 trust helper, then EVE. Startup readiness observes a live process and display
+for five seconds; it never claims successful authentication or gameplay.
+
+The helper imports the current CA into that prefix's CurrentUser ROOT store,
+closes/reopens it for persisted readback, verifies its chain, then requests
+`https://localhost/health` through WinHTTP with no proxy and default certificate
+checks. It verifies the peer chain's exact root and the local offline response.
+Wine's `certutil` is a stub in the pinned build, so its exit status is not used as
+trust evidence. The helper is built from `native/eve-client-gate.c`.
+
+The APK's opt-in PRoot `--eve-client-network` policy validates native socket
+syscalls for the supervisor and all descendants. It restricts IP destinations to
+loopback, rewrites wildcard binds to loopback and maps localhost:443 to port 26003,
+including IPv6 mapped loopback. Direct syscall denial is checked before Wine is
+started. Import/probe/server processes do not enable this option.
+
+Basic WineD3D/llvmpipe is used for this diagnostic pass, with a 1280×720 touch/text
+RFB display. No runtime/translator rebuild or accelerated graphics migration is
+required. The service retains foreground ownership across Activity changes.
+PID/start-time journals protect cleanup/recovery; child logs rotate at 8 MiB with
+two previous copies, and memory reserve checks stop before available RAM falls
+below 1 GiB. Support ZIPs include session/trust/startup receipts and bounded logs.
+
+Use [the current physical test sequence](TESTING.md). Imported content and world
+state remain in their existing private locations. A direct TLS/proxy environment
+configuration in the preparation policy is still not itself proof; actual startup
+requires the independent native network and Wine TLS gates.
 
 ## Source and licenses
 

@@ -7,6 +7,7 @@ runtime-work/
 *.apk
 __pycache__/
 *.pyc
+/backend/eve-client-gate.exe
 /vendor/evejs/*
 !/vendor/evejs/LICENSE
 !/vendor/evejs/README.md

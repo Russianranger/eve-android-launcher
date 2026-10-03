@@ -63,14 +63,28 @@ access has been proved. Those belong to the later client connection gate.
   The 0.1.1 message saying launch awaits server qualification is stale; do not
   repeat the accepted server test on its account.
 
+## 0.1.2 client startup implementation
+
+Adds supervised client startup/recovery and clean stop around the existing
+Wine/FEX runtime and accepted imported cache. Basic TigerVNC/RFB display and
+touch/text input are available. Native PRoot loopback syscall enforcement maps
+localhost:443 to the unchanged server port 26003 listener. An original x64 helper
+imports/readbacks the prefix-local CA and verifies default Wine TLS/peer trust.
+Child logs rotate, process identities are journaled, available-memory reserve is
+checked and the service owns both sessions. See [current tests](TESTING.md).
+
+CI/host fixtures cannot accept real EVE startup/login. The first 0.1.2 Thor
+startup/login support ZIP is still required. Preserve all prior accepted gates.
+No Node, immutable server package or existing Wine/FEX binary upgrade is needed.
+
 ## Next milestones
 
 1. Accepted: server install/preparation/background/restart, Wine/FEX x64 execution
    probe, and 0.1.1 exact-client import/recovery. Preserve installed runtimes,
    imported cache, prefix and world/player data; no repeat import is needed.
-2. Implement a supervised startup test for the prepared EVE 24.01 build 3396210
+2. Physically qualify the supervised startup test for the prepared EVE 24.01 build 3396210
    through the existing Wine/FEX runtime, with bounded logs and clean stop.
-   Add the minimum display/input needed to observe startup and attempt local
+   Use the basic display/input to observe startup and attempt local
    login. Qualify private Wine trust, actual client endpoint routing (including
    direct localhost TLS443), and outbound traffic containment. The current
    gateway readiness check on port 26003 does not prove the client's direct port 443 path.

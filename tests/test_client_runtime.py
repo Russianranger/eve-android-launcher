@@ -1,0 +1,431 @@
+"""Client receipt gates and real process/display ownership without retail assets."""
+
+from __future__ import annotations
+
+import contextlib
+import errno
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from unittest import mock
+
+BACKEND = Path(__file__).resolve().parents[1] / "backend/client_runtime.py"
+sys.path.insert(0, str(BACKEND.parent))
+SPEC = importlib.util.spec_from_file_location("eve_client_runtime", BACKEND)
+MODULE = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = MODULE
+SPEC.loader.exec_module(MODULE)
+
+CA_PEM = "-----BEGIN CERTIFICATE-----\nZmFrZS1jZXJ0\n-----END CERTIFICATE-----\n"
+OFFLINE_HEALTH = {"status": "ok", "service": "express-secondary", "gatewayMode": "local",
+                  "offlinePolicy": {"version": 2, "proxyForwarding": "disabled", "clientFeatureFlags": "defaults"}}
+
+FIXTURE = r'''
+import hashlib, json, os, pathlib, signal, socket, subprocess, sys, threading, time
+mode, state, port, behavior = sys.argv[1:]
+state = pathlib.Path(state)
+port = int(port)
+(state / (mode + '.pid')).write_text(str(os.getpid()))
+if mode == 'gate':
+    health = {'status':'ok','service':'express-secondary','gatewayMode':'local',
+              'offlinePolicy':{'version':2,'proxyForwarding':'disabled','clientFeatureFlags':'defaults'}}
+    value = {'format':1,'helper':'eve-client-gate-1','success':True,'phase':'client_tls_qualified',
+             'wine_cryptoapi_trust':True,'localhost443_tls':True,'root_store':'CurrentUser\\ROOT',
+             'ca_der_sha256':hashlib.sha256(b'fake-cert').hexdigest(),
+             'tls_url':'https://localhost/health','tls_proxy':'none','tls_certificate_checks':'default',
+             'http_status':200,'response_body':json.dumps(health),'stage':'complete','win32_error':0}
+    if behavior == 'unsafe-tls': value['tls_certificate_checks'] = 'ignored'
+    if behavior == 'wrong-ca': value['ca_der_sha256'] = '0' * 64
+    if behavior == 'unsafe-gateway':
+        health['offlinePolicy']['proxyForwarding'] = 'enabled'
+        value['response_body'] = json.dumps(health)
+    if behavior == 'gate-fails':
+        value['success'] = False
+        print(json.dumps(value), flush=True)
+        sys.exit(1)
+    print(json.dumps(value), flush=True)
+    sys.exit(0)
+if mode == 'display':
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(('127.0.0.1', port))
+    listener.listen(5)
+    def serve():
+        while True:
+            connection, _ = listener.accept()
+            connection.sendall(b'RFB 003.008\n')
+            connection.close()
+    threading.Thread(target=serve, daemon=True).start()
+if mode == 'orphan':
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+if mode == 'client' and behavior == 'crash-orphan':
+    child = subprocess.Popen([sys.executable, __file__, 'orphan', str(state), str(port), behavior])
+    time.sleep(.45)
+    os._exit(23)
+if mode == 'client' and behavior == 'early-zero': sys.exit(0)
+if mode == 'client' and behavior == 'chatty':
+    for number in range(400):
+        print('X' * 4096, flush=True)
+def finish(*args):
+    (state / (mode + '.stopped')).write_text('graceful')
+    sys.exit(0)
+if mode != 'orphan': signal.signal(signal.SIGTERM, finish)
+while True: time.sleep(.03)
+'''
+
+
+def free_port():
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        return listener.getsockname()[1]
+
+
+class ClientRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="eve-client-runtime-test-")
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.state = self.root / "client-state"
+        self.state.mkdir()
+        self.content = self.root / "client"
+        (self.content / "tq/bin64").mkdir(parents=True)
+        (self.content / "keep-client-files").write_text("unchanged")
+        self.server = self.root / "server-state"
+        (self.server / "certs").mkdir(parents=True)
+        (self.server / "certs/xmpp-ca-cert.pem").write_text(CA_PEM)
+        self.fixture = self.root / "fixture.py"
+        self.fixture.write_text(FIXTURE)
+        self.port = free_port()
+        self.processes = []
+        self.addCleanup(self.cleanup_processes)
+
+    def settings(self, behavior="normal"):
+        def command(role):
+            return (sys.executable, str(self.fixture), role, str(self.state), str(self.port), behavior)
+        return MODULE.Settings(content=self.content, state=self.state, server_state=self.server,
+                               display_port=self.port, display_command=command("display"),
+                               wineserver_command=command("wineServer"), gate_command=command("gate"),
+                               client_command=command("client"), tick=.025, startup_timeout=2,
+                               gate_timeout=2, observe_seconds=.15, shutdown_timeout=.15,
+                               minimum_available_kib=0)
+
+    def launch(self, behavior="normal", clear_stop=True):
+        if clear_stop:
+            (self.state / "run/stop").unlink(missing_ok=True)
+        values = {key: str(value) if isinstance(value, Path) else value
+                  for key, value in self.settings(behavior).__dict__.items()}
+        runner = self.root / "runner.py"
+        runner.write_text(
+            "import json,pathlib,signal,sys\n"
+            f"sys.path.insert(0,{str(BACKEND.parent)!r})\n"
+            "import client_runtime as module\n"
+            f"values=json.loads({json.dumps(values)!r})\n"
+            "for key in ('content','state','server_state','marker','gate'): values[key]=pathlib.Path(values[key])\n"
+            "class FixtureRuntime(module.Runtime):\n"
+            " def preflight(self): return {'contentBuild':3396210}\n"
+            " def require_server(self):\n"
+            "  if (self.s.state/'server-lost').exists(): raise module.RuntimeErrorDetail('server session exited')\n"
+            "module.LOG_LIMIT=65536\n"
+            "runtime=FixtureRuntime(module.Settings(**values))\n"
+            "for number in (signal.SIGTERM,signal.SIGINT): signal.signal(number,runtime.request_stop)\n"
+            "try: runtime.start()\n"
+            "except Exception as error: print(str(error),flush=True); sys.exit(1)\n"
+        )
+        output = (self.root / "supervisor.log").open("ab")
+        self.addCleanup(output.close)
+        process = subprocess.Popen((sys.executable, str(runner)), stdout=output, stderr=subprocess.STDOUT)
+        self.processes.append(process)
+        return process
+
+    def cleanup_processes(self):
+        for process in self.processes:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=4)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
+        for role in ("display", "wineServer", "gate", "client", "orphan"):
+            pidfile = self.state / (role + ".pid")
+            if pidfile.is_file():
+                pid = int(pidfile.read_text())
+                if MODULE.process_record(pid):
+                    with contextlib.suppress(ProcessLookupError):
+                        os.kill(pid, signal.SIGKILL)
+
+    def wait_status(self, phase, timeout=5):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                value = json.loads((self.state / "run/status.json").read_text())
+                if value.get("phase") == phase:
+                    return value
+            except (OSError, ValueError):
+                pass
+            time.sleep(.025)
+        self.fail("Missing client phase " + phase + ": " + (self.root / "supervisor.log").read_text())
+
+    def test_start_stop_and_restart_preserve_content_and_never_claim_login(self):
+        first = self.launch()
+        running = self.wait_status("running")
+        self.assertTrue(running["ready"])
+        self.assertTrue(running["processStartupObserved"])
+        self.assertFalse(running["login_qualified"])
+        self.assertFalse(running["graphics_qualified"])
+        self.assertTrue(MODULE.identity_alive(running["supervisorIdentity"]))
+        self.assertTrue(running["displayMembers"])
+        (self.state / "run/stop").write_text("stop")
+        self.assertEqual(first.wait(timeout=4), 0)
+        stopped = self.wait_status("stopped")
+        self.assertTrue(stopped["cleanShutdown"])
+        self.assertFalse(MODULE.identity_alive(stopped["clientIdentity"]))
+        self.assertFalse((self.state / "run/processes.json").exists())
+        self.assertEqual((self.content / "keep-client-files").read_text(), "unchanged")
+        second = self.launch()
+        self.wait_status("running")
+        (self.state / "run/stop").write_text("stop")
+        self.assertEqual(second.wait(timeout=4), 0)
+
+    def test_immediate_stop_is_not_erased_by_new_supervisor(self):
+        (self.state / "run").mkdir()
+        (self.state / "run/stop").write_text("immediate-stop")
+        process = self.launch(clear_stop=False)
+        self.assertEqual(process.wait(timeout=4), 0)
+        self.assertTrue(self.wait_status("stopped")["cleanShutdown"])
+        self.assertFalse((self.state / "client.pid").exists())
+
+    def test_strict_tls_gate_failure_prevents_any_eve_process(self):
+        for behavior in ("unsafe-tls", "wrong-ca", "unsafe-gateway", "gate-fails"):
+            with self.subTest(behavior=behavior):
+                (self.state / "run/status.json").unlink(missing_ok=True)
+                process = self.launch(behavior)
+                self.assertEqual(process.wait(timeout=4), 1)
+                failed = self.wait_status("failed")
+                self.assertFalse(failed["ready"])
+                self.assertFalse((self.state / "client.pid").exists())
+                self.assertFalse((self.state / "run/processes.json").exists())
+
+    def test_eve_early_exit_zero_is_not_startup_success(self):
+        process = self.launch("early-zero")
+        self.assertEqual(process.wait(timeout=4), 1)
+        failed = self.wait_status("failed")
+        self.assertIn("client exited unexpectedly with code 0", failed["error"])
+        self.assertFalse((self.state / "launch-observation.json").exists())
+
+    def test_unexpected_client_exit_reaps_inherited_orphan_group(self):
+        process = self.launch("crash-orphan")
+        self.wait_status("running")
+        self.assertEqual(process.wait(timeout=5), 1)
+        failed = self.wait_status("failed")
+        self.assertFalse(failed["ready"])
+        orphan = int((self.state / "orphan.pid").read_text())
+        record = MODULE.process_record(orphan)
+        self.assertTrue(record is None or record["state"] == "Z")
+        self.assertFalse((self.state / "run/processes.json").exists())
+
+    def test_server_session_loss_stops_owned_client(self):
+        process = self.launch()
+        self.wait_status("running")
+        (self.state / "server-lost").write_text("lost")
+        self.assertEqual(process.wait(timeout=8), 1)
+        failed = self.wait_status("failed")
+        self.assertIn("server session exited", failed["error"])
+        self.assertFalse(MODULE.identity_alive(failed["clientIdentity"]))
+
+    def test_wineserver_loss_stops_client_before_an_unowned_daemon_can_replace_it(self):
+        process = self.launch()
+        running = self.wait_status("running")
+        os.kill(running["wineServerIdentity"]["pid"], signal.SIGTERM)
+        self.assertEqual(process.wait(timeout=4), 1)
+        failed = self.wait_status("failed")
+        self.assertIn("wineServer exited unexpectedly", failed["error"])
+        self.assertFalse(MODULE.identity_alive(failed["clientIdentity"]))
+
+    def test_killed_supervisor_journal_recovers_only_its_owned_processes(self):
+        process = self.launch()
+        running = self.wait_status("running")
+        process.kill()
+        process.wait(timeout=2)
+        self.assertTrue(MODULE.identity_alive(running["clientIdentity"]))
+        runtime = MODULE.Runtime(self.settings())
+        with runtime.exclusive():
+            runtime.recover()
+        stopped = self.wait_status("stopped")
+        self.assertTrue(stopped["cleanShutdown"])
+        for role in ("client", "wineServer", "display"):
+            self.assertFalse(MODULE.identity_alive(running[role + "Identity"]))
+        self.assertFalse((self.state / "run/processes.json").exists())
+        self.assertEqual((self.content / "keep-client-files").read_text(), "unchanged")
+
+    def test_native_logs_remain_bounded_with_high_volume_output(self):
+        process = self.launch("chatty")
+        self.wait_status("running")
+        (self.state / "run/stop").write_text("stop")
+        self.assertEqual(process.wait(timeout=4), 0)
+        logs = sorted((self.state / "logs").glob("client-client.log*"))
+        self.assertLessEqual(len(logs), MODULE.LOG_HISTORY + 1)
+        self.assertTrue(logs)
+        self.assertTrue(all(path.stat().st_size <= 65536 for path in logs))
+
+    def test_stale_journal_never_signals_unverified_reused_process_group(self):
+        runtime = MODULE.Runtime(self.settings())
+        identity = {"pid": 12345, "startTicks": "old"}
+        with mock.patch.object(MODULE, "group_members", return_value=[{"pid": 12345, "startTicks": "new"}]), \
+                mock.patch.object(MODULE, "identity_alive", return_value=False), \
+                mock.patch.object(MODULE.os, "killpg") as kill:
+            with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "Unverified"):
+                runtime.signal_group(identity, [], signal.SIGTERM)
+            kill.assert_not_called()
+
+    def test_network_gate_requires_immediate_tcp_and_udp_eacces(self):
+        denied = mock.MagicMock()
+        denied.__enter__.return_value = denied
+        denied.connect.side_effect = PermissionError(errno.EACCES, "blocked by native gate")
+        denied.sendto.side_effect = PermissionError(errno.EACCES, "blocked by native gate")
+        with mock.patch.object(MODULE.socket, "socket", return_value=denied):
+            MODULE.Runtime.verify_network_gate()
+        self.assertEqual(denied.connect.call_count, 1)
+        self.assertEqual(denied.sendto.call_count, 1)
+        denied.connect.side_effect = TimeoutError("ordinary network timeout")
+        with mock.patch.object(MODULE.socket, "socket", return_value=denied):
+            with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "did not reject"):
+                MODULE.Runtime.verify_network_gate()
+
+    def test_wineserver_readiness_waits_for_delayed_private_unix_socket(self):
+        runtime = MODULE.Runtime(MODULE.Settings(state=self.state, tick=.01, startup_timeout=1))
+        path = self.root / "private-wine.sock"
+        runtime.identities["wineServerIdentity"] = {"pid": 34567, "startTicks": "recorded"}
+        ready = threading.Event()
+        finish = threading.Event()
+
+        def own_server():
+            # The executor disallows creating AF_UNIX sockets. Simulate the
+            # observed inode and peer credentials of a delayed private daemon.
+            time.sleep(.1)
+            ready.set()
+            finish.wait(timeout=2)
+
+        owner = threading.Thread(target=own_server)
+        owner.start()
+        peer = mock.MagicMock()
+        peer.__enter__.return_value = peer
+        peer.getsockopt.return_value = struct.pack("3i", 34567, os.getuid(), os.getgid())
+        started = time.monotonic()
+        try:
+            with mock.patch.object(runtime, "wine_socket", return_value=path), \
+                    mock.patch.object(runtime, "check_child") as child, \
+                    mock.patch.object(Path, "is_socket", side_effect=lambda: ready.is_set()), \
+                    mock.patch.object(MODULE.socket, "socket", return_value=peer):
+                runtime.wait_wineserver()
+            self.assertTrue(ready.is_set())
+            self.assertGreaterEqual(time.monotonic() - started, .09)
+            self.assertTrue(any(call.args == ("wineServer",) for call in child.call_args_list))
+        finally:
+            finish.set()
+            owner.join(timeout=2)
+        peer.connect.assert_called_once_with(str(path))
+
+    def test_wineserver_socket_name_matches_pinned_prefix_device_and_inode(self):
+        prefix = self.state / "prefix"
+        prefix.mkdir()
+        record = prefix.stat()
+        runtime = MODULE.Runtime(MODULE.Settings(state=self.state))
+        expected = Path("/tmp") / (".wine-" + str(os.getuid())) / (
+            "server-" + format(record.st_dev, "x") + "-" + format(record.st_ino, "x")) / "socket"
+        self.assertEqual(runtime.wine_socket(), expected)
+
+    def test_wineserver_socket_left_after_owner_exit_is_not_ready(self):
+        runtime = MODULE.Runtime(MODULE.Settings(state=self.state, startup_timeout=.2, tick=.01))
+        path = self.root / "stale-wine.sock"
+        with mock.patch.object(runtime, "wine_socket", return_value=path), \
+                mock.patch.object(Path, "is_socket", return_value=True), \
+                mock.patch.object(runtime, "check_child", side_effect=MODULE.RuntimeErrorDetail("owned Wine server exited")):
+            with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "owned Wine server exited"):
+                runtime.wait_wineserver()
+
+    def test_wineserver_socket_peer_identity_rejects_another_daemon_and_refused_socket(self):
+        runtime = MODULE.Runtime(MODULE.Settings(state=self.state))
+        runtime.identities["wineServerIdentity"] = {"pid": 34567, "startTicks": "recorded"}
+        peer = mock.MagicMock()
+        peer.__enter__.return_value = peer
+        peer.getsockopt.return_value = struct.pack("3i", 45678, os.getuid(), os.getgid())
+        with mock.patch.object(MODULE.socket, "socket", return_value=peer):
+            self.assertFalse(runtime.wine_socket_owned(self.root / "stale-wine.sock"))
+            peer.getsockopt.return_value = struct.pack("3i", 34567, os.getuid(), os.getgid())
+            self.assertTrue(runtime.wine_socket_owned(self.root / "owned-wine.sock"))
+            peer.connect.side_effect = ConnectionRefusedError(errno.ECONNREFUSED, "stale socket")
+            self.assertFalse(runtime.wine_socket_owned(self.root / "stale-wine.sock"))
+
+    def preflight_runtime(self):
+        marker = self.root / "marker.json"
+        marker.write_text(json.dumps({"format": 2, "runtime": "fex-arm64ec-1", "architecture": "arm64"}))
+        fake_elf = b"\x7fELF\x02" + b"\0" * 13 + b"\xb7\0"
+        wine = self.root / "wine"
+        wine.write_bytes(fake_elf)
+        wineserver = self.root / "wineserver"
+        wineserver.write_bytes(fake_elf)
+        gate = self.root / "gate.exe"
+        gate.write_bytes(b"original fixture helper")
+        (self.state / "prefix").mkdir()
+        (self.state / "prefix/system.reg").write_text("existing qualified prefix")
+        (self.state / "probe.json").write_text(json.dumps({"translated_x64_probe_passed": True, "exit_code": 37}))
+        rows = [{"file": "exefile.exe", "sha256": "exact-hash"}]
+        (self.content / "eve-client-content.json").write_text(json.dumps({
+            "format": 1, "build": 3396210, "resources": {"complete": True, "indexed_entries": 125116}, "binaries": rows}))
+        (self.content / "tq/start.ini").write_text("build=3396210\nserver=127.0.0.1\ncryptoPack=Placebo\n")
+        (self.state / "trust").mkdir()
+        (self.state / "trust/evejs-ca.pem").write_text(CA_PEM)
+        (self.state / "status.json").write_text(json.dumps({"phase": "content_prepared", "trust": {
+            "bundles_prepared": True, "ca_sha256": hashlib.sha256(CA_PEM.encode()).hexdigest()}}))
+        runtime = MODULE.Runtime(MODULE.Settings(content=self.content, state=self.state, server_state=self.server,
+                                               marker=marker, wine=str(wine), wineserver=str(wineserver), gate=gate,
+                                               minimum_available_kib=0))
+        return runtime, rows
+
+    def test_preflight_preserves_accepted_cache_and_rejects_rotated_ca(self):
+        runtime, rows = self.preflight_runtime()
+        with mock.patch.dict(os.environ, EVE_CLIENT_NETWORK_POLICY="loopback-v1"), \
+                mock.patch.object(runtime, "verify_network_gate"), \
+                mock.patch.object(runtime, "require_server"), \
+                mock.patch.object(MODULE.client_prepare, "validate_binaries", return_value=rows), \
+                mock.patch.object(MODULE.client_prepare, "check_resources", side_effect=AssertionError("repeat full cache validation")):
+            value = runtime.preflight()
+            self.assertEqual(value["contentBuild"], 3396210)
+            self.assertEqual((self.state / "prefix/system.reg").read_text(), "existing qualified prefix")
+            (self.server / "certs/xmpp-ca-cert.pem").write_text(CA_PEM + "\n")
+            with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "CA changed"):
+                runtime.preflight()
+
+    def test_preflight_rejects_receipt_hash_and_missing_native_network_opt_in(self):
+        runtime, rows = self.preflight_runtime()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "native per-session"):
+                runtime.preflight()
+        with mock.patch.dict(os.environ, EVE_CLIENT_NETWORK_POLICY="loopback-v1"), \
+                mock.patch.object(runtime, "verify_network_gate"), \
+                mock.patch.object(MODULE.client_prepare, "validate_binaries", return_value=[{"file": "exefile.exe", "sha256": "changed"}]):
+            with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "binary receipt"):
+                runtime.preflight()
+
+    def test_memory_reserve_failure_does_not_apply_preparation_address_space_limit(self):
+        runtime = MODULE.Runtime(MODULE.Settings(minimum_available_kib=1024**2))
+        with mock.patch.object(MODULE, "memory_metrics", return_value={"memAvailableKiB": 1024}), \
+                mock.patch.object(MODULE.client_prepare, "limit_preparation_memory", side_effect=AssertionError("client must not inherit preparation cap")):
+            with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "before exhausting Android memory"):
+                runtime.memory_check()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -8,12 +8,13 @@ The initial server preview provides a prepared native ARM64 server runtime,
 durable local world and Jita market, foreground session ownership, readiness
 checks, supervised shutdown and support-log export. It also installs the pinned
 Wine/FEX client runtime and validates complete user-supplied client imports.
-EVE client login, graphics, audio and controller qualification remain subsequent
-milestones; there is no gameplay launch button in this first pass.
+The 0.1.2 preview adds supervised EVE startup, a basic touch/text display and
+private Wine TLS checks. Physical local login, graphics performance, audio and
+controller qualification remain pending.
 
 ## First server test
 
-Download the APK from [the preview release](https://github.com/Russianranger/eve-android-launcher/releases/tag/v0.1.1).
+Download the APK from [the preview release](https://github.com/Russianranger/eve-android-launcher/releases/tag/v0.1.2).
 In the Server tab, choose **Install server runtime**, **Prepare local world**,
 then **Start server**. Wait for **SERVER READY**, briefly switch apps, then use
 **Save and stop server**. Start it again and export support logs from the Logs tab.
@@ -44,9 +45,22 @@ Do not clear app data or reinstall the already working runtimes.
 The Thor recovery test has now passed: exact build 3396210, all 125,116 resources,
 6 minutes 14 seconds, and 150.6 MiB peak worker RSS with no reported low-memory
 condition. See [the accepted physical evidence](docs/HANDOFF.md). Keep the
-prepared cache. The next milestone is supervised EVE process startup and local
-login through the existing Wine/FEX runtime; graphics optimization, audio and
-controllers follow that gate.
+prepared cache. The 0.1.2 startup preview uses that prepared cache. Graphics optimization, audio
+and controllers follow the physical startup/login gate.
+
+## Client startup preview in 0.1.2
+
+Update the APK, start the server and wait for **SERVER READY**, then choose
+**Start EVE client** and **Open client display**. Touch selects/clicks and **Text**
+sends the username/password to a selected local login field. The session uses
+WineD3D/llvmpipe for the first startup diagnosis; speed is not yet a gate.
+
+Before EVE runs, the launcher confirms native loopback enforcement, imports and
+reads back the current private CA in Wine, and verifies direct localhost TLS.
+Only the client session remaps localhost:443 to the existing gateway on port 26003.
+The foreground service supervises EVE, Wine and the display; stopping the server
+first stops the client. Logs and identity-aware cleanup receipts are exported.
+See [startup/login test steps and pass criteria](docs/TESTING.md).
 
 ## Client preparation
 
@@ -69,8 +83,14 @@ python3 scripts/prepare-evejs-source.py
 python3 -m unittest discover -s tests -v
 python3 tests/server-package-tests.py
 bash scripts/check-archive-host.sh
+bash scripts/check-client-display-host.sh
+bash scripts/build-client-gate.sh
 gradle :app:assembleDebug :app:lintDebug
 ```
+
+The original x64 certificate helper requires `x86_64-w64-mingw32-gcc` (the
+`gcc-mingw-w64-x86-64-posix` package in CI). It is generated from the retained C
+source before packaging the APK; it does not rebuild the Wine/FEX runtime.
 
 The runtime is installed in app-private internal storage. The client and server
 use loopback connections; this initial integration does not expose a LAN server.

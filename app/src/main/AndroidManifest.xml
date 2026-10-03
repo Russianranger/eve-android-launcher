@@ -8,8 +8,9 @@
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity>
+        <activity android:name=".ClientDisplayActivity" android:exported="false" android:screenOrientation="landscape" />
         <service android:name=".RuntimeService" android:exported="false" android:foregroundServiceType="specialUse">
-            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-started local EVE emulator server session and its private runtime preparation" />
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-started local EVE emulator server/client session and its private runtime preparation" />
         </service>
     </application>
 </manifest>

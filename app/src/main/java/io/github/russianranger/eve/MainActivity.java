@@ -48,7 +48,7 @@ public final class MainActivity extends Activity {
         root.setPadding(dp(18), dp(12), dp(18), dp(12));
         root.setOnApplyWindowInsetsListener((view, insets) -> { root.setPadding(dp(18) + insets.getSystemWindowInsetLeft(), dp(12) + insets.getSystemWindowInsetTop(), dp(18) + insets.getSystemWindowInsetRight(), dp(12) + insets.getSystemWindowInsetBottom()); return insets; });
         TextView title = label("EVE  /  LOCAL COMMAND", 23, 0xffeef8fa); title.setTypeface(Typeface.DEFAULT, Typeface.BOLD); root.addView(title);
-        root.addView(label("ANDROID LAUNCHER   ·   0.1.1 PREVIEW", 11, 0xff82b7cb));
+        root.addView(label("ANDROID LAUNCHER   ·   " + BuildConfig.VERSION_NAME + " PREVIEW", 11, 0xff82b7cb));
         LinearLayout tabs = new LinearLayout(this);
         for (String name : new String[]{"Server", "Client", "Logs"}) {
             Button button = new Button(this); button.setText(name); button.setTextColor(0xffd9eff4); button.setAllCaps(false); button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xff183247));
@@ -70,7 +70,7 @@ public final class MainActivity extends Activity {
     }
     private void action(LinearLayout parent, String title, String action) {
         Button button = new Button(this); button.setText(title); button.setAllCaps(false); button.setTextColor(0xffeef8fa); button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xff24516b));
-        button.setOnClickListener(v -> { if (action.equals("pick-client")) pickClient(); else if (action.equals("pick-export")) pickExport(); else run(action, null); });
+        button.setOnClickListener(v -> { if (action.equals("pick-client")) pickClient(); else if (action.equals("pick-export")) pickExport(); else if (action.equals("view-client")) startActivity(new Intent(this, ClientDisplayActivity.class)); else run(action, null); });
         parent.addView(button, new LinearLayout.LayoutParams(-1, -2)); controls.add(button);
         button.setTag(action);
     }
@@ -84,12 +84,14 @@ public final class MainActivity extends Activity {
             LinearLayout session = card("Server session", "Readiness checks the game connection, gateway and market. The notification keeps the session accessible while you switch apps.");
             action(session, "Start server", "start-server"); action(session, "Save and stop server", "stop-server");
         } else if (tab.equals("Client")) {
-            LinearLayout state = card("Client preparation", "This pass prepares the Windows runtime and checks your client import. EVE gameplay and controller testing follow server qualification.");
+            LinearLayout state = card("Client startup and login", "Start the local server first. This pass tests the pinned EVE process and login through a basic touch display.");
             stateText = label("", 14, 0xff6ee4f0); state.addView(stateText);
             LinearLayout client = card("Supported EVE client", "Requires EVE 24.01 build 3396210. Import a ZIP containing tq, ResFiles and index_tranquility.txt. Preserve the complete shared cache.");
             action(client, "Install Wine / FEX runtime", "install-client"); action(client, "Import complete client ZIP", "pick-client");
             action(client, "Resume interrupted client import", "resume-client");
             action(client, "Validate and prepare client", "validate-client"); action(client, "Probe Wine / FEX", "probe-client");
+            LinearLayout session = card("Client session", "After validation and the Wine / FEX probe, start EVE and open its display. Touch clicks and text entry are available for the local login test.");
+            action(session, "Start EVE client", "start-client"); action(session, "Open client display", "view-client"); action(session, "Stop EVE client", "stop-client");
         } else {
             LinearLayout tools = card("Diagnostics", "Export this support ZIP after the first server test, including failures. It contains bounded logs and status receipts.");
             action(tools, "Export support logs", "pick-export");
@@ -100,7 +102,7 @@ public final class MainActivity extends Activity {
     }
     private void updateState() {
         workText.setText(RuntimeService.message);
-        for (Button button : controls) button.setEnabled(!RuntimeService.busy || button.getTag().equals("stop-server"));
+        for (Button button : controls) button.setEnabled(!RuntimeService.busy || button.getTag().equals("stop-server") || button.getTag().equals("stop-client") || button.getTag().equals("view-client"));
         try {
             RuntimeManager runtime = RuntimeManager.get(this);
             if (stateText != null && tab.equals("Server")) {
@@ -144,7 +146,7 @@ public final class MainActivity extends Activity {
         } catch (SecurityException ignored) { /* Existing one-shot grant still covers this operation. */ }
         run(request == CLIENT_ZIP ? "import-client" : "export-logs", uri);
     }
-    @Override public void onResume() { super.onResume(); resumed = true; if (!RuntimeService.active && !RuntimeService.busy && RuntimeManager.get(this).serverAlive()) run("recover-server", null); handler.post(refresh); }
+    @Override public void onResume() { super.onResume(); resumed = true; if (!RuntimeService.active && !RuntimeService.busy && (RuntimeManager.get(this).serverAlive() || new ClientRuntime(this).alive())) run("recover-session", null); handler.post(refresh); }
     @Override public void onPause() { resumed = false; handler.removeCallbacks(refresh); super.onPause(); }
     @Override public void onSaveInstanceState(Bundle state) { state.putString("tab", tab); super.onSaveInstanceState(state); }
 }

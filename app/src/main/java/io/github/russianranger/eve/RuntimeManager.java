@@ -81,7 +81,7 @@ final class RuntimeManager {
     void assets() throws Exception {
         mkdir(backend);
         for (String name : context.getAssets().list("")) {
-            if (name.endsWith(".py") || name.endsWith(".sh") || name.endsWith(".json")) {
+            if (name.endsWith(".py") || name.endsWith(".sh") || name.endsWith(".json") || name.endsWith(".exe")) {
                 try (InputStream in = context.getAssets().open(name)) { copy(in, new File(backend, name)); }
             }
         }
@@ -145,6 +145,9 @@ final class RuntimeManager {
         } finally { remove(staging); }
     }
     Process guest(File root, Map<File, String> bindings, List<String> command, File log) throws Exception {
+        return guest(root, bindings, command, log, false);
+    }
+    Process guest(File root, Map<File, String> bindings, List<String> command, File log, boolean restrictedClientNetwork) throws Exception {
         cancelled(); mkdir(root); mkdir(log.getParentFile());
         File tmp = new File(home, root.getName() + "-tmp"); mkdir(tmp);
         File nativeDir = new File(context.getApplicationInfo().nativeLibraryDir);
@@ -153,10 +156,15 @@ final class RuntimeManager {
         text(new File(root, "etc/hosts"), "127.0.0.1 localhost\n::1 localhost\n");
         List<String> args = new ArrayList<>(Arrays.asList(proot.getPath(), "--kill-on-exit", "-0", "-r", root.getPath(), "-b", "/dev", "-b", "/proc", "-b", "/sys", "-b", tmp + ":/tmp", "-w", "/"));
         if (root.equals(clientRoot)) args.add(1, "--sysvipc");
+        if (restrictedClientNetwork) {
+            if (!root.equals(clientRoot)) throw new IOException("Client network policy requires the client runtime");
+            args.add(1, "--eve-client-network");
+        }
         for (Map.Entry<File, String> entry : bindings.entrySet()) {
             mkdir(entry.getKey()); args.add("-b"); args.add(entry.getKey().getPath() + ":" + entry.getValue());
         }
         args.addAll(Arrays.asList("/usr/bin/env", "-i", "HOME=/root", "USER=root", "PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "TMPDIR=/tmp", "PYTHONUNBUFFERED=1"));
+        if (restrictedClientNetwork) args.add("EVE_CLIENT_NETWORK_POLICY=loopback-v1");
         args.addAll(command);
         ProcessBuilder builder = new ProcessBuilder(args);
         builder.environment().put("PROOT_LOADER", loader.getPath()); builder.environment().put("PROOT_TMP_DIR", tmp.getPath());
@@ -210,6 +218,7 @@ final class RuntimeManager {
         return bindings;
     }
     void installServer(Progress progress) throws Exception {
+        if (new ClientRuntime(context).alive()) throw new IOException("Stop the client before installing the server runtime");
         if (serverAlive()) throw new IOException("Stop the server before installing its runtime");
         if (serverInstalled()) { progress.update("Server runtime is installed."); return; }
         mkdir(serverState);
@@ -226,6 +235,7 @@ final class RuntimeManager {
         } finally { archive.delete(); manifestFile.delete(); }
     }
     void prepareServer(Progress progress) throws Exception {
+        if (new ClientRuntime(context).alive()) throw new IOException("Stop the client before preparing the local world");
         if (serverAlive()) throw new IOException("Stop the server before preparing its world");
         if (!serverInstalled()) throw new IOException("Install the server runtime first");
         progress.update("Preparing the local universe and Jita market…");

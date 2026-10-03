@@ -20,7 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
-/** Private exact-build cache and tested Wine/FEX runtime; EVE launch is a later gate. */
+/** Exact-build cache, Wine/FEX preparation and a supervised basic client session. */
 final class ClientRuntime {
     private static final String RUNTIME = "fex-arm64ec-1";
     private static final String RELEASE = "https://github.com/Russianranger/uo-android-launcher/releases/download/v0.2.0/";
@@ -30,6 +30,7 @@ final class ClientRuntime {
     private static final long MIN_FREE_MEMORY = 1024L * 1024 * 1024;
     private final Context context;
     private final RuntimeManager manager;
+    private static volatile Process session;
 
     ClientRuntime(Context context) {
         this.context = context.getApplicationContext();
@@ -51,12 +52,14 @@ final class ClientRuntime {
     JSONObject status() throws Exception {
         JSONObject out = new JSONObject().put("runtime", RUNTIME).put("installed", installed())
                 .put("supported_build", 3396210).put("client_launch_qualified", false)
-                .put("phase", "missing_client").put("message", "Import the complete EVE build3396210 shared cache; gameplay is a later milestone");
+                .put("phase", "missing_client").put("message", "Import the complete EVE build 3396210 shared cache first");
         File status = new File(manager.clientState, "status.json");
         if (status.isFile()) {
             JSONObject preparation = json(status);
             out.put("preparation", preparation).put("phase", preparation.optString("phase"))
                     .put("message", preparation.optString("message"));
+            if (preparation.optString("phase").equals("content_prepared"))
+                out.put("message", "Exact client and asset cache prepared. Start the server, then Start EVE client.");
             boolean running = RuntimeService.busy && Arrays.asList("import-client", "validate-client", "resume-client")
                     .contains(RuntimeService.operation);
             if (!running && Arrays.asList("copying", "extracting", "validating", "checking_resources", "checking_binaries", "preparing_trust")
@@ -71,10 +74,15 @@ final class ClientRuntime {
         if (content.isFile()) out.put("content", json(content));
         File probe = new File(manager.clientState, "probe.json");
         if (probe.isFile()) out.put("probe", json(probe));
+        JSONObject client = sessionStatus();
+        out.put("session", client).put("alive", client.optBoolean("alive")).put("ready", client.optBoolean("ready"));
+        if (client.optBoolean("alive") || Arrays.asList("failed", "stopping").contains(client.optString("phase")))
+            out.put("phase", client.optString("phase")).put("message", client.optString("message", "Client session is active"));
         return out;
     }
 
     void install(RuntimeManager.Progress progress) throws Exception {
+        requireClientStopped();
         if (installed()) { progress.update("Pinned Wine/FEX runtime already installed"); return; }
         manager.assets();
         manager.clientState.mkdirs();
@@ -108,6 +116,7 @@ final class ClientRuntime {
     void importZip(InputStream source, RuntimeManager.Progress progress) throws Exception {
         requireRuntime();
         requireServerStopped();
+        requireClientStopped();
         manager.clientState.mkdirs();
         File archive = new File(manager.clientState, "client-import.zip");
         File incoming = new File(manager.clientState, "client-import.zip.incoming");
@@ -146,12 +155,14 @@ final class ClientRuntime {
     void validate(RuntimeManager.Progress progress) throws Exception {
         requireRuntime();
         requireServerStopped();
+        requireClientStopped();
         runPreparation("validate", progress);
     }
 
     void resume(RuntimeManager.Progress progress) throws Exception {
         requireRuntime();
         requireServerStopped();
+        requireClientStopped();
         File archive = new File(manager.clientState, "client-import.zip");
         if (!archive.isFile()) throw new IOException("No saved complete import ZIP is available. Import the client ZIP again.");
         progress.update("Resuming the saved client import without copying its ZIP again");
@@ -161,6 +172,7 @@ final class ClientRuntime {
 
     void probe(RuntimeManager.Progress progress) throws Exception {
         requireRuntime();
+        requireClientStopped();
         manager.assets();
         manager.clientState.mkdirs();
         Map<File, String> bindings = bindings();
@@ -191,6 +203,117 @@ final class ClientRuntime {
         if (manager.serverAlive()) throw new IOException("Save and stop the server before importing or validating client content");
     }
 
+    private void requireClientStopped() throws IOException {
+        if (alive()) throw new IOException("Stop the client before changing or probing its runtime or imported content");
+    }
+
+    private JSONObject sessionReport() {
+        try { return json(new File(manager.clientState, "run/status.json")); }
+        catch (Exception ignored) { return new JSONObject(); }
+    }
+
+    private boolean identityAlive(JSONObject identity) {
+        if (identity == null) return false;
+        try {
+            int pid = identity.getInt("pid");
+            if (pid <= 0) return false;
+            String stat = RuntimeManager.read(new File("/proc/" + pid + "/stat"), 8192);
+            String[] fields = stat.substring(stat.lastIndexOf(')') + 2).trim().split("\\s+");
+            return fields.length > 19 && !fields[0].equals("Z") && fields[19].equals(identity.getString("startTicks"));
+        } catch (Exception ignored) { return false; }
+    }
+
+    boolean alive() {
+        Process current = session;
+        return (current != null && current.isAlive()) || identityAlive(sessionReport().optJSONObject("supervisorIdentity"));
+    }
+
+    JSONObject sessionStatus() throws Exception {
+        JSONObject state = sessionReport();
+        boolean running = alive();
+        state.put("alive", running).put("ready", running && state.optBoolean("ready") && state.optString("phase").equals("running"));
+        if (!running && !RuntimeService.busy && Arrays.asList("running", "starting", "stopping").contains(state.optString("phase")))
+            state.put("phase", "stopped").put("ready", false)
+                    .put("message", "The previous client session is closed. Start the client to check it again.");
+        if (!state.has("message")) state.put("message", "Client stopped");
+        return state;
+    }
+
+    void start(RuntimeManager.Progress progress) throws Exception {
+        if (alive()) { progress.update(sessionStatus().optString("message")); return; }
+        requireRuntime();
+        if (!manager.serverStatus().optBoolean("ready")) throw new IOException("Start the server and wait for SERVER READY before starting the client");
+        if (!new File(manager.clientContent, "eve-client-content.json").isFile())
+            throw new IOException("Import and prepare the exact client build3396210 first");
+        JSONObject preparation = json(new File(manager.clientState, "status.json"));
+        if (!preparation.optString("phase").equals("content_prepared"))
+            throw new IOException("Complete Validate and prepare client before starting it");
+        JSONObject probe = json(new File(manager.clientState, "probe.json"));
+        if (!probe.optBoolean("translated_x64_probe_passed")) throw new IOException("Pass Probe Wine / FEX before starting the client");
+        manager.assets();
+        RuntimeManager.mkdir(new File(manager.clientState, "run"));
+        new File(manager.clientState, "run/stop").delete();
+        JSONObject pending = new JSONObject().put("phase", "starting").put("ready", false).put("cleanShutdown", false)
+                .put("message", "Starting the basic EVE client session…").put("client_launch_qualified", false)
+                .put("login_qualified", false).put("graphics_qualified", false);
+        RuntimeManager.text(new File(manager.clientState, "run/status.json"), pending.toString());
+        session = manager.guest(manager.clientRoot, bindings(), Arrays.asList("/usr/bin/python3.11", "/opt/eve-android/client_runtime.py", "start",
+                "--content", "/client", "--state", "/client-state", "--server-state", "/server-state"),
+                new File(manager.clientState, "logs/client-supervisor.log"), true);
+        long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(3);
+        try {
+            while (System.nanoTime() < deadline) {
+                RuntimeManager.cancelled();
+                JSONObject state = sessionStatus();
+                progress.update(state.optString("message", "Waiting for the client display and process…"));
+                if (state.optBoolean("ready")) return;
+                if (!alive()) {
+                    String detail = state.optString("error");
+                    throw new IOException(detail.isEmpty() ? state.optString("message", "Client closed during startup; export support logs") : detail);
+                }
+                Thread.sleep(500);
+            }
+            throw new IOException("Client has not become ready within 3 minutes; export support logs");
+        } catch (Exception error) {
+            requestStop();
+            throw error;
+        }
+    }
+
+    void requestStop() throws IOException {
+        RuntimeManager.text(new File(manager.clientState, "run/stop"), "stop\n");
+    }
+
+    void stop(RuntimeManager.Progress progress) throws Exception {
+        Process current = session;
+        requestStop();
+        if (!alive()) {
+            if (new File(manager.clientState, "run/processes.json").isFile()) {
+                requireRuntime(); manager.assets();
+                progress.update("Recovering the recorded client processes…");
+                Process recovery = manager.guest(manager.clientRoot, bindings(), Arrays.asList("/usr/bin/python3.11", "/opt/eve-android/client_runtime.py", "recover",
+                        "--content", "/client", "--state", "/client-state", "--server-state", "/server-state"),
+                        new File(manager.clientState, "logs/client-supervisor.log"), true);
+                RuntimeManager.waitFor(recovery, 120);
+                if (!sessionReport().optBoolean("cleanShutdown")) throw new IOException("Recovered client required forced cleanup; export support logs");
+                progress.update("Recorded client processes recovered and stopped.");
+            } else progress.update("Client is stopped.");
+            return;
+        }
+        progress.update("Stopping the EVE client and display…");
+        if (current != null && current.isAlive()) {
+            if (!current.waitFor(120, TimeUnit.SECONDS)) throw new IOException("Client cleanup is still pending; keep the app open and export support logs");
+            session = null;
+            if (current.exitValue() != 0) throw new IOException("Client stopped with a cleanup error; export support logs");
+        } else {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(120);
+            while (alive() && System.nanoTime() < deadline) { RuntimeManager.cancelled(); Thread.sleep(500); }
+            if (alive()) throw new IOException("Recovered client cleanup is still pending; export support logs");
+        }
+        if (!sessionReport().optBoolean("cleanShutdown")) throw new IOException("Client closed without a clean shutdown receipt; export support logs");
+        progress.update("Client and display stopped.");
+    }
+
     private void writePreparationStatus(String phase, String message, String error) throws Exception {
         File status = new File(manager.clientState, "status.json");
         JSONObject previous = new JSONObject();
@@ -208,6 +331,7 @@ final class ClientRuntime {
         bindings.put(manager.clientState, "/client-state");
         bindings.put(manager.serverState, "/server-state");
         bindings.put(manager.clientContent.getParentFile(), "/client-storage");
+        if (manager.clientContent.isDirectory()) bindings.put(manager.clientContent, "/client");
         return bindings;
     }
 

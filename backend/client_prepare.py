@@ -669,7 +669,7 @@ def main(argv=None):
         trust = prepare_trust(options.content, options.state, options.ca)
         if trust["bundles_prepared"]:
             trust.update(prepare_offline_preferences(options.state))
-        report.update(memory=memory_snapshot(), memory_limit_mib=options.memory_limit_mib, phase="content_prepared", message="Exact client and asset cache prepared; gameplay launch awaits server qualification", trust=trust)
+        report.update(memory=memory_snapshot(), memory_limit_mib=options.memory_limit_mib, phase="content_prepared", message="Exact client and asset cache prepared. Start the server, then Start EVE client.", trust=trust)
         atomic_json(options.state / "status.json", report)
         print(json.dumps(report), flush=True)
         return 0

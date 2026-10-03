@@ -19,6 +19,22 @@ observability and replace unavailable Android ashmem allocations with memfd wher
 supported. `scripts/build-proot.sh` records the pinned NDK, compiler flags and
 compatibility changes needed to reproduce the packaged native executables.
 
+The basic RFB display transport adapts the existing UO launcher's AGPL-3.0-only
+RFB implementation. Its source remains in the launcher source release.
+
+The client startup preview also applies `native/eve-client-network.patch` to
+that same PRoot source. It restricts the client session's IP sockets to loopback
+and maps its localhost TLS port 443 requests to the existing server port 26003.
+The modified source and patch are included in each PRoot source archive.
+
+`native/eve-client-gate.c` is original launcher code. Its x64 qualification
+helper is compiled with MinGW-w64 and uses the existing Wine CryptoAPI/WinHTTP
+implementation; it does not bundle or replace Wine. MinGW-w64 startup/runtime
+copyright and license notices are preserved in
+`docs/licenses/mingw-w64-copyright.txt`, packaged as an APK asset and included
+in the launcher source release. GCC runtime use is covered by its runtime
+library exception. `scripts/build-client-gate.sh` reproduces the helper.
+
 The complete EVE.js source is stored in pinned, compressed archive shards under
 `vendor/`; its original license, README and provenance remain directly readable
 in `vendor/evejs/`. Release source ZIPs include all shards and

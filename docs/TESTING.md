@@ -1,8 +1,55 @@
-# EVE Android Launcher 0.1.1: client import recovery
+# EVE Android Launcher 0.1.2: client startup and local login
 
-Target: AYN Thor Max or another ARM64 Android 8.0+ device. The first pass qualifies
-local server installation and lifecycle. Client preparation is developed in
-tandem; on-device EVE login and rendered gameplay are subsequent milestones.
+Target: AYN Thor Max, ARM64 Android13. The server lifecycle, Wine/FEX x64
+probe and exact-client import/recovery have passed. Preserve those installations
+and saves. This preview adds the first supervised EVE startup/local-login test;
+rendering performance, audio, controllers and gameplay remain later gates.
+
+## First EVE startup and login test
+
+1. Update to `EVE-Android-Launcher-0.1.2.apk` without uninstalling or clearing app
+   data. Do not reinstall runtimes or import the accepted cache again.
+2. In Server, select **Start server** and wait for **SERVER READY**.
+3. In Client, select **Start EVE client**. Preparation/binary receipts and the
+   current private CA are checked, then the basic display starts. The private
+   Wine helper imports/readbacks the CA and tests direct `https://localhost/health`
+   with ordinary certificate checks. The client session's native socket policy
+   restricts IP traffic to loopback and maps port 443 to the existing port 26003 gateway.
+4. Wait for **EVE process and display started**, then select **Open client display**.
+   That message establishes process startup, not successful login. A plain desktop
+   may appear while EVE initializes. Allow a few minutes for its login screen.
+5. Use touch to select a field, then **Text** to send a local test username such as
+   `ThorTest`. Select the password field and send a disposable test password, then
+   use the EVE login button or the toolbar's **Enter**. The stock local server
+   auto-creates missing development accounts. Use this local test identity rather
+   than a retail account. **Tab**, **Esc** and **Right click** are also available.
+6. If login reaches character selection, stop there for this milestone. Briefly
+   return to the launcher and reopen the display; the session should remain alive.
+7. Use **Launcher** to return, then **Stop EVE client**. Confirm the client/display
+   stopped. In Server, use **Save and stop server**.
+8. Export the newest `eve-support-YYYYMMDD-HHMMSS.zip` from Logs. Return that ZIP
+   and describe the furthest visible screen or error. Export a failed attempt too.
+
+Startup pass: current exact-client checks and private Wine trust/TLS succeed,
+`client/run/status.json` reaches `running` with display/process startup observed,
+an EVE window/login screen is visible and responsive, and stop leaves no owned
+client/display processes. Login pass additionally requires reaching character
+selection and a corresponding successful local server authentication. Receipts
+always keep login/graphics qualification false until physical evidence is accepted.
+A running process or an empty desktop alone does not pass the login gate.
+
+Fail: Wine certificate/TLS gate fails, EVE exits/crashes, the display remains
+blank/unusable, local authentication fails, Android kills the app, or clean stop
+fails. Preserve the cache/world and export logs; do not clear data to retry.
+The renderer is basic WineD3D/llvmpipe for diagnosis; speed is not a pass criterion.
+
+The support ZIP should contain `client/run/status.json`,
+`client/run/processes.json` while a session is active, `client/client-gate.json`
+after a passed TLS gate, `client/launch-observation.json` after observed startup,
+`client/logs/client-supervisor.log`, `client-display.log`, `client-wineServer.log`,
+`client-gate.log`, `client-client.log`, operation history and existing server logs.
+On an early failure some later receipts/logs will be absent. No separate ZIP or
+full client cache is needed.
 
 ## Accepted Thor recovery test
 
@@ -12,8 +59,8 @@ binary checks accepted in 6 minutes 14 seconds. Worker peak RSS was 150.6 MiB;
 Android reported no low-memory condition during this attempt. The user also
 reported success. Preserve the imported cache, existing runtimes and saved world.
 
-No repeat import or new APK is required for this accepted test. EVE startup/login
-is the next development milestone; 0.1.1 does not yet offer a client launch action.
+No repeat import is required for this accepted test. The 0.1.2 update adds the
+startup/login test above; 0.1.1 did not offer a client launch action.
 Its message referring to pending server qualification is stale wording, not a
 failed server gate. The recovery instructions below remain for future interrupted
 imports.
@@ -41,7 +88,8 @@ indexed resources and exact binaries pass, and the app remains usable. The
 support ZIP includes `client/status.json`, `client/import-session.json` while
 unfinished, `client/preparation-memory.json`, and both preparation/memory logs.
 A low-memory pause is safe recovery behavior but is not a passed import test.
-EVE launch/login is still unavailable in this milestone.
+This recovery test does not qualify EVE launch/login; use the separate startup
+test above after recovery succeeds.
 
 Preparation uses a 512 MiB worker address-space limit, bounded text/index reads,
 and a small disk-backed resource index. Android memory checks pause preparation
@@ -50,7 +98,7 @@ previously active content must remain intact during a failed import.
 
 ## Install and server setup
 
-1. Install `EVE-Android-Launcher-0.1.1.apk`. Grant the notification permission when
+1. Install `EVE-Android-Launcher-0.1.2.apk`. Grant the notification permission when
    prompted so the running server has a visible foreground notification.
 2. Open the Server tab and install the server runtime. Keep the app open during
    the initial download and extraction. Use internal storage for the runtime.
@@ -81,7 +129,9 @@ station/undock/warp/dock qualification remain pending.
 
 ## What CI verifies
 
-- Backend regression tests and Python/shell source checks.
+- Backend regression tests, client supervision/cleanup and Python/shell checks.
+- Compiled loopback address policy, basic RFB protocol/input fixtures, x64
+  certificate-helper compilation and packaged client-network option.
 - Native ARM64 server dependency build, initial world preparation, application
   readiness, and supervised shutdown when runtime-v1 is first created.
 - Packaged rootfs structure, architecture, seed data, provenance and SHA-256.

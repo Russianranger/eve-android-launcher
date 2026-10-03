@@ -126,17 +126,17 @@ jobs:
         run: |
           mkdir -p out
           bash scripts/build-wine-trust-overlay.sh 2>&1 | tee out/wine-trust-build.log
-      - name: Build native ARM64EC DXVK and qualify shaders through Xvnc
-        run: bash scripts/build-client-graphics.sh 2>&1 | tee out/client-graphics-build.log
       - name: Prepare pinned native PRoot network policy fixtures
         run: bash scripts/check-proot-network-host.sh --prepare "$PWD/runtime-work/proot-network" 2>&1 | tee out/proot-network-prepare.log
       - name: Qualify native PRoot network policy without external networking
         run: |
           docker run --rm --init --network none --cap-add SYS_PTRACE \
             --security-opt seccomp=unconfined -v "$PWD:$PWD" -w "$PWD" \
-            eve-client-graphics:local /usr/bin/env PATH=/usr/bin:/bin \
+            eve-wine-trust-overlay:local /usr/bin/env PATH=/usr/bin:/bin \
             bash scripts/check-proot-network-host.sh \
             --run "$PWD/runtime-work/proot-network" 2>&1 | tee out/proot-network-build.log
+      - name: Build native ARM64EC DXVK and qualify shaders through Xvnc
+        run: bash scripts/build-client-graphics.sh 2>&1 | tee out/client-graphics-build.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

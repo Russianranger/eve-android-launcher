@@ -81,6 +81,10 @@ three source dependencies used by this Windows build:
 | Khronos SPIRV-Headers | `8b246ff75c6615ba4532fe4fde20f1be090c3764` | Original license files and per-file notices retained in `dxvk/include/spirv`. |
 | Joshua Ashton's libdisplay-info fork | `275e6459c7ab1ddd4b125f28d0440716e4888078` | Original license files and per-file notices retained in `dxvk/subprojects/libdisplay-info`. |
 
+The Khronos header license texts and libdisplay-info's MIT license, copyright
+2022 The libdisplay-info Contributors, are also retained as APK assets under
+the launcher's `docs/licenses` source directory.
+
 The APK reuses the native ARM64 glibc Mesa 26.0.0 Turnip driver and the native
 Vulkan device/X11 presentation probe from the immutable
 [UO launcher v0.2.17 release](https://github.com/Russianranger/uo-android-launcher/releases/tag/v0.2.17).

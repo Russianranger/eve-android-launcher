@@ -47,6 +47,55 @@ def arm64ec_pe() -> bytes:
     return bytes(data)
 
 
+def coalesced_arm64ec_pe() -> bytes:
+    """Mirror the two code ranges emitted by pinned clang/lld for tiny-ec.c."""
+    data = bytearray(0x4A00)
+    data[:2] = b"MZ"
+    struct.pack_into("<I", data, 60, 0x80)
+    data[0x80:0x84] = b"PE\0\0"
+    struct.pack_into("<HHIIIHH", data, 0x84, 0x8664, 3, 0, 0, 0, 240, 0x2022)
+    optional = 0x98
+    struct.pack_into("<H", data, optional, 0x20B)
+    struct.pack_into("<Q", data, optional+24, 0x180000000)
+    struct.pack_into("<II", data, optional+32, 0x1000, 0x200)
+    struct.pack_into("<II", data, optional+56, 0x9000, 0x400)
+    struct.pack_into("<I", data, optional+108, 16)
+    struct.pack_into("<II", data, optional+192, 0x7100, 208)
+    table = optional+240
+    for index, (name, virtual_size, rva, raw_size, raw_start, flags) in enumerate((
+            (b".text", 0x3186, 0x1000, 0x3400, 0x400, 0x60000020),
+            (b".hexpthk", 0x20, 0x5000, 0x200, 0x3800, 0x60000020),
+            (b".rdata", 0x1000, 0x7000, 0x1000, 0x3A00, 0x40000040))):
+        entry = table+index*40
+        data[entry:entry+len(name)] = name
+        struct.pack_into("<IIII", data, entry+8, virtual_size, rva, raw_size, raw_start)
+        struct.pack_into("<I", data, entry+36, flags)
+    struct.pack_into("<I", data, 0x3B00, 208)
+    struct.pack_into("<Q", data, 0x3B00+200, 0x180007300)
+    struct.pack_into("<III", data, 0x3D00, 1, 0x7380, 2)
+    struct.pack_into("<IIII", data, 0x3D80, 0x1005, 0x2028, 0x4002, 0x1020)
+    return bytes(data)
+
+
+def coalesced_rejection_cases() -> dict[str, bytes]:
+    data = coalesced_arm64ec_pe()
+    table = 0x98+240
+    return {
+        "range-crosses-non-executable-section": mutate(data, offset=table+40+36, format="<I", value=0x40000040),
+        "range-leading-padding": mutate(data, offset=0x3D88, format="<I", value=0x4502),
+        "range-trailing-padding": mutate(data, offset=0x3D8C, format="<I", value=0x800),
+        "native-range-wholly-padding": mutate(data, offset=0x3D80, format="<I", value=0x4501),
+        "overlapping-virtual-sections": mutate(data, offset=table+40+12, format="<I", value=0x4000),
+        "huge-inter-section-padding": mutate(data, offset=table+40+12, format="<I", value=0x6000),
+        "range-needs-virtual-only-bytes": mutate(data, offset=table+16, format="<I", value=0x2000),
+        "unknown-code-map-type": mutate(data, offset=0x3D88, format="<I", value=0x4003),
+        "range-outside-image": mutate(data, offset=0x3D8C, format="<I", value=0x6000),
+        "zero-section-alignment": mutate(data, offset=0x98+32, format="<I", value=0),
+        "non-power-of-two-alignment": mutate(data, offset=0x98+32, format="<I", value=0x1800),
+        "unbounded-section-alignment": mutate(data, offset=0x98+32, format="<I", value=0x200000),
+    }
+
+
 def mutate(data: bytes, *, offset: int, format: str, value: int) -> bytes:
     result = bytearray(data)
     struct.pack_into(format, result, offset, value)
@@ -266,6 +315,23 @@ def x64_image():
 
 
 class MetadataTests(unittest.TestCase):
+    def test_linker_coalesced_ranges_preserve_native_type_and_executable_bounds(self):
+        actual_layout = coalesced_arm64ec_pe()
+        self.assertEqual(arm64ec_metadata(actual_layout)["nativeEcCodeRanges"], 1)
+        # ARM64 type0 is valid but does not count as ARM64EC type1.
+        arm64_span = mutate(actual_layout, offset=0x3D88, format="<I", value=0x4000)
+        self.assertEqual(arm64ec_metadata(arm64_span)["nativeEcCodeRanges"], 1)
+        native_span = mutate(actual_layout, offset=0x3D88, format="<I", value=0x4001)
+        self.assertEqual(arm64ec_metadata(native_span)["nativeEcCodeRanges"], 2)
+        for name, image in coalesced_rejection_cases().items():
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                arm64ec_metadata(image)
+
+    def test_arm64_without_arm64ec_code_cannot_qualify_the_native_ec_bundle(self):
+        image = mutate(coalesced_arm64ec_pe(), offset=0x3D80, format="<I", value=0x1004)
+        with self.assertRaises(ValueError):
+            arm64ec_metadata(image)
+
     def test_native_ec_metadata_requires_executable_code(self):
         self.assertEqual(arm64ec_metadata(arm64ec_pe()),
                          {"machine": 0x8664, "chpeVersion": 1, "nativeEcCodeRanges": 1})

@@ -2,10 +2,12 @@
 from pathlib import Path
 import tempfile
 import ctypes
+import hashlib
 import importlib.util
 import random
 import struct
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_DIRECTORY = tempfile.TemporaryDirectory(prefix="eve-arm64ec-parser-")
@@ -60,6 +62,7 @@ def fixture():
     optional = 0x98
     struct.pack_into("<H", data, optional, 0x20b)
     struct.pack_into("<Q", data, optional+24, 0x180000000)
+    struct.pack_into("<II", data, optional+32, 0x1000, 0x200)
     struct.pack_into("<II", data, optional+56, 0x2000, 0x200)
     struct.pack_into("<I", data, optional+108, 16)
     struct.pack_into("<II", data, optional+192, 0x1100, 208)
@@ -105,9 +108,28 @@ for name, offset, value in [
     assert not python_result(mutation)[0], name
     cases[name] = "rejected"
 
+sys.path.insert(0, str(ROOT / "tests"))
+from test_client_graphics import coalesced_arm64ec_pe, coalesced_rejection_cases, mutate
+coalesced = coalesced_arm64ec_pe()
+for tag, native_ranges in ((0, 1), (1, 2), (2, 1)):
+    image = mutate(coalesced, offset=0x3D88, format="<I", value=0x4000 | tag)
+    assert c_result(image) == (True, native_ranges), ("coalesced", tag)
+    assert python_result(image) == (True, native_ranges), ("coalesced", tag)
+for name, image in coalesced_rejection_cases().items():
+    assert not c_result(image)[0], name
+    assert not python_result(image)[0], name
+    cases[name] = "rejected"
+linked_fixture = ROOT / "tests/fixtures/arm64ec/tiny-ec.dll"
+assert hashlib.sha256(linked_fixture.read_bytes()).hexdigest() == "b3752ba8134659ff5c597d793dfd9906757cd21631783f67127ff40a2cc72b3f"
+for path in [linked_fixture, *sys.argv[1:]]:
+    image = Path(path).read_bytes()
+    assert c_result(image)[0], path
+    assert c_result(image) == python_result(image), path
+    print({"actual_linked_ec_image": str(path), "native_ranges": c_result(image)[1]})
+
 rng = random.Random(3396210)
 for iteration in range(50_000):
-    data = valid.copy()
+    data = bytearray(valid if iteration % 2 == 0 else coalesced)
     for _ in range(rng.randint(1, 5)):
         offset = rng.randrange(len(data))
         data[offset] = rng.randrange(256)

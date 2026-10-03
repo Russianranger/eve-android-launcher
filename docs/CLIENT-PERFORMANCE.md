@@ -31,6 +31,10 @@ D3D11/DXGI DLLs and an original x64 D3D11 helper. Exact runtime/compiler/source
 pins and every asset's SHA-256/size/architecture are recorded in
 `client-graphics-bundle.json`. ARM64EC final PE images use AMD64 Machine; bounded
 CHPE metadata and executable native code ranges establish EC identity.
+The pinned linker can coalesce ranges across executable sections and their PE
+alignment padding. Validators check each segment and executable endpoints rather
+than requiring the whole range to fit one raw section. A small original DLL
+built by the exact compiler reproduces that layout for regression checks.
 
 The initialized accepted prefix is required. Read-only private native DLLs bind
 to system32 for this session without following old builtin symlinks. Source and

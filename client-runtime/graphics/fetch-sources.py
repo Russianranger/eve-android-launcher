@@ -159,6 +159,50 @@ def machine(data, kind):
     return value
 
 
+def pe_diagnostics(data: bytes) -> dict:
+    """Bounded build-only evidence when a linked image fails strict validation."""
+    def read(fmt, offset):
+        if offset < 0 or offset + struct.calcsize(fmt) > len(data):
+            raise ValueError('Truncated diagnostic field')
+        return struct.unpack_from(fmt, data, offset)
+    try:
+        nt, = read('<I', 60)
+        count, = read('<H', nt + 6)
+        optional_size, = read('<H', nt + 20)
+        optional = nt + 24
+        image_base, = read('<Q', optional + 24)
+        image_size, = read('<I', optional + 56)
+        section_alignment, = read('<I', optional + 32)
+        sections = []
+        for index in range(min(count, 96)):
+            entry = optional + optional_size + index * 40
+            virtual_size, rva, raw_size, raw_start = read('<IIII', entry + 8)
+            flags, = read('<I', entry + 36)
+            sections.append({'name': data[entry:entry+8].split(b'\0')[0].decode('ascii', errors='replace'),
+                             'rva': rva, 'virtualSize': virtual_size, 'rawSize': raw_size,
+                             'rawStart': raw_start, 'flags': flags})
+        def raw(rva, size):
+            for section in sections:
+                delta = rva - section['rva']
+                if 0 <= delta <= section['rawSize'] and size <= section['rawSize'] - delta:
+                    return section['rawStart'] + delta
+            raise ValueError('Unmapped diagnostic RVA')
+        config_rva, _ = read('<II', optional + 112 + 10 * 8)
+        pointer, = read('<Q', raw(config_rva, 208) + 200)
+        version, code_map_rva, ranges = read('<III', raw(pointer - image_base, 12))
+        code_map = raw(code_map_rva, min(ranges, 16) * 8)
+        entries = []
+        for index in range(min(ranges, 16)):
+            start, length = read('<II', code_map + index * 8)
+            entries.append({'encodedStart': start, 'start': start & ~3,
+                            'type': start & 3, 'length': length, 'end': (start & ~3) + length})
+        return {'imageSize': image_size, 'sectionAlignment': section_alignment,
+                'sections': sections, 'chpeVersion': version, 'codeMapRva': code_map_rva,
+                'rangeCount': ranges, 'firstRanges': entries}
+    except (ValueError, struct.error) as error:
+        return {'diagnosticError': str(error)}
+
+
 def make_manifest(assets):
     names = {
         'turnip-26.0.0.so': 'elf', 'vulkan-probe': 'elf',
@@ -171,7 +215,12 @@ def make_manifest(assets):
         item = {'sha256': hashlib.sha256(data).hexdigest(), 'sizeBytes': len(data),
                 'machine': machine(data, kind)}
         if kind == 'ec':
-            item.update(arm64ec_metadata(data))
+            try:
+                item.update(arm64ec_metadata(data))
+            except ValueError as error:
+                print(json.dumps({'asset': name, 'validationError': str(error),
+                                  'peDiagnostics': pe_diagnostics(data)}), flush=True)
+                raise ValueError('Native EC validation failed: ' + name) from error
         elif kind == 'x64':
             try:
                 arm64ec_metadata(data)

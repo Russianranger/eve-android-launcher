@@ -87,11 +87,47 @@ static const BYTE *raw_rva(const BYTE *data, size_t size, size_t nt, DWORD rva, 
     return NULL;
 }
 
+/* LLD coalesces consecutive ranges of one ISA across output sections. A
+ * range can therefore include only the SectionAlignment gap between two
+ * executable sections. Its endpoints and all actual code bytes still need
+ * raw file backing; a range beginning or ending in padding is invalid. */
+static BOOL executable_code_range(const BYTE *data, size_t size, size_t section_table,
+    WORD sections, DWORD section_alignment, DWORD start, DWORD length)
+{
+    DWORD cursor = start, end = start + length, previous_end = 0;
+    BOOL have_previous = FALSE;
+    unsigned int index;
+    for (index = 0; index < sections; ++index) {
+        const BYTE *section = data + section_table + index * 40;
+        DWORD virtual_start = read32(section + 12), virtual_size = read32(section + 8);
+        DWORD section_end = virtual_start + virtual_size, segment_end, delta, piece;
+        DWORD raw_size = read32(section + 16), raw_start = read32(section + 20);
+        if (section_end <= cursor) continue;
+        if (virtual_start > cursor) {
+            ULONGLONG aligned = ((ULONGLONG)previous_end + section_alignment - 1u) &
+                                ~((ULONGLONG)section_alignment - 1u);
+            if (!have_previous || cursor != previous_end || aligned != virtual_start || end <= virtual_start)
+                return FALSE;
+            cursor = virtual_start;
+        }
+        if (!(read32(section + 36) & IMAGE_SCN_MEM_EXECUTE)) return FALSE;
+        segment_end = end < section_end ? end : section_end;
+        delta = cursor - virtual_start; piece = segment_end - cursor;
+        if (delta > raw_size || piece > raw_size - delta ||
+            !has_bytes(size, (size_t)raw_start + delta, piece)) return FALSE;
+        cursor = segment_end;
+        if (cursor == end) return TRUE;
+        previous_end = section_end; have_previous = TRUE;
+    }
+    return FALSE;
+}
+
 static BOOL arm64ec_file(const BYTE *data, size_t size, struct module_info *info)
 {
     size_t nt, optional, section_table;
     WORD optional_size, sections;
-    DWORD config_rva, config_size, metadata_rva, code_map, count, i, image_size;
+    DWORD config_rva, config_size, metadata_rva, code_map, count, i, image_size, section_alignment;
+    DWORD previous_section_end = 0, header_size;
     const BYTE *config, *metadata, *ranges;
     ULONGLONG image_base, metadata_va;
     if (!has_bytes(size, 0, 64) || read16(data) != IMAGE_DOS_SIGNATURE) return FALSE;
@@ -105,12 +141,21 @@ static BOOL arm64ec_file(const BYTE *data, size_t size, struct module_info *info
         !has_bytes(size, optional, optional_size) || read16(data + optional) != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
         read32(data + optional + 108) <= IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG) return FALSE;
     image_size = read32(data + optional + 56);
+    header_size = read32(data + optional + 60);
+    section_alignment = read32(data + optional + 32);
+    if (!section_alignment || section_alignment > 0x100000u ||
+        (section_alignment & (section_alignment - 1u))) return FALSE;
     section_table = optional + optional_size;
     if (sections > 96 || !has_bytes(size, section_table, (size_t)sections * 40)) return FALSE;
     for (i = 0; i < sections; ++i) {
         const BYTE *section = data + section_table + i * 40;
         DWORD raw_size = read32(section + 16), raw_start = read32(section + 20);
+        DWORD virtual_start = read32(section + 12), virtual_size = read32(section + 8);
         if (!has_bytes(size, raw_start, raw_size)) return FALSE;
+        if ((virtual_size && virtual_start < header_size) ||
+            virtual_start % section_alignment || virtual_start < previous_section_end ||
+            virtual_start > image_size || virtual_size > image_size - virtual_start) return FALSE;
+        previous_section_end = virtual_start + virtual_size;
     }
     image_base = read64(data + optional + 24);
     config_rva = read32(data + optional + 112 + IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG * 8);
@@ -129,21 +174,10 @@ static BOOL arm64ec_file(const BYTE *data, size_t size, struct module_info *info
     for (i = 0; i < count; ++i) {
         DWORD start = read32(ranges + i * 8), length = read32(ranges + i * 8 + 4);
         DWORD code_start = start & ~3u;
-        unsigned int section_index;
-        BOOL executable = FALSE;
-        if (!length || !raw_rva(data, size, nt, start & ~3u, length)) return FALSE;
+        if (!length || (start & 3u) == 3u) return FALSE;
         if (code_start >= image_size || length > image_size - code_start) return FALSE;
-        for (section_index = 0; section_index < sections; ++section_index) {
-            const BYTE *section = data + section_table + section_index * 40;
-            DWORD virtual_size = read32(section + 8), virtual_start = read32(section + 12);
-            DWORD flags = read32(section + 36), delta;
-            if (!(flags & IMAGE_SCN_MEM_EXECUTE) || code_start < virtual_start) continue;
-            delta = code_start - virtual_start;
-            if (delta <= virtual_size && length <= virtual_size - delta) {
-                executable = TRUE; break;
-            }
-        }
-        if (!executable) return FALSE;
+        if (!executable_code_range(data, size, section_table, sections,
+                section_alignment, code_start, length)) return FALSE;
         if ((start & 3u) == 1u) ++info->ec_range_count; /* Wine 10.13 native ARM64EC tag */
     }
     return info->ec_range_count != 0;

@@ -33,7 +33,10 @@ def main():
     parser.add_argument("--work-dir", type=Path, required=True)
     args = parser.parse_args()
     prepared = args.prepared.resolve()
-    actual_commit = subprocess.check_output(["git", "-C", str(prepared / "proot"), "rev-parse", "HEAD"], text=True).strip()
+    # Preparation belongs to the runner UID; execution is root in an isolated
+    # container. Trust only this explicitly prepared path, never every repo.
+    actual_commit = subprocess.check_output(["git", "-c", "safe.directory=" + str(prepared / "proot"),
+                                            "-C", str(prepared / "proot"), "rev-parse", "HEAD"], text=True).strip()
     if actual_commit != PROOT_COMMIT:
         raise RuntimeError("The prepared source is not the pinned PRoot revision")
     talloc_tar = prepared / "talloc.tar.gz"

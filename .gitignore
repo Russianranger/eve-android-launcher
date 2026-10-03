@@ -10,6 +10,12 @@ __pycache__/
 /backend/eve-client-gate.exe
 /backend/wine-crypt32-*.dll
 /backend/wine-trust-overlay.json
+/backend/client-graphics-bundle.json
+/backend/turnip-26.0.0.so
+/backend/vulkan-probe
+/backend/dxvk-d3d11-arm64ec.dll
+/backend/dxvk-dxgi-arm64ec.dll
+/backend/eve-d3d11-probe.exe
 /vendor/evejs/*
 !/vendor/evejs/LICENSE
 !/vendor/evejs/README.md

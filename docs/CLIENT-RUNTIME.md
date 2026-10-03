@@ -1,6 +1,6 @@
 # Initial client runtime qualification
 
-The initial APK prepares a private client cache and installs the exact FEX / Wine ARM64EC runtime already used by the UO launcher. Gameplay launch remains disabled while the server is qualified. Installing a runtime or passing its execution probe does not imply EVE login, rendering, audio, controls, or acceptable performance has been tested.
+The preview APK prepares a private client cache and installs the exact FEX / Wine ARM64EC runtime already used by the UO launcher. Gameplay launch remains disabled while the server is qualified. Installing a runtime or passing its execution probe does not imply EVE login, rendering, audio, controls, or acceptable performance has been tested.
 
 ## Exact client required
 
@@ -21,6 +21,25 @@ The ZIP is copied to internal private storage, scanned for unsafe paths, links, 
 The three binary recipes accept only their exact recorded source hashes or exact known patched variants. Android deliberately does not use the upstream relaxed blue.dll byte-only match. Patches preserve their fixed byte lengths, remove the Authenticode security directory and recalculate the PE checksum. Immutable original backups let repeat validation recompute and compare deterministic outputs. `start.ini` receives loopback and Placebo settings. Existing imported content remains active if staging or validation fails; validated content is promoted atomically. Android cancels the guest process if the operation is interrupted.
 
 After the server generates its current private CA at `server-state/certs/xmpp-ca-cert.pem`, validation checks the certificate with OpenSSL and prepares private client certificate bundles and a dedicated Wine prefix's offline crash preferences. Revalidating after a server certificate change rebuilds bundles from the original backup. This neither changes Android/system trust nor claims Wine CryptoAPI trust has passed. `launch-policy.json` records the eventual local executable path, resource cache, proxy endpoints and launch arguments, with `launch_enabled = false`.
+
+## Bounded preparation and interrupted-import recovery
+
+From 0.1.1, preparation has a 512 MiB Python address-space limit and Android
+free-memory monitoring. Binary sizes are checked before reading; index rows and
+metadata have size bounds. Unique resource names are stored in a temporary
+SQLite table with a 2 MiB page cache. Resource shards are checked once, every
+unique indexed file must be a regular file, and ZIP metadata is released before
+resource/binary validation. Exact supported hashes and deterministic PE patches
+are unchanged.
+
+The private ZIP is atomically copied and retained on failure. **Resume interrupted
+client import** uses it without another copy. A partial stage left by 0.1.0 is
+reused only after streaming ZIP CRC/size checks. New complete extractions have a
+private recovery receipt; restart can retry validation directly. Staging remains
+inactive until all checks pass. Server sessions must be stopped for preparation.
+Worker RSS/peak RSS, stage counts and system/app memory samples go into the
+support export. A memory pause preserves recovery data rather than completing
+an unqualified import.
 
 ## Wine / FEX execution probe
 

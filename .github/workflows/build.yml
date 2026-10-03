@@ -4,6 +4,8 @@ on:
     branches: [main, 'codex/**']
   pull_request:
   workflow_dispatch:
+env:
+  EVE_APP_VERSION: '0.1.1'
 permissions:
   contents: read
 defaults:
@@ -174,7 +176,7 @@ jobs:
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs app/build/outputs/apk/debug/app-debug.apk > out/apk-certificate.txt
           "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging app/build/outputs/apk/debug/app-debug.apk > out/apk-badging.txt
           grep -q "package: name='io.github.russianranger.eve'" out/apk-badging.txt
-          grep -q "versionName='0.1.0'" out/apk-badging.txt
+          grep -q "versionName='$EVE_APP_VERSION'" out/apk-badging.txt
       - name: Preserve the first published signing certificate
         if: github.ref == 'refs/heads/main' && steps.anchor.outputs.exists == 'true'
         env:
@@ -225,21 +227,19 @@ jobs:
         with:
           name: server-runtime
           path: dist
-      - name: Publish immutable server runtime and initial launcher preview
+      - name: Publish new launcher preview without replacing previous releases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mv dist/app-debug.apk dist/EVE-Android-Launcher-0.1.0.apk
-          git archive --format=zip --output=dist/EVE-Android-Launcher-0.1.0-source.zip HEAD
-          cp docs/TESTING.md dist/EVE-Android-Launcher-0.1.0-Testing.md
+          tag="v$EVE_APP_VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; refusing to replace its assets." >&2
+            exit 1
+          fi
+          mv dist/app-debug.apk "dist/EVE-Android-Launcher-$EVE_APP_VERSION.apk"
+          git archive --format=zip --output="dist/EVE-Android-Launcher-$EVE_APP_VERSION-source.zip" HEAD
+          cp docs/TESTING.md "dist/EVE-Android-Launcher-$EVE_APP_VERSION-Testing.md"
           (cd dist && sha256sum *.apk *.zip *.tar.gz *.json *.md) > dist/SHA256SUMS.txt
-          if ! gh release view runtime-v1 >/dev/null 2>&1; then
-            gh release create runtime-v1 --target "$GITHUB_SHA" --draft --prerelease --title 'EVE Android ARM64 server runtime 1' --notes 'Pinned EVE.js 0.12.9 ARM64 runtime qualified through prepare, server readiness and supervised shutdown. Matching EVE client build: 3396210. Retail EVE client assets are not included. Corresponding sources are included.'
-            gh release upload runtime-v1 dist/server-runtime-arm64.tar.gz dist/server-runtime-manifest.json dist/server-runtime-source.tar.gz dist/server-runtime-check.json
-            gh release edit runtime-v1 --draft=false
-          fi
-          if ! gh release view v0.1.0 >/dev/null 2>&1; then
-            gh release create v0.1.0 --target "$GITHUB_SHA" --draft --prerelease --title 'EVE Android Launcher 0.1.0 — Server setup preview' --notes-file docs/RELEASE-NOTES.md
-          fi
-          gh release upload v0.1.0 dist/* --clobber
-          gh release edit v0.1.0 --draft=false
+          gh release create "$tag" --target "$GITHUB_SHA" --draft --prerelease --title "EVE Android Launcher $EVE_APP_VERSION — Client import recovery" --notes-file docs/RELEASE-NOTES.md
+          gh release upload "$tag" dist/*
+          gh release edit "$tag" --draft=false

@@ -33,10 +33,28 @@ The client probe reports only successful x64 execution in Wine/FEX. Client TLS
 preparation does not pretend that Wine CryptoAPI trust or direct localhost443
 access has been proved. Those belong to the later client connection gate.
 
+## Physical evidence and 0.1.1 recovery fix
+
+- `eve-support-20261002-192140.zip`: AYN Thor API33, 0.1.0; install/preparation
+  passed; two readiness checks completed in 17 seconds each; first session ran
+  over 12 minutes with a reported five-minute app switch; both clean stops and
+  persistent repeat start passed. Node remains 24.18.1.
+- `eve-support-20261002-192759.zip`: Wine 10.13 private prefix initialized,
+  translated x64 fixture returned 37; execution probe accepted.
+- `eve-support-20261002-204851.zip`: import stopped after logging 28,000 extracted
+  files; no successful validation/promotion receipt. Android exit reason3 is a
+  low-memory kill. Java sampled PSS77,146 KiB / RSS157,332 KiB does not identify
+  native guest/tracer peak memory. The old `validating` status was written before
+  extraction, so it cannot establish the precise failed stage.
+- 0.1.1 bounds metadata/binary allocations and Python preparation memory, reduces
+  resource-path translation work, adds system/worker memory evidence and a safe
+  resume action using the surviving private ZIP/stage. Full Thor recovery remains
+  a physical gate; do not claim this fix proves client login or rendering.
+
 ## Next milestones
 
-1. Qualify server install, preparation, background ownership and repeat start/stop
-   on the Thor. Fix any device runtime failures using the exported support ZIP.
+1. Server install/preparation/background/restart and Wine/FEX x64 probe accepted.
+   Qualify the 0.1.1 interrupted client import recovery on the Thor.
 2. Import exact complete EVE client build3396210; qualify Wine/FEX probe and
    private Wine trust plus all local gateway endpoints, including direct TLS443.
 3. Add accelerated client display/input/audio and prove character select, station,

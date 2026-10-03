@@ -1,12 +1,18 @@
 package io.github.russianranger.eve;
 
+import android.app.ActivityManager;
 import android.content.Context;
+import android.os.Debug;
 import org.json.JSONObject;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.FileWriter;
+import java.io.Writer;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -21,6 +27,7 @@ final class ClientRuntime {
     private static final String ARCHIVE_HASH = "f036c00a290abb953bec26be80c4d8fe492fd986e7a589c51008124432c8641e";
     private static final String MANIFEST_HASH = "d375adf23b621f83ef7b5fff95365312377399704abb486fd8d4164a1fe29a13";
     private static final long MAX_ARCHIVE = 160L * 1024 * 1024 * 1024;
+    private static final long MIN_FREE_MEMORY = 1024L * 1024 * 1024;
     private final Context context;
     private final RuntimeManager manager;
 
@@ -50,7 +57,15 @@ final class ClientRuntime {
             JSONObject preparation = json(status);
             out.put("preparation", preparation).put("phase", preparation.optString("phase"))
                     .put("message", preparation.optString("message"));
+            boolean running = RuntimeService.busy && Arrays.asList("import-client", "validate-client", "resume-client")
+                    .contains(RuntimeService.operation);
+            if (!running && Arrays.asList("copying", "extracting", "validating", "checking_resources", "checking_binaries", "preparing_trust")
+                    .contains(preparation.optString("phase"))) {
+                out.put("phase", "preparation_interrupted").put("message",
+                        "Client preparation was interrupted. Resume the saved import, or validate existing content.");
+            }
         }
+        out.put("resumable_import", new File(manager.clientState, "client-import.zip").isFile());
         File content = new File(manager.clientContent, "eve-client-content.json");
         out.put("content_imported", content.isFile());
         if (content.isFile()) out.put("content", json(content));
@@ -92,12 +107,16 @@ final class ClientRuntime {
 
     void importZip(InputStream source, RuntimeManager.Progress progress) throws Exception {
         requireRuntime();
+        requireServerStopped();
         manager.clientState.mkdirs();
         File archive = new File(manager.clientState, "client-import.zip");
+        File incoming = new File(manager.clientState, "client-import.zip.incoming");
         long size = 0, lastProgress = 0;
+        boolean copied = false;
         try {
             progress.update("Copying the complete shared cache ZIP to private storage");
-            try (InputStream input = source; FileOutputStream output = new FileOutputStream(archive)) {
+            writePreparationStatus("copying", "Copying the complete shared cache ZIP to private storage", "");
+            try (InputStream input = source; FileOutputStream output = new FileOutputStream(incoming)) {
                 byte[] buffer = new byte[1024 * 1024];
                 for (int read; (read = input.read(buffer)) != -1;) {
                     if (Thread.currentThread().isInterrupted()) throw new InterruptedException("Client import cancelled");
@@ -106,16 +125,38 @@ final class ClientRuntime {
                     if (manager.clientState.getUsableSpace() < 512L * 1024 * 1024) throw new IOException("Not enough free internal storage for client import");
                     output.write(buffer, 0, read);
                     long now = System.currentTimeMillis();
-                    if (now - lastProgress >= 1000) { progress.update("Copied " + (size / 1024 / 1024) + " MiB of client ZIP"); lastProgress = now; }
+                    if (now - lastProgress >= 1000) {
+                        ActivityManager.MemoryInfo memory = memoryInfo();
+                        if (underMemoryPressure(memory)) recordMemory(0, Long.MAX_VALUE, memory);
+                        progress.update("Copied " + (size / 1024 / 1024) + " MiB of client ZIP"); lastProgress = now;
+                    }
                 }
+                output.getFD().sync();
             }
+            Files.move(incoming.toPath(), archive.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            copied = true;
             runPreparation("import", progress);
-        } finally { archive.delete(); }
+            archive.delete();
+        } catch (Exception error) {
+            if (!copied) writePreparationStatus("copy_failed", "Client ZIP copy stopped. Any previous saved import is preserved.", String.valueOf(error.getMessage()));
+            throw error;
+        } finally { incoming.delete(); }
     }
 
     void validate(RuntimeManager.Progress progress) throws Exception {
         requireRuntime();
+        requireServerStopped();
         runPreparation("validate", progress);
+    }
+
+    void resume(RuntimeManager.Progress progress) throws Exception {
+        requireRuntime();
+        requireServerStopped();
+        File archive = new File(manager.clientState, "client-import.zip");
+        if (!archive.isFile()) throw new IOException("No saved complete import ZIP is available. Import the client ZIP again.");
+        progress.update("Resuming the saved client import without copying its ZIP again");
+        runPreparation("resume", progress);
+        archive.delete();
     }
 
     void probe(RuntimeManager.Progress progress) throws Exception {
@@ -146,6 +187,19 @@ final class ClientRuntime {
         if (!installed()) throw new IOException("Install the client Wine/FEX runtime first");
     }
 
+    private void requireServerStopped() throws IOException {
+        if (manager.serverAlive()) throw new IOException("Save and stop the server before importing or validating client content");
+    }
+
+    private void writePreparationStatus(String phase, String message, String error) throws Exception {
+        File status = new File(manager.clientState, "status.json");
+        JSONObject previous = new JSONObject();
+        if (status.isFile()) try { previous = json(status); } catch (Exception ignored) { /* Keep a writable failure receipt even after malformed status. */ }
+        RuntimeManager.text(status, previous
+                .put("phase", phase).put("message", message).put("error", error)
+                .put("client_launch_qualified", false).toString());
+    }
+
     private Map<File, String> bindings() {
         Map<File, String> bindings = new LinkedHashMap<>();
         manager.clientContent.getParentFile().mkdirs();
@@ -162,20 +216,72 @@ final class ClientRuntime {
         manager.clientState.mkdirs();
         File log = new File(manager.clientState, "logs/client-prepare.log");
         List<String> command = new ArrayList<>(Arrays.asList("/usr/bin/python3.11", "/opt/eve-android/client_prepare.py", action,
-                "--content", "/client-storage/" + manager.clientContent.getName(), "--state", "/client-state"));
-        if (action.equals("import")) command.addAll(Arrays.asList("--archive", "/client-state/client-import.zip"));
-        Process process = manager.guest(manager.clientRoot, bindings(), command, log);
-        await(process, action.equals("import") ? 10800 : 3600, "Checking client binaries and offline resources", progress, log);
-        JSONObject state = json(new File(manager.clientState, "status.json"));
-        progress.update(state.optString("message", "Client preparation finished"));
+                "--content", "/client-storage/" + manager.clientContent.getName(), "--state", "/client-state",
+                "--memory-limit-mib", "512"));
+        if (action.equals("import") || action.equals("resume")) command.addAll(Arrays.asList("--archive", "/client-state/client-import.zip"));
+        try {
+            recordMemory(0, Long.MAX_VALUE, memoryInfo());
+            Process process = manager.guest(manager.clientRoot, bindings(), command, log);
+            await(process, action.equals("validate") ? 3600 : 10800, "Checking client binaries and offline resources", progress, log, true);
+            JSONObject state = json(new File(manager.clientState, "status.json"));
+            progress.update(state.optString("message", "Client preparation finished"));
+        } catch (Exception error) {
+            String detail = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+            writePreparationStatus("preparation_paused", detail + " Saved import files are preserved.", detail);
+            throw error;
+        }
     }
 
     private void await(Process process, int timeout, String task, RuntimeManager.Progress progress, File log) throws Exception {
+        await(process, timeout, task, progress, log, false);
+    }
+
+    private ActivityManager.MemoryInfo memoryInfo() {
+        ActivityManager.MemoryInfo memory = new ActivityManager.MemoryInfo();
+        context.getSystemService(ActivityManager.class).getMemoryInfo(memory);
+        return memory;
+    }
+
+    private boolean underMemoryPressure(ActivityManager.MemoryInfo memory) {
+        return memory.lowMemory || memory.availMem < Math.max(MIN_FREE_MEMORY, memory.threshold * 2);
+    }
+
+    private long recordMemory(long elapsed, long lowestAvailable, ActivityManager.MemoryInfo memory) throws Exception {
+        long lowest = Math.min(lowestAvailable, memory.availMem);
+        Runtime javaRuntime = Runtime.getRuntime();
+        JSONObject sample = new JSONObject().put("elapsed_seconds", elapsed).put("timeMillis", System.currentTimeMillis())
+                .put("availableBytes", memory.availMem).put("lowestAvailableBytes", lowest).put("totalBytes", memory.totalMem)
+                .put("lowMemory", memory.lowMemory).put("thresholdBytes", memory.threshold)
+                .put("reservedBytes", Math.max(MIN_FREE_MEMORY, memory.threshold * 2))
+                .put("appPssKiB", Debug.getPss()).put("javaUsedBytes", javaRuntime.totalMemory() - javaRuntime.freeMemory())
+                .put("javaMaxBytes", javaRuntime.maxMemory()).put("preparationMemoryLimitMiB", 512);
+        RuntimeManager.text(new File(manager.clientState, "preparation-memory.json"), sample.toString());
+        File log = new File(manager.clientState, "logs/preparation-memory.log");
+        RuntimeManager.mkdir(log.getParentFile());
+        if (log.length() > 256 * 1024) RuntimeManager.text(log, "Earlier memory samples rotated.\n");
+        try (Writer writer = new FileWriter(log, true)) { writer.write(sample.toString() + "\n"); }
+        if (underMemoryPressure(memory))
+            throw new IOException("Client preparation paused because Android is low on memory. Close other apps, then use Resume interrupted client import or Validate and prepare client");
+        return lowest;
+    }
+
+    private void await(Process process, int timeout, String task, RuntimeManager.Progress progress, File log, boolean preparation) throws Exception {
         long started = System.nanoTime();
+        long lastMemorySample = -5, lowestAvailable = Long.MAX_VALUE;
+        if (preparation) try { lowestAvailable = json(new File(manager.clientState, "preparation-memory.json")).optLong("lowestAvailableBytes", Long.MAX_VALUE); }
+        catch (Exception ignored) { /* A fresh sample will recreate this optional telemetry. */ }
         try {
             while (!process.waitFor(1, TimeUnit.SECONDS)) {
                 long elapsed = TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - started);
                 if (elapsed > timeout) throw new IOException(task + " timed out; export support logs");
+                if (preparation) {
+                    ActivityManager.MemoryInfo memory = memoryInfo();
+                    lowestAvailable = Math.min(lowestAvailable, memory.availMem);
+                    if (underMemoryPressure(memory) || elapsed - lastMemorySample >= 5) {
+                        lowestAvailable = recordMemory(elapsed, lowestAvailable, memory);
+                        lastMemorySample = elapsed;
+                    }
+                }
                 if (elapsed % 5 == 0) progress.update(task + " · " + elapsed + " seconds");
             }
             if (process.exitValue() != 0) {

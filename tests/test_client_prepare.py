@@ -3,11 +3,15 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import stat
 import struct
 import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
+from unittest import mock
 import zipfile
 
 MODULE = Path(__file__).resolve().parents[1] / "backend/client_prepare.py"
@@ -99,6 +103,238 @@ class ClientPreparationTest(unittest.TestCase):
         malformed = self.make_cache(self.root / "malformed", malformed=True)
         with self.assertRaisesRegex(ValueError, "Malformed"):
             client.check_resources(malformed)
+
+    def test_oversized_binary_is_rejected_before_any_full_file_read(self):
+        cache = self.make_cache(self.root / "cache")
+        binary = cache / "tq/bin64/exefile.exe"
+        # Sparse size creates no large resident buffer or expensive fixture.
+        with binary.open("r+b") as output:
+            output.truncate(1024**3)
+        with mock.patch.object(Path, "read_bytes", side_effect=AssertionError("unbounded binary read")):
+            with self.assertRaisesRegex(ValueError, "Unsupported binary size"):
+                client.validate_binaries(cache, [self.recipe], apply=True)
+        self.assertFalse(binary.with_name(binary.name + ".evejs-original").exists())
+
+    def test_oversized_resource_index_line_is_rejected(self):
+        cache = self.make_cache(self.root / "cache")
+        index = cache / "tq/resfileindex_Windows.txt"
+        index.write_text("res:/example,aa/0123_4567," + "h" * client.MAX_INDEX_LINE + ",13,13\n")
+        with self.assertRaisesRegex(ValueError, "Oversized resfileindex_Windows.txt entry 1"):
+            client.check_resources(cache)
+
+    def test_resource_duplicate_counts_and_case_variants_remain_accurate(self):
+        cache = self.make_cache(self.root / "cache")
+        (cache / "ResFiles/AA").mkdir()
+        (cache / "ResFiles/AA/0123_4567").write_bytes(b"resource data")
+        lower = "res:/example,aa/0123_4567,hash,13,13\n"
+        upper = "res:/example,AA/0123_4567,hash,13,13\n"
+        (cache / "tq/resfileindex.txt").write_text(lower * 3 + upper)
+        (cache / "tq/resfileindex_Windows.txt").write_text(upper + lower * 2)
+        result = client.check_resources(cache)
+        self.assertEqual(result, {"indexed_entries": 7, "unique_resources": 1, "complete": True})
+        # A duplicate spelling with different case must still have its own real
+        # asset on this case-sensitive private filesystem.
+        (cache / "ResFiles/AA/0123_4567").unlink()
+        with self.assertRaisesRegex(ValueError, "Missing client file: ResFiles/AA/"):
+            client.check_resources(cache)
+
+    def test_resource_symlink_asset_and_shard_are_rejected(self):
+        for kind in ("asset", "shard"):
+            with self.subTest(kind=kind):
+                cache = self.make_cache(self.root / kind)
+                asset = cache / "ResFiles/aa/0123_4567"
+                if kind == "asset":
+                    outside = self.root / "outside-resource"
+                    outside.write_bytes(asset.read_bytes())
+                    asset.unlink()
+                    asset.symlink_to(outside)
+                else:
+                    outside = self.root / "outside-shard"
+                    (cache / "ResFiles/aa").replace(outside)
+                    (cache / "ResFiles/aa").symlink_to(outside, target_is_directory=True)
+                with self.assertRaisesRegex(ValueError, "Symbolic links"):
+                    client.check_resources(cache)
+
+    def test_late_windows_index_failure_precedes_all_binary_mutation(self):
+        cache = self.make_cache(self.root / "cache")
+        index = cache / "tq/resfileindex_Windows.txt"
+        index.write_text("res:/example,aa/0123_4567,hash,13,13\n" * 1000
+                         + "res:/late,aa/9876_5432,hash,13,13\n")
+        progress = []
+        with self.assertRaisesRegex(ValueError, "Missing client file: ResFiles/aa/9876_5432"):
+            client.validate_content(cache, [self.recipe], apply=True,
+                                    progress=lambda phase, message, **details: progress.append((phase, details)))
+        self.assertTrue(any(details.get("indexed_entries") == 1000 for _, details in progress))
+        self.assertEqual((cache / "tq/bin64/exefile.exe").read_bytes(), self.binary)
+        self.assertFalse((cache / "tq/bin64/exefile.exe.evejs-original").exists())
+
+    def test_binary_plan_does_not_apply_first_patch_when_later_hash_fails(self):
+        cache = self.make_cache(self.root / "cache")
+        second = json.loads(json.dumps(self.recipe))
+        second["source"]["filename"] = "blue.dll"
+        damaged = bytearray(self.binary)
+        damaged[-1] ^= 1
+        (cache / "tq/bin64/blue.dll").write_bytes(damaged)
+        with self.assertRaisesRegex(ValueError, "SHA-256"):
+            client.validate_binaries(cache, [self.recipe, second], apply=True)
+        self.assertEqual((cache / "tq/bin64/exefile.exe").read_bytes(), self.binary)
+        self.assertFalse((cache / "tq/bin64/exefile.exe.evejs-original").exists())
+
+    def test_legacy_interrupted_import_reuses_crc_valid_files_and_repairs_bad_files(self):
+        source = self.make_cache(self.root / "source")
+        archive = self.archive(source, self.root / "client.zip")
+        target = self.make_cache(self.root / "content")
+        (target / "existing-content-marker").write_text("keep until successful validation")
+        stage = self.root / "content.import-legacy"
+        staged_cache = stage / "SharedCache"
+        shutil.copytree(source, staged_cache)
+        valid_index = staged_cache / "tq/resfileindex.txt"
+        original_index_mtime = valid_index.stat().st_mtime_ns
+        # Same-size corruption exercises CRC rather than only length checking.
+        (staged_cache / "ResFiles/aa/0123_4567").write_bytes(b"corrupt bytes")
+        self.assertEqual(len(b"corrupt bytes"), len(b"resource data"))
+        (staged_cache / "tq/bin64/exefile.exe").write_bytes(self.binary[:17])
+        opened = []
+        original_open = zipfile.ZipFile.open
+
+        def track_open(value, member, *args, **kwargs):
+            opened.append(member.filename if isinstance(member, zipfile.ZipInfo) else member)
+            return original_open(value, member, *args, **kwargs)
+
+        observed_validation = []
+
+        def progress(phase, message, **details):
+            if phase == "checking_resources":
+                self.assertTrue((target / "existing-content-marker").is_file())
+                self.assertEqual((target / "tq/bin64/exefile.exe").read_bytes(), self.binary)
+                observed_validation.append(True)
+
+        with mock.patch.object(zipfile.ZipFile, "open", track_open):
+            report = client.import_zip(archive, target, [self.recipe], resume=True, progress=progress)
+        self.assertTrue(observed_validation)
+        self.assertEqual(set(opened), {"SharedCache/ResFiles/aa/0123_4567", "SharedCache/tq/bin64/exefile.exe"})
+        self.assertEqual((target / "tq/resfileindex.txt").stat().st_mtime_ns, original_index_mtime)
+        self.assertEqual((target / "ResFiles/aa/0123_4567").read_bytes(), b"resource data")
+        self.assertEqual(report["resources"]["indexed_entries"], 2)
+        self.assertFalse((target / "existing-content-marker").exists())
+        self.assertFalse(stage.exists())
+
+    def test_completed_extraction_retry_skips_decompression_but_rechecks_assets_and_binary_hash(self):
+        source = self.make_cache(self.root / "source")
+        archive = self.archive(source, self.root / "client.zip")
+        target = self.make_cache(self.root / "content")
+        (target / "existing-content-marker").write_text("retained")
+        with mock.patch.object(client, "validate_content", side_effect=MemoryError("interrupted validation")):
+            with self.assertRaises(MemoryError):
+                client.import_zip(archive, target, [self.recipe])
+        session_file = target.with_name(target.name + ".import-session.json")
+        session = json.loads(session_file.read_text())
+        self.assertEqual(session["phase"], "extracted")
+        staged_cache = self.root / session["staging"] / "SharedCache"
+        staged_asset = staged_cache / "ResFiles/aa/0123_4567"
+        staged_asset.unlink()
+        # Receipt-based retry may avoid decompression, but never resource or
+        # exact-build binary validation or preservation of active content.
+        with mock.patch.object(zipfile.ZipFile, "open", side_effect=AssertionError("unexpected ZIP decompression")):
+            with self.assertRaisesRegex(ValueError, "Missing client file"):
+                client.import_zip(archive, target, [self.recipe], resume=True)
+            self.assertTrue((target / "existing-content-marker").is_file())
+            staged_asset.write_bytes(b"resource data")
+            damaged = bytearray(self.binary)
+            damaged[-1] ^= 1
+            (staged_cache / "tq/bin64/exefile.exe").write_bytes(damaged)
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                client.import_zip(archive, target, [self.recipe], resume=True)
+            self.assertTrue((target / "existing-content-marker").is_file())
+            (staged_cache / "tq/bin64/exefile.exe").write_bytes(self.binary)
+            report = client.import_zip(archive, target, [self.recipe], resume=True)
+        self.assertTrue(report["resources"]["complete"])
+        expected, _ = client.patch_bytes(self.binary, self.recipe)
+        self.assertEqual(report["binaries"][0]["sha256"], hashlib.sha256(expected).hexdigest())
+        self.assertFalse(session_file.exists())
+
+    def test_interrupted_extraction_retains_stage_for_crc_verified_retry(self):
+        source = self.make_cache(self.root / "source")
+        archive = self.archive(source, self.root / "client.zip")
+        target = self.make_cache(self.root / "content")
+        (target / "existing-content-marker").write_text("retained")
+        opened = []
+        original_open = zipfile.ZipFile.open
+
+        def interrupt_second_entry(value, member, *args, **kwargs):
+            opened.append(member.filename)
+            if len(opened) == 2:
+                raise KeyboardInterrupt("simulated process interruption")
+            return original_open(value, member, *args, **kwargs)
+
+        with mock.patch.object(zipfile.ZipFile, "open", interrupt_second_entry):
+            with self.assertRaises(KeyboardInterrupt):
+                client.import_zip(archive, target, [self.recipe])
+        session_file = target.with_name(target.name + ".import-session.json")
+        session = json.loads(session_file.read_text())
+        self.assertEqual(session["phase"], "extracting")
+        first_file = self.root / session["staging"] / opened[0]
+        first_mtime = first_file.stat().st_mtime_ns
+        self.assertTrue((target / "existing-content-marker").is_file())
+        retried_entries = []
+
+        def track_retry(value, member, *args, **kwargs):
+            retried_entries.append(member.filename)
+            return original_open(value, member, *args, **kwargs)
+
+        with mock.patch.object(zipfile.ZipFile, "open", track_retry):
+            report = client.import_zip(archive, target, [self.recipe], resume=True)
+        self.assertNotIn(opened[0], retried_entries)
+        promoted_first = target / Path(*Path(opened[0]).parts[1:])
+        self.assertEqual(promoted_first.stat().st_mtime_ns, first_mtime)
+        self.assertTrue(report["resources"]["complete"])
+        self.assertFalse(session_file.exists())
+
+    def test_import_discovers_cache_root_without_recursive_filesystem_scan(self):
+        source = self.make_cache(self.root / "source")
+        archive = self.archive(source, self.root / "client.zip")
+        with mock.patch.object(Path, "rglob", side_effect=AssertionError("recursive client scan")):
+            report = client.import_zip(archive, self.root / "content", [self.recipe])
+        self.assertTrue(report["resources"]["complete"])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux worker address-space limit")
+    def test_many_resource_names_fit_128_mib_worker_address_space(self):
+        # Isolate the cardinality regression: synthetic regular assets avoid
+        # creating 600,000 filesystem entries. Real missing/link checks are
+        # exercised separately; parser and disk-backed name storage are real.
+        worker = textwrap.dedent("""
+            import importlib.util, json, pathlib, resource, stat, sys, tempfile
+            spec = importlib.util.spec_from_file_location('client_prepare', sys.argv[1])
+            client = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(client)
+            client.limit_preparation_memory(128)
+            with tempfile.TemporaryDirectory() as temporary:
+                root = pathlib.Path(temporary)
+                (root / 'ResFiles/aa').mkdir(parents=True)
+                (root / 'tq').mkdir()
+                (root / 'index_tranquility.txt').write_text('build3396210')
+                for name in ('resfileindex.txt', 'resfileindex_Windows.txt'):
+                    with (root / 'tq' / name).open('w') as output:
+                        for number in range(600000):
+                            output.write('res:/synthetic,aa/%032x_%032x,hash,13,13\\n' % (number, number))
+                original_lstat = pathlib.Path.lstat
+                def synthetic_lstat(path):
+                    if path.parent == root / 'ResFiles/aa':
+                        class Regular:
+                            st_mode = stat.S_IFREG | 0o644
+                        return Regular()
+                    return original_lstat(path)
+                pathlib.Path.lstat = synthetic_lstat
+                report = client.check_resources(root)
+                print(json.dumps({'report': report, 'peak_kib': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss}))
+            """)
+        result = subprocess.run([sys.executable, "-c", worker, str(MODULE)],
+                                check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["report"], {"indexed_entries": 1200000, "unique_resources": 600000, "complete": True})
+        self.assertLess(report["peak_kib"], 128 * 1024)
+        print("Resource capacity: 1,200,000 references / 600,000 names; peak "
+              + str(report["peak_kib"]) + " KiB RSS under 128 MiB address-space limit", flush=True)
 
     def test_duplicate_ini_and_wrong_build_are_rejected(self):
         cache = self.make_cache(self.root / "cache")

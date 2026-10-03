@@ -4,7 +4,7 @@ A server-first Android launcher for EVE.js 0.12.9 and its exact supported Window
 client, **EVE 24.01 build 3396210**. Target hardware is the AYN Thor Max
 (ARM64 Android 13, Snapdragon 8 Gen 2, 16 GB RAM).
 
-The initial 0.1.0 preview provides a prepared native ARM64 server runtime,
+The initial server preview provides a prepared native ARM64 server runtime,
 durable local world and Jita market, foreground session ownership, readiness
 checks, supervised shutdown and support-log export. It also installs the pinned
 Wine/FEX client runtime and validates complete user-supplied client imports.
@@ -13,7 +13,7 @@ milestones; there is no gameplay launch button in this first pass.
 
 ## First server test
 
-Download the APK from [the preview release](https://github.com/Russianranger/eve-android-launcher/releases/tag/v0.1.0).
+Download the APK from [the preview release](https://github.com/Russianranger/eve-android-launcher/releases/tag/v0.1.1).
 In the Server tab, choose **Install server runtime**, **Prepare local world**,
 then **Start server**. Wait for **SERVER READY**, briefly switch apps, then use
 **Save and stop server**. Start it again and export support logs from the Logs tab.
@@ -25,6 +25,21 @@ once during packaging, rather than compiled or generated on the handheld.
 The initial package excludes optional universe content packs. Runtime downloads
 require HTTPS and matching SHA-256; world data lives outside the replaceable
 rootfs and repeated preparation preserves it.
+
+## Client import recovery in 0.1.1
+
+The initial Thor server gate and Wine/FEX x64 execution probe have passed.
+The 0.1.1 preview fixes unbounded validation reads, limits the Python preparation
+worker to 512 MiB, and pauses preparation when Android is short of memory.
+Resource names are counted on disk and safe resource directories are checked
+once; no full-cache recursive scan is needed to find the client root.
+
+After updating, leave the server stopped and select **Resume interrupted client
+import**. This reuses a surviving private ZIP. Old partial extractions are reused
+only after checking each file's ZIP CRC and size. Exact client hashes and both
+resource indexes still must pass before the cache becomes active. Export support
+logs afterward; stage progress and worker/system memory diagnostics are included.
+Do not clear app data or reinstall the already working runtimes.
 
 ## Client preparation
 

@@ -1,12 +1,42 @@
-# EVE Android Launcher 0.1.0: server setup preview
+# EVE Android Launcher 0.1.1: client import recovery
 
 Target: AYN Thor Max or another ARM64 Android 8.0+ device. The first pass qualifies
 local server installation and lifecycle. Client preparation is developed in
 tandem; on-device EVE login and rendered gameplay are subsequent milestones.
 
+## Recover the interrupted Thor client import
+
+The initial server test passed on the Thor: both starts took about 17 seconds,
+the first ready session ran over 12 minutes, and both stops saved cleanly. The
+Wine 10.13/FEX x64 probe also passed with its expected exit code 37. Preserve
+those results; this update does not require repeating server or probe tests.
+
+1. Update to 0.1.1 without uninstalling or clearing app data.
+2. Leave the server stopped. Open Client and select **Resume interrupted client
+   import**. Do not start by copying the original ZIP again.
+3. If 0.1.0 left an extracted stage, recovery checks each file's size and ZIP CRC
+   before reusing it. Missing/incomplete files are extracted from the retained
+   ZIP. If no complete private ZIP is available, use **Import complete client ZIP**.
+4. Wait through extraction, both resource-index checks, binary hashes/patches,
+   and private certificate preparation. Keep the app open for this recovery test.
+5. Export the newest `eve-support-YYYYMMDD-HHMMSS.zip`, including a paused or
+   failed attempt, and return it with the visible final message.
+
+Pass: client status reaches `content_prepared`, `content_imported` is true, all
+indexed resources and exact binaries pass, and the app remains usable. The
+support ZIP includes `client/status.json`, `client/import-session.json` while
+unfinished, `client/preparation-memory.json`, and both preparation/memory logs.
+A low-memory pause is safe recovery behavior but is not a passed import test.
+EVE launch/login is still unavailable in this milestone.
+
+Preparation uses a 512 MiB worker address-space limit, bounded text/index reads,
+and a small disk-backed resource index. Android memory checks pause preparation
+before its free-memory reserve is exhausted. Existing server/client runtimes and
+previously active content must remain intact during a failed import.
+
 ## Install and server setup
 
-1. Install `EVE-Android-Launcher-0.1.0.apk`. Grant the notification permission when
+1. Install `EVE-Android-Launcher-0.1.1.apk`. Grant the notification permission when
    prompted so the running server has a visible foreground notification.
 2. Open the Server tab and install the server runtime. Keep the app open during
    the initial download and extraction. Use internal storage for the runtime.

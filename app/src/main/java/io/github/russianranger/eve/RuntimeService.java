@@ -81,6 +81,7 @@ public final class RuntimeService extends Service {
                         try (InputStream input = getContentResolver().openInputStream(uri)) { if (input == null) throw new IOException("Client ZIP cannot be opened"); client.importZip(input, this::update); }
                         break;
                     case "validate-client": client.validate(this::update); break;
+                    case "resume-client": client.resume(this::update); break;
                     case "probe-client": client.probe(this::update); break;
                     case "export-logs":
                         if (uri == null) throw new IOException("Choose where to save the support ZIP");

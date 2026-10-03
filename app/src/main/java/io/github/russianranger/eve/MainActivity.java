@@ -48,7 +48,7 @@ public final class MainActivity extends Activity {
         root.setPadding(dp(18), dp(12), dp(18), dp(12));
         root.setOnApplyWindowInsetsListener((view, insets) -> { root.setPadding(dp(18) + insets.getSystemWindowInsetLeft(), dp(12) + insets.getSystemWindowInsetTop(), dp(18) + insets.getSystemWindowInsetRight(), dp(12) + insets.getSystemWindowInsetBottom()); return insets; });
         TextView title = label("EVE  /  LOCAL COMMAND", 23, 0xffeef8fa); title.setTypeface(Typeface.DEFAULT, Typeface.BOLD); root.addView(title);
-        root.addView(label("ANDROID LAUNCHER   ·   0.1.0 PREVIEW", 11, 0xff82b7cb));
+        root.addView(label("ANDROID LAUNCHER   ·   0.1.1 PREVIEW", 11, 0xff82b7cb));
         LinearLayout tabs = new LinearLayout(this);
         for (String name : new String[]{"Server", "Client", "Logs"}) {
             Button button = new Button(this); button.setText(name); button.setTextColor(0xffd9eff4); button.setAllCaps(false); button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xff183247));
@@ -88,6 +88,7 @@ public final class MainActivity extends Activity {
             stateText = label("", 14, 0xff6ee4f0); state.addView(stateText);
             LinearLayout client = card("Supported EVE client", "Requires EVE 24.01 build 3396210. Import a ZIP containing tq, ResFiles and index_tranquility.txt. Preserve the complete shared cache.");
             action(client, "Install Wine / FEX runtime", "install-client"); action(client, "Import complete client ZIP", "pick-client");
+            action(client, "Resume interrupted client import", "resume-client");
             action(client, "Validate and prepare client", "validate-client"); action(client, "Probe Wine / FEX", "probe-client");
         } else {
             LinearLayout tools = card("Diagnostics", "Export this support ZIP after the first server test, including failures. It contains bounded logs and status receipts.");

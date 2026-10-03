@@ -117,8 +117,17 @@ import json
 from pathlib import Path
 folder = Path('/graphics-out')
 def one_json(name):
+    source = (folder / name).read_text()
+    try:
+        value = json.loads(source)
+    except ValueError:
+        pass
+    else:
+        if isinstance(value, dict):
+            return value
+        raise SystemExit('Expected one probe object in ' + name)
     reports = []
-    for line in (folder / name).read_text().splitlines():
+    for line in source.splitlines():
         try: value = json.loads(line)
         except ValueError: continue
         if isinstance(value, dict): reports.append(value)

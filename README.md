@@ -9,13 +9,14 @@ durable local world and Jita market, foreground session ownership, readiness
 checks, supervised shutdown and support-log export. It also installs the pinned
 Wine/FEX client runtime and validates complete user-supplied client imports.
 The 0.1.2 preview added supervised EVE startup, a basic touch/text display and
-private Wine TLS checks. The 0.1.3 hotfix corrects a false CA-change error that
-blocked the first device launch before Wine/EVE started. Physical startup/local
-login, graphics performance, audio and controller qualification remain pending.
+private Wine TLS checks. The 0.1.3 CA identity fix passed on the Thor; 0.1.4
+adds a targeted Wine crypt32 correction for the valid server certificate rejected
+in the next attempt. Physical startup/local login, graphics performance, audio
+and controller qualification remain pending.
 
 ## First server test
 
-Download the APK from [the preview release](https://github.com/Russianranger/eve-android-launcher/releases/tag/v0.1.3).
+Download the APK from [the preview release](https://github.com/Russianranger/eve-android-launcher/releases/tag/v0.1.4).
 In the Server tab, choose **Install server runtime**, **Prepare local world**,
 then **Start server**. Wait for **SERVER READY**, briefly switch apps, then use
 **Save and stop server**. Start it again and export support logs from the Logs tab.
@@ -46,10 +47,10 @@ Do not clear app data or reinstall the already working runtimes.
 The Thor recovery test has now passed: exact build 3396210, all 125,116 resources,
 6 minutes 14 seconds, and 150.6 MiB peak worker RSS with no reported low-memory
 condition. See [the accepted physical evidence](docs/HANDOFF.md). Keep the
-prepared cache. The 0.1.3 startup preview uses that prepared cache. Graphics
+prepared cache. The 0.1.4 startup preview uses that prepared cache. Graphics
 optimization, audio and controllers follow the physical startup/login gate.
 
-## Client startup preview in 0.1.3
+## Client startup preview in 0.1.4
 
 The October 3 support logs show successful revalidation of all 125,116 resources
 and an unchanged recorded server CA hash, followed by a false CA-change error.
@@ -122,3 +123,9 @@ The project is AGPL-3.0-only. Runtime components and adaptations are identified
 in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), with corresponding source
 archives included in releases. EVE Online is a trademark of CCP; this launcher
 is an independent project.
+
+The 0.1.4 APK supplies a verified, session-only crypt32 DLL overlay built from
+the exact installed Wine source/toolchain. It preserves the installed runtime
+and prefix. The focused Wine regression reproduces the original certificate
+rejection and checks thirteen valid/invalid trust cases. See
+[Wine trust source and test build](client-runtime/wine-trust/Dockerfile).

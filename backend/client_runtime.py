@@ -26,6 +26,7 @@ import time
 from typing import Any
 
 import client_prepare
+import wine_trust_overlay
 import server_runtime
 from server_runtime import (BusyError, RuntimeErrorDetail, atomic_json, fetch_health,
                             group_members, identity_alive, process_identity,
@@ -47,6 +48,8 @@ class Settings:
     wineserver: str = "/opt/wine/bin/wineserver"
     display: str = "/usr/bin/Xtigervnc"
     gate: Path = Path("/opt/eve-android/eve-client-gate.exe")
+    trust_overlay: Path = Path("/opt/eve-android/wine-trust-overlay.json")
+    trust_overlay_root: Path = Path("/")
     display_number: int = 7
     display_port: int = 5907
     gateway_port: int = 26002
@@ -170,7 +173,7 @@ class Runtime:
         env.update({"HOME": "/root", "PATH": "/opt/wine/bin:/usr/bin:/bin", "LANG": "C.UTF-8",
                     "DISPLAY": ":" + str(self.s.display_number),
                     "WINEPREFIX": str(self.s.state / "prefix"), "WINEARCH": "win64",
-                    "WINEDEBUG": "-all,err+all", "WINEDLLOVERRIDES": "winemenubuilder,mshtml,mscoree=;d3d11,dxgi=b",
+                    "WINEDEBUG": "-all,err+all", "WINEDLLOVERRIDES": "winemenubuilder,mshtml,mscoree=;d3d11,dxgi,crypt32=b",
                     "WINEESYNC": "0", "WINEFSYNC": "0", "FEX_DISABLETELEMETRY": "1",
                     "LIBGL_ALWAYS_SOFTWARE": "1", "GALLIUM_DRIVER": "llvmpipe", "LP_NUM_THREADS": "4",
                     "EO_REMOTEFILECACHEFOLDER": "Z:\\client\\ResFiles",
@@ -207,6 +210,13 @@ class Runtime:
         marker = read_json(self.s.marker)
         if (marker.get("format"), marker.get("runtime"), marker.get("architecture")) != (2, "fex-arm64ec-1", "arm64"):
             raise RuntimeErrorDetail("Install the pinned Wine/FEX runtime first")
+        if marker.get("wine_commit") != wine_trust_overlay.WINE_COMMIT:
+            raise RuntimeErrorDetail("The private Wine trust fix requires the existing pinned Wine build")
+        try:
+            overlay = wine_trust_overlay.verify(self.s.trust_overlay, bound_root=self.s.trust_overlay_root)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise RuntimeErrorDetail("The private Wine trust fix could not be verified; export support logs") from error
+        atomic_json(self.s.state / "wine-trust-overlay.json", {**overlay, "sessionBindingsVerified": True})
         for command in (self.s.wine, self.s.wineserver):
             with Path(command).open("rb") as source:
                 header = source.read(20)
@@ -252,7 +262,8 @@ class Runtime:
         self.require_server()
         self.memory_check()
         return {"contentBuild": client_prepare.BUILD, "binarySha256": expected_hashes,
-                "caPemSha256": current_sha, "caDerSha256": current_der_sha}
+                "caPemSha256": current_sha, "caDerSha256": current_der_sha,
+                "wineTrustOverlay": overlay["overlay"]}
 
     @staticmethod
     def verify_network_gate() -> None:
@@ -314,7 +325,9 @@ class Runtime:
 
     def run_gate(self) -> dict[str, Any]:
         command = self.s.gate_command or (self.s.wine, str(self.s.gate), "Z:\\client-state\\trust\\evejs-ca.pem")
-        process = self.spawn("gate", command)
+        env = self.environment()
+        env["WINEDEBUG"] = "-all,err+all,warn+winhttp,warn+crypt,warn+chain,warn+secur32"
+        process = self.spawn("gate", command, env=env)
         deadline = time.monotonic() + self.s.gate_timeout
         while process.poll() is None:
             self.cancellation_point()

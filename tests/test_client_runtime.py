@@ -133,7 +133,7 @@ class ClientRuntimeTests(unittest.TestCase):
             f"sys.path.insert(0,{str(BACKEND.parent)!r})\n"
             "import client_runtime as module\n"
             f"values=json.loads({json.dumps(values)!r})\n"
-            "for key in ('content','state','server_state','marker','gate'): values[key]=pathlib.Path(values[key])\n"
+            "for key in ('content','state','server_state','marker','gate','trust_overlay','trust_overlay_root'): values[key]=pathlib.Path(values[key])\n"
             "class FixtureRuntime(module.Runtime):\n"
             " def preflight(self): return {'contentBuild':3396210}\n"
             " def require_server(self):\n"
@@ -374,7 +374,26 @@ class ClientRuntimeTests(unittest.TestCase):
 
     def preflight_runtime(self):
         marker = self.root / "marker.json"
-        marker.write_text(json.dumps({"format": 2, "runtime": "fex-arm64ec-1", "architecture": "arm64"}))
+        marker.write_text(json.dumps({"format": 2, "runtime": "fex-arm64ec-1", "architecture": "arm64",
+                                      "wine_commit": MODULE.wine_trust_overlay.WINE_COMMIT}))
+        overlay = self.root / "wine-trust-overlay.json"
+        bound_root = self.root / "bound-runtime"
+        files = []
+        for target, (asset, machines) in MODULE.wine_trust_overlay.TARGETS.items():
+            machine = next(iter(machines))
+            pe = bytearray(70)
+            pe[:2] = b"MZ"
+            struct.pack_into("<I", pe, 60, 64)
+            pe[64:68] = b"PE\0\0"
+            struct.pack_into("<H", pe, 68, machine)
+            (self.root / asset).write_bytes(pe)
+            bound = bound_root / target
+            bound.parent.mkdir(parents=True, exist_ok=True)
+            bound.write_bytes(pe)
+            files.append({"target": target, "asset": asset, "machine": machine,
+                          "sha256": hashlib.sha256(pe).hexdigest(), "baselineSha256": "a" * 64})
+        overlay.write_text(json.dumps({"format": 1, "runtime": "fex-arm64ec-1", "overlay": "wine-empty-subject-1",
+                                       "wine_commit": MODULE.wine_trust_overlay.WINE_COMMIT, "files": files}))
         fake_elf = b"\x7fELF\x02" + b"\0" * 13 + b"\xb7\0"
         wine = self.root / "wine"
         wine.write_bytes(fake_elf)
@@ -395,6 +414,7 @@ class ClientRuntimeTests(unittest.TestCase):
             "bundles_prepared": True, "ca_sha256": hashlib.sha256(CA_PEM.encode()).hexdigest()}}))
         runtime = MODULE.Runtime(MODULE.Settings(content=self.content, state=self.state, server_state=self.server,
                                                marker=marker, wine=str(wine), wineserver=str(wineserver), gate=gate,
+                                               trust_overlay=overlay, trust_overlay_root=bound_root,
                                                minimum_available_kib=0))
         return runtime, rows
 

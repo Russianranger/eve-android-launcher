@@ -1,0 +1,13 @@
+**
+!native/
+!native/wine-empty-subject.patch
+!native/eve-wine-trust-test.c
+!scripts/
+!scripts/build-wine-trust-overlay.sh
+!tests/
+!tests/wine_trust_fixtures.py
+!tests/wine_trust_regression.py
+!client-runtime/
+!client-runtime/wine-trust/
+!client-runtime/wine-trust/Dockerfile
+!client-runtime/wine-trust/Dockerfile.dockerignore

@@ -85,6 +85,17 @@ checks. It verifies the peer chain's exact root and the local offline response.
 Wine's `certutil` is a stub in the pinned build, so its exit status is not used as
 trust evidence. The helper is built from `native/eve-client-gate.c`.
 
+0.1.4 includes a session-only crypt32 overlay compiled from the exact pinned
+Wine source/toolchain. The excluded directoryName comparison now skips an absent
+subject, as required for the server's SAN-only leaf. DNS/IP and nonempty-subject
+constraints remain enforced, including a correction to accumulated permitted
+name-form detection across mixed DNS/IP subtrees. The launcher checks installed baseline hashes and
+binds the two patched modules over their existing builtin paths; `crypt32=b`
+ensures the gate and EVE use them. The runtime archive, CA and Wine prefix are
+preserved. The guest verifies bound hashes and records `wine-trust-overlay.json`.
+The separate Wine regression uses disposable certificates/prefixes to reproduce
+the baseline bug and check valid and invalid trust cases.
+
 The APK's opt-in PRoot `--eve-client-network` policy validates native socket
 syscalls for the supervisor and all descendants. It restricts IP destinations to
 loopback, rewrites wildcard binds to loopback and maps localhost:443 to port 26003,
@@ -92,7 +103,7 @@ including IPv6 mapped loopback. Direct syscall denial is checked before Wine is
 started. Import/probe/server processes do not enable this option.
 
 Basic WineD3D/llvmpipe is used for this diagnostic pass, with a 1280×720 touch/text
-RFB display. No runtime/translator rebuild or accelerated graphics migration is
+RFB display. No full runtime/translator rebuild or accelerated graphics migration is
 required. The service retains foreground ownership across Activity changes.
 PID/start-time journals protect cleanup/recovery; child logs rotate at 8 MiB with
 two previous copies, and memory reserve checks stop before available RAM falls

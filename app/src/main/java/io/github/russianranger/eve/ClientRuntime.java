@@ -4,6 +4,7 @@ import android.app.ActivityManager;
 import android.content.Context;
 import android.os.Debug;
 import org.json.JSONObject;
+import org.json.JSONArray;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -257,7 +258,7 @@ final class ClientRuntime {
                 .put("message", "Starting the basic EVE client session…").put("client_launch_qualified", false)
                 .put("login_qualified", false).put("graphics_qualified", false);
         RuntimeManager.text(new File(manager.clientState, "run/status.json"), pending.toString());
-        session = manager.guest(manager.clientRoot, bindings(), Arrays.asList("/usr/bin/python3.11", "/opt/eve-android/client_runtime.py", "start",
+        session = manager.guest(manager.clientRoot, bindings(true), Arrays.asList("/usr/bin/python3.11", "/opt/eve-android/client_runtime.py", "start",
                 "--content", "/client", "--state", "/client-state", "--server-state", "/server-state"),
                 new File(manager.clientState, "logs/client-supervisor.log"), true);
         long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(3);
@@ -291,7 +292,7 @@ final class ClientRuntime {
             if (new File(manager.clientState, "run/processes.json").isFile()) {
                 requireRuntime(); manager.assets();
                 progress.update("Recovering the recorded client processes…");
-                Process recovery = manager.guest(manager.clientRoot, bindings(), Arrays.asList("/usr/bin/python3.11", "/opt/eve-android/client_runtime.py", "recover",
+                Process recovery = manager.guest(manager.clientRoot, bindings(true), Arrays.asList("/usr/bin/python3.11", "/opt/eve-android/client_runtime.py", "recover",
                         "--content", "/client", "--state", "/client-state", "--server-state", "/server-state"),
                         new File(manager.clientState, "logs/client-supervisor.log"), true);
                 RuntimeManager.waitFor(recovery, 120);
@@ -333,6 +334,36 @@ final class ClientRuntime {
         bindings.put(manager.clientContent.getParentFile(), "/client-storage");
         if (manager.clientContent.isDirectory()) bindings.put(manager.clientContent, "/client");
         return bindings;
+    }
+
+    private Map<File, String> bindings(boolean trustOverlay) throws Exception {
+        Map<File, String> result = bindings();
+        if (!trustOverlay) return result;
+        JSONObject manifest = json(new File(manager.backend, "wine-trust-overlay.json"));
+        JSONObject marker = json(new File(manager.clientRoot, "etc/memento-client-runtime.json"));
+        String wineCommit = "a6844d10622fc1a973ec1f22fc4f78a0fcd6cb29";
+        if (manifest.optInt("format") != 1 || !"wine-empty-subject-1".equals(manifest.optString("overlay"))
+                || !RUNTIME.equals(manifest.optString("runtime")) || !wineCommit.equals(manifest.optString("wine_commit"))
+                || !wineCommit.equals(marker.optString("wine_commit")))
+            throw new IOException("The private Wine trust fix does not match the pinned runtime; export support logs");
+        JSONArray files = manifest.getJSONArray("files");
+        if (files.length() != 2) throw new IOException("Invalid Wine trust overlay file list");
+        java.util.HashSet<String> targets = new java.util.HashSet<>();
+        for (int index = 0; index < files.length(); index++) {
+            JSONObject item = files.getJSONObject(index);
+            String asset = item.getString("asset"), target = item.getString("target");
+            String architecture = asset.equals("wine-crypt32-aarch64.dll") ? "aarch64" : asset.equals("wine-crypt32-i386.dll") ? "i386" : "";
+            if (architecture.isEmpty() || !target.equals("opt/wine/lib/wine/" + architecture + "-windows/crypt32.dll")
+                    || !targets.add(target)) throw new IOException("Invalid Wine trust overlay path");
+            File source = new File(manager.backend, asset), original = new File(manager.clientRoot, target);
+            if (!source.isFile() || Files.isSymbolicLink(source.toPath()) || !original.isFile()
+                    || Files.isSymbolicLink(original.toPath())
+                    || !RuntimeManager.sha256(source).equals(item.getString("sha256"))
+                    || !RuntimeManager.sha256(original).equals(item.getString("baselineSha256")))
+                throw new IOException("The private Wine trust fix is missing or damaged; export support logs");
+            result.put(source, "/" + target);
+        }
+        return result;
     }
 
     private void runPreparation(String action, RuntimeManager.Progress progress) throws Exception {

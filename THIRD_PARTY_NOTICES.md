@@ -45,5 +45,17 @@ same shards, alongside dependency sources and build instructions.
 
 The Windows client runtime is prepared separately from the server. Wine/FEX,
 graphics drivers, and their corresponding source archives must be distributed
-together before a later preview bundles any such binary. The initial launcher
-does not include those components in its APK.
+together whenever a preview bundles any such binary. The initial launcher
+did not include those components in its APK; 0.1.4 includes only the focused
+crypt32 session overlay described below.
+
+## Wine crypt32 session overlay
+
+The APK includes crypt32 modules built from the existing pinned Wine fork
+`bylaws/wine` commit `a6844d10622fc1a973ec1f22fc4f78a0fcd6cb29`, with the
+small name-constraint patch in `native/wine-empty-subject.patch`. Wine is
+LGPL-2.1-or-later. The matching modified source, license, patch, compiler
+identity, build configuration and build instructions are published as
+`wine-trust-corresponding-source.tar.gz` with the APK. The immutable UO
+Wine/FEX runtime and its matching sources remain available at their existing
+v0.2.0 release. No game files are included.

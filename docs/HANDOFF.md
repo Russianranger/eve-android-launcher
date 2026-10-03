@@ -106,6 +106,40 @@ No Node, immutable server package or existing Wine/FEX binary upgrade is needed.
   test is ready server → Start EVE client → Open client display → local test
   login → clean client/server stop → export the newest support ZIP.
 
+## October 3 Wine TLS rejection and 0.1.4 continuation
+
+- `eve-support-20261003-082827.zip` (SHA-256
+  `5fe8678f8306842aaee6977cc11a057a2f9ce985d24e604997a54f8f7a600e52`) is from
+  0.1.3. At 08:28:00 CDT server readiness passed; the private display then started
+  and Wine imported/read back the exact CA (`wine_cryptoapi_trust=true`). The
+  server logged TLS established at 13:28:17.983 UTC with no ALPN. WinHTTP failed
+  at `connect_direct_localhost443` with error 12157. No EVE process was launched.
+- The client supervisor completed cleanup (`cleanShutdown=true`, empty owned
+  child member lists). The server remained running at export. About 9.3 GiB was
+  available. Historical Android exit entries predate this attempt.
+- Pinned Wine fork commit `a6844d10622fc1a973ec1f22fc4f78a0fcd6cb29`,
+  `dlls/crypt32/chain.c`, incorrectly applies excluded directoryName subtrees to
+  an empty subject. EveJS intentionally uses SAN-only empty-subject leaves under
+  a constrained CA. Skip only that absent-subject comparison; all other trust
+  and name checks stay active. Explicit TLS version selection would not repair
+  this certificate-validation bug. The patch also preserves accumulated
+  permitted-name form detection across mixed DNS/IP subtrees, so a trailing IP
+  subtree cannot erase the fact that DNS names are constrained.
+- 0.1.4 builds only crypt32 from the pinned source and compiler, packages its
+  ARM64X/aarch64 and i386 modules in the APK, verifies the exact baseline DLL
+  hashes, and binds patched DLLs only for owned EVE client sessions. `crypt32=b`
+  selects builtin loading. Installed Wine/FEX, prefix, certificates, cache and
+  server world remain intact. No runtime reinstall, Wine/FEX probe, import or
+  resource revalidation is requested.
+- New disposable-prefix CryptoAPI regression: require baseline false exclusion
+  on three valid leaves, then patched success for those leaves and continued
+  rejection of ten invalid cases. APK checks and guest preflight verify overlay
+  hashes, architecture and session bindings. Support exports include the overlay
+  receipt and bounded Wine trust warnings.
+- Physical TLS/startup/display/login remains unqualified. Continue the exact
+  startup/login test and return one new support ZIP. Host regression and CI
+  results must be recorded before distributing the update.
+
 ## Next milestones
 
 1. Accepted: server install/preparation/background/restart, Wine/FEX x64 execution

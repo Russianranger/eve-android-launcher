@@ -1,0 +1,21 @@
+diff --git a/dlls/crypt32/chain.c b/dlls/crypt32/chain.c
+index 1b38e789f15..ced32ec5141 100644
+--- a/dlls/crypt32/chain.c
++++ b/dlls/crypt32/chain.c
+@@ -920,8 +920,6 @@ static BOOL alt_name_matches(const CERT_ALT_NAME_ENTRY *name,
+              CERT_TRUST_HAS_NOT_SUPPORTED_NAME_CONSTRAINT;
+         }
+     }
+-    else if (present)
+-        *present = FALSE;
+     return match;
+ }
+ 
+@@ -1155,6 +1153,7 @@ static void compare_subject_with_constraints(const CERT_NAME_BLOB *subjectName,
+          &nameConstraints->rgExcludedSubtree[i].Base;
+ 
+         if (constraint->dwAltNameChoice == CERT_ALT_NAME_DIRECTORY_NAME &&
++         !CRYPT_IsEmptyName(subjectName) &&
+          directory_name_matches(&constraint->DirectoryName, subjectName))
+         {
+             TRACE_(chain)("subject name is excluded\n");

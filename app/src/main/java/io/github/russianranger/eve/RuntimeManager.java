@@ -81,7 +81,7 @@ final class RuntimeManager {
     void assets() throws Exception {
         mkdir(backend);
         for (String name : context.getAssets().list("")) {
-            if (name.endsWith(".py") || name.endsWith(".sh") || name.endsWith(".json") || name.endsWith(".exe")) {
+            if (name.endsWith(".py") || name.endsWith(".sh") || name.endsWith(".json") || name.endsWith(".exe") || name.startsWith("wine-crypt32-") && name.endsWith(".dll")) {
                 try (InputStream in = context.getAssets().open(name)) { copy(in, new File(backend, name)); }
             }
         }
@@ -161,7 +161,8 @@ final class RuntimeManager {
             args.add(1, "--eve-client-network");
         }
         for (Map.Entry<File, String> entry : bindings.entrySet()) {
-            mkdir(entry.getKey()); args.add("-b"); args.add(entry.getKey().getPath() + ":" + entry.getValue());
+            if (!entry.getKey().isFile()) mkdir(entry.getKey());
+            args.add("-b"); args.add(entry.getKey().getPath() + ":" + entry.getValue());
         }
         args.addAll(Arrays.asList("/usr/bin/env", "-i", "HOME=/root", "USER=root", "PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "TMPDIR=/tmp", "PYTHONUNBUFFERED=1"));
         if (restrictedClientNetwork) args.add("EVE_CLIENT_NETWORK_POLICY=loopback-v1");

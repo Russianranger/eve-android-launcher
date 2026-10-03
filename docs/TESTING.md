@@ -1,19 +1,20 @@
-# EVE Android Launcher 0.1.3: certificate fix and client startup
+# EVE Android Launcher 0.1.4: Wine trust fix and client startup
 
 Target: AYN Thor Max, ARM64 Android13. The server lifecycle, Wine/FEX x64
 probe and exact-client import/recovery have passed. Preserve those installations
-and saves. This preview fixes the false CA-change failure found in the first
-0.1.2 startup attempt. Physical EVE startup/local login still requires the test
+and saves. The 0.1.3 CA identity fix passed on the Thor. This preview adds a narrow
+Wine crypt32 fix for the valid server leaf rejected during the next TLS gate. Physical EVE startup/local login still requires the test
 below; rendering performance, audio, controllers and gameplay remain later gates.
 
 ## First EVE startup and login test
 
-1. Update to `EVE-Android-Launcher-0.1.3.apk` without uninstalling or clearing app
+1. Update to `EVE-Android-Launcher-0.1.4.apk` without uninstalling or clearing app
    data. Keep the existing runtimes, cache, prefix and world. The accepted
    installation needs no reimport, revalidation or repeat Wine/FEX probe.
 2. In Server, select **Start server** and wait for **SERVER READY**.
 3. In Client, select **Start EVE client**. Preparation/binary receipts and the
-   current private CA are checked, then the basic display starts. The private
+   current private CA are checked. The APK's Wine trust DLL overlay is verified
+   and bound into this client session, then the basic display starts. The private
    Wine helper imports/readbacks the CA and tests direct `https://localhost/health`
    with ordinary certificate checks. The client session's native socket policy
    restricts IP traffic to loopback and maps port 443 to the existing port 26003 gateway.
@@ -45,13 +46,38 @@ blank/unusable, local authentication fails, Android kills the app, or clean stop
 fails. Preserve the cache/world and export logs; do not clear data to retry.
 The renderer is basic WineD3D/llvmpipe for diagnosis; speed is not a pass criterion.
 
-The support ZIP should contain `client/run/status.json`,
+The support ZIP should contain `client/wine-trust-overlay.json`, recording the
+verified per-session Wine fix, `client/run/status.json`,
 `client/run/processes.json` while a session is active, `client/client-gate.json`
 after a passed TLS gate, `client/launch-observation.json` after observed startup,
 `client/logs/client-supervisor.log`, `client-display.log`, `client-wineServer.log`,
 `client-gate.log`, `client-client.log`, operation history and existing server logs.
 On an early failure some later receipts/logs will be absent. No separate ZIP or
 full client cache is needed.
+
+## October 3 Wine TLS result
+
+`eve-support-20261003-082827.zip` confirms 0.1.3 reached the private display and
+Wine helper. The server was ready at 08:28:00 CDT; CA import/readback passed
+(`wine_cryptoapi_trust=true`). At 08:28:17 the server logged a completed TLS
+handshake. WinHTTP then returned 12157, before EVE was launched. Client cleanup
+completed. About 9.3 GiB of memory remained available; this is not evidence of
+another client-import memory failure.
+
+The pinned Wine crypt32 source applies an excluded directoryName constraint to
+an empty subject, rejecting the valid SAN-only EveJS leaf. 0.1.4 packages only the
+patched crypt32 DLLs from the same Wine commit/toolchain. A session bind and
+`crypt32=b` select them without modifying the installed runtime or prefix.
+The same small patch also keeps permitted-name form detection across mixed
+DNS/IP subtrees, closing the pinned Wine's trailing-subtree reset bug.
+Certificate signatures, expiry, hostname, DNS/IP constraints, nonempty-subject
+constraints and exact CA identity checks remain enforced. The Wine regression
+harness compares the original module's false rejection with the patched module
+using disposable certificates and a disposable host prefix; it does not repeat
+the Thor's accepted import/probe qualification.
+
+Continue with the startup/login sequence above. Physical TLS, EVE display and
+local login remain pending until the next device evidence is reviewed.
 
 ## Accepted Thor recovery test
 
@@ -109,7 +135,7 @@ previously active content must remain intact during a failed import.
 
 ## Install and server setup
 
-1. Install `EVE-Android-Launcher-0.1.3.apk`. Grant the notification permission when
+1. Install `EVE-Android-Launcher-0.1.4.apk`. Grant the notification permission when
    prompted so the running server has a visible foreground notification.
 2. Open the Server tab and install the server runtime. Keep the app open during
    the initial download and extraction. Use internal storage for the runtime.

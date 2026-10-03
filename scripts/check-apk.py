@@ -2,8 +2,13 @@
 """Check that the built ARM64 launcher includes its actual runtime entrypoints."""
 import argparse
 import struct
+import sys
+import tempfile
 import zipfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+import wine_trust_overlay
 
 
 def check(path: Path) -> None:
@@ -12,6 +17,8 @@ def check(path: Path) -> None:
             "lib/arm64-v8a/libproot.so", "lib/arm64-v8a/libproot-loader.so",
             "assets/server_runtime.py", "assets/client_prepare.py", "assets/client_probe.sh",
             "assets/client_runtime.py", "assets/eve-client-gate.exe",
+            "assets/wine_trust_overlay.py", "assets/wine-trust-overlay.json",
+            "assets/wine-crypt32-aarch64.dll", "assets/wine-crypt32-i386.dll",
         )
         for name in required:
             data = archive.read(name)
@@ -32,6 +39,11 @@ def check(path: Path) -> None:
                       if name.startswith("lib/") and not name.startswith("lib/arm64-v8a/")]
         if other_abis:
             raise ValueError(f"Unexpected native ABI entries: {other_abis}")
+        with tempfile.TemporaryDirectory(prefix="eve-apk-trust-") as directory:
+            assets = Path(directory)
+            for name in ("wine-trust-overlay.json", "wine-crypt32-aarch64.dll", "wine-crypt32-i386.dll"):
+                (assets / name).write_bytes(archive.read("assets/" + name))
+            wine_trust_overlay.verify(assets / "wine-trust-overlay.json")
     print(f"Verified ARM64 runtime and server/client backend assets: {path}")
 
 

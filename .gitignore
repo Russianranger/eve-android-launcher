@@ -8,6 +8,8 @@ runtime-work/
 __pycache__/
 *.pyc
 /backend/eve-client-gate.exe
+/backend/wine-crypt32-*.dll
+/backend/wine-trust-overlay.json
 /vendor/evejs/*
 !/vendor/evejs/LICENSE
 !/vendor/evejs/README.md

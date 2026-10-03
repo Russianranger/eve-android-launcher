@@ -15,15 +15,15 @@
          (void) initialize_extension(tracee, port_switch_callback, NULL);
 --- a/src/cli/proot.h
 +++ b/src/cli/proot.h
-@@ -67,6 +67,7 @@
+@@ -65,6 +65,7 @@
+ static int handle_option_ashmem_memfd(Tracee *tracee, const Cli *cli, const char *value);
+ #endif /* defined(__ANDROID__) || defined(__BIONIC__) */
  static int handle_option_sysvipc(Tracee *tracee, const Cli *cli, const char *value);
 +static int handle_option_eve_client_network(Tracee *tracee, const Cli *cli, const char *value);
  static int handle_option_kill_on_exit(Tracee *tracee, const Cli *cli, const char *value);
  static int handle_option_L(Tracee *tracee, const Cli *cli, const char *value);
  static int handle_option_H(Tracee *tracee, const Cli *cli, const char *value);
- static int handle_option_p(Tracee *tracee, const Cli *cli, const char *value);
- 
-@@ -243,6 +243,14 @@
+@@ -243,6 +244,14 @@
  	  .description = "Replace hard links with symlinks, pretending they are really hardlinks",
  	  .detail = "\tEmulates hard links with symbolic links when SELinux policies\n\
  \tdo not allow hard links.",
@@ -60,17 +60,17 @@
  	extension/fake_id0/chown.o \
 --- a/src/syscall/sysnums.list
 +++ b/src/syscall/sysnums.list
-@@ -448,3 +448,7 @@
+@@ -447,3 +447,7 @@
+ SYSNUM(x32_vmsplice)
  SYSNUM(x32_waitid)
  SYSNUM(x32_writev)
- 
 +
 +SYSNUM(io_uring_setup)
 +SYSNUM(io_uring_enter)
 +SYSNUM(io_uring_register)
 --- a/src/syscall/sysnums-arm64.h
 +++ b/src/syscall/sysnums-arm64.h
-@@ -281,5 +281,8 @@
+@@ -281,4 +281,7 @@
  	[ 435 ] = PR_clone3,
  	[ 437 ] = PR_openat2,
  	[ 439 ] = PR_faccessat2,
@@ -78,10 +78,9 @@
 +	[ 426 ] = PR_io_uring_enter,
 +	[ 427 ] = PR_io_uring_register,
  };
- 
 --- a/src/syscall/sysnums-x86_64.h
 +++ b/src/syscall/sysnums-x86_64.h
-@@ -337,5 +337,8 @@
+@@ -337,4 +337,7 @@
          [ 435 ] = PR_clone3,
  	[ 437 ] = PR_openat2,
  	[ 439 ] = PR_faccessat2,
@@ -89,4 +88,3 @@
 +	[ 426 ] = PR_io_uring_enter,
 +	[ 427 ] = PR_io_uring_register,
  };
- 

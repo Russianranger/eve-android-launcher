@@ -123,6 +123,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build only pinned Wine crypt32 and qualify the original failure
+        id: wine_qualified
         run: |
           mkdir -p out
           bash scripts/build-wine-trust-overlay.sh 2>&1 | tee out/wine-trust-build.log
@@ -136,6 +137,8 @@ jobs:
             bash scripts/check-proot-network-host.sh \
             --run "$PWD/runtime-work/proot-network" 2>&1 | tee out/proot-network-build.log
       - name: Build native ARM64EC DXVK and qualify shaders through Xvnc
+        id: graphics_qualified
+        if: ${{ !cancelled() && steps.wine_qualified.outcome == 'success' }}
         run: bash scripts/build-client-graphics.sh 2>&1 | tee out/client-graphics-build.log
       - uses: actions/upload-artifact@v4
         if: always()

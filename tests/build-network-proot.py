@@ -73,6 +73,11 @@ def main():
     callback.write_text(original.replace(after, before))
     loader = proot / "src/loader/loader"
     command = ["make", "-C", "src", "-j2", "CC=cc", "LD=cc", "STRIP=strip",
+               # This proof executes native 64-bit guests only. Pinned PRoot
+               # advertises a compat loader on ARM64, but its GNU make rule uses
+               # x86 -m32, unsupported by native Debian ARM64 gcc. This override
+               # affects the fixture build targets, not any syscall gate code.
+               "HAS_LOADER_32BIT=",
                "OBJCOPY=objcopy", "OBJDUMP=objdump",
                "CPPFLAGS=-D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -I. -I" + str(proot / "src") + " -I" + str(prefix / "include"),
                "LDFLAGS=-L" + str(prefix / "lib") + " -ltalloc -Wl,-z,noexecstack",
@@ -85,6 +90,7 @@ def main():
     candidate = work / "proot-entry-only"
     shutil.copy2(proot / "src/proot", candidate)
     manifest = {"format": 1, "architecture": os.uname().machine,
+                "guestAbi": "native64", "compatLoaderBuilt": False,
                 "prootCommit": PROOT_COMMIT, "tallocSha256": TALLOC_SHA256,
                 "candidateNetworkSourceSha256": candidate_sha,
                 "baseline": str(baseline), "candidate": str(candidate), "loader": str(loader),

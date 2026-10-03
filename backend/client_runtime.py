@@ -13,13 +13,11 @@ import contextlib
 from dataclasses import dataclass
 import errno
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
 import signal
 import socket
-import ssl
 import struct
 import subprocess
 import sys
@@ -237,13 +235,24 @@ class Runtime:
         trust = prepared.get("trust", {})
         ca = self.s.server_state / "certs/xmpp-ca-cert.pem"
         imported_ca = self.s.state / "trust/evejs-ca.pem"
-        current_sha = client_prepare.digest(ca)
+        try:
+            current_sha = client_prepare.digest(ca)
+            current_der_sha = client_prepare.certificate_sha256(ca)
+            imported_der_sha = client_prepare.certificate_sha256(imported_ca)
+        except (OSError, ValueError) as error:
+            raise RuntimeErrorDetail("The local server CA copy is missing or invalid; Validate and prepare client again") from error
+        # Old receipts bind the original server PEM bytes. Preparation wrote an
+        # LF copy of Forge's CRLF PEM; compare certificate identity for that copy.
+        # New receipts bind DER so harmless PEM formatting changes also work.
+        receipt_matches = (trust.get("ca_der_sha256") == current_der_sha if "ca_der_sha256" in trust
+                           else trust.get("ca_sha256") == current_sha)
         if (prepared.get("phase") != "content_prepared" or trust.get("bundles_prepared") is not True
-                or trust.get("ca_sha256") != current_sha or client_prepare.digest(imported_ca) != current_sha):
+                or not receipt_matches or imported_der_sha != current_der_sha):
             raise RuntimeErrorDetail("The local server CA changed; Validate and prepare client again")
         self.require_server()
         self.memory_check()
-        return {"contentBuild": client_prepare.BUILD, "binarySha256": expected_hashes, "caPemSha256": current_sha}
+        return {"contentBuild": client_prepare.BUILD, "binarySha256": expected_hashes,
+                "caPemSha256": current_sha, "caDerSha256": current_der_sha}
 
     @staticmethod
     def verify_network_gate() -> None:
@@ -336,9 +345,10 @@ class Runtime:
                 or result.get("root_store") != "CurrentUser\\ROOT"
                 or result.get("tls_url") != "https://localhost/health" or result.get("tls_proxy") != "none"
                 or result.get("tls_certificate_checks") != "default" or result.get("http_status") != 200):
-            raise RuntimeErrorDetail("Wine certificate / localhost TLS qualification failed; inspect client-gate.log")
-        ca_text = client_prepare.bounded_text(self.s.server_state / "certs/xmpp-ca-cert.pem", encoding="ascii")
-        der_sha = hashlib.sha256(ssl.PEM_cert_to_DER_cert(ca_text)).hexdigest()
+            details = (" (stage=" + str(result.get("stage", "unknown"))[:80]
+                       + ", win32_error=" + str(result.get("win32_error", "unknown"))[:20] + ")") if result else ""
+            raise RuntimeErrorDetail("Wine certificate / localhost TLS qualification failed" + details + "; inspect client-gate.log")
+        der_sha = client_prepare.certificate_sha256(self.s.server_state / "certs/xmpp-ca-cert.pem")
         if result.get("ca_der_sha256") != der_sha:
             raise RuntimeErrorDetail("Wine TLS helper used a different local server CA")
         self.verify_offline_health(json.loads(result.get("response_body", "")))

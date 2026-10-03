@@ -402,6 +402,7 @@ class ClientPreparationTest(unittest.TestCase):
             result = client.prepare_trust(content, state, ca)
             self.assertTrue(result["bundles_prepared"])
             self.assertFalse(result["wine_trust_qualified"])
+            self.assertEqual(result["ca_der_sha256"], client.certificate_sha256(ca))
             self.assertEqual(bundle.read_text().count("-----BEGIN CERTIFICATE-----"), 1)
             self.assertIn(expected, bundle.read_text())
             # Repeat preparation does not append the certificate again.

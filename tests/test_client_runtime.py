@@ -52,6 +52,8 @@ if mode == 'gate':
         value['response_body'] = json.dumps(health)
     if behavior == 'gate-fails':
         value['success'] = False
+        value['stage'] = 'tls-send'
+        value['win32_error'] = 12175
         print(json.dumps(value), flush=True)
         sys.exit(1)
     print(json.dumps(value), flush=True)
@@ -216,6 +218,8 @@ class ClientRuntimeTests(unittest.TestCase):
                 self.assertFalse(failed["ready"])
                 self.assertFalse((self.state / "client.pid").exists())
                 self.assertFalse((self.state / "run/processes.json").exists())
+                if behavior == "gate-fails":
+                    self.assertIn("stage=tls-send, win32_error=12175", failed["error"])
 
     def test_eve_early_exit_zero_is_not_startup_success(self):
         process = self.launch("early-zero")
@@ -407,6 +411,78 @@ class ClientRuntimeTests(unittest.TestCase):
             (self.server / "certs/xmpp-ca-cert.pem").write_text(CA_PEM + "\n")
             with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "CA changed"):
                 runtime.preflight()
+
+    def test_preflight_accepts_legacy_crlf_ca_receipt_without_repreparation(self):
+        runtime, rows = self.preflight_runtime()
+        source = self.server / "certs/xmpp-ca-cert.pem"
+        source.write_bytes(CA_PEM.replace("\n", "\r\n").encode("ascii"))
+        prepared = self.state / "status.json"
+        value = json.loads(prepared.read_text())
+        value["trust"]["ca_sha256"] = MODULE.client_prepare.digest(source)
+        prepared.write_text(json.dumps(value))
+        # Model the exact 0.1.2 state: original Forge PEM receipt and LF copy.
+        before = {path: path.read_bytes() for path in
+                  (prepared, self.state / "trust/evejs-ca.pem", self.state / "prefix/system.reg")}
+        with mock.patch.dict(os.environ, EVE_CLIENT_NETWORK_POLICY="loopback-v1"), \
+                mock.patch.object(runtime, "verify_network_gate"), \
+                mock.patch.object(runtime, "require_server"), \
+                mock.patch.object(MODULE.client_prepare, "validate_binaries", return_value=rows), \
+                mock.patch.object(MODULE.client_prepare, "prepare_trust", side_effect=AssertionError("repeat preparation")), \
+                mock.patch.object(MODULE.client_prepare, "check_resources", side_effect=AssertionError("repeat cache scan")):
+            value = runtime.preflight()
+        self.assertEqual(value["caDerSha256"], hashlib.sha256(b"fake-cert").hexdigest())
+        for path, original in before.items():
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_prepared_crlf_ca_launches_and_new_receipt_rejects_other_certificates(self):
+        runtime, rows = self.preflight_runtime()
+        source = self.server / "certs/xmpp-ca-cert.pem"
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+                        "-subj", "/CN=EveJS Forge PEM regression", "-keyout", str(self.root / "key.pem"),
+                        "-out", str(source)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        source.write_bytes(source.read_bytes().replace(b"\n", b"\r\n"))
+        bundle = self.content / "tq/lib/certifi/cacert.pem"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text("# original client trust\n")
+        trust = MODULE.client_prepare.prepare_trust(self.content, self.state, source)
+        (self.state / "status.json").write_text(json.dumps({"phase": "content_prepared", "trust": trust}))
+        imported = self.state / "trust/evejs-ca.pem"
+        self.assertNotEqual(MODULE.client_prepare.digest(source), MODULE.client_prepare.digest(imported))
+        with mock.patch.dict(os.environ, EVE_CLIENT_NETWORK_POLICY="loopback-v1"), \
+                mock.patch.object(runtime, "verify_network_gate"), \
+                mock.patch.object(runtime, "require_server"), \
+                mock.patch.object(MODULE.client_prepare, "validate_binaries", return_value=rows):
+            runtime.preflight()
+            # Formatting changes preserve the same DER-bound receipt.
+            source.write_bytes(imported.read_bytes() + b"\n")
+            runtime.preflight()
+            valid_imported = imported.read_bytes()
+            imported.write_text(CA_PEM)
+            with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "CA changed"):
+                runtime.preflight()
+            imported.write_bytes(valid_imported)
+            source.write_text(CA_PEM)
+            with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "CA changed"):
+                runtime.preflight()
+            imported.write_text(CA_PEM)
+            # Replacing both copies still cannot bypass the preparation receipt.
+            with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "CA changed"):
+                runtime.preflight()
+
+    def test_preflight_explains_missing_malformed_and_multiple_ca_copies(self):
+        runtime, rows = self.preflight_runtime()
+        imported = self.state / "trust/evejs-ca.pem"
+        with mock.patch.dict(os.environ, EVE_CLIENT_NETWORK_POLICY="loopback-v1"), \
+                mock.patch.object(runtime, "verify_network_gate"), \
+                mock.patch.object(MODULE.client_prepare, "validate_binaries", return_value=rows):
+            for data in (None, b"not a certificate", CA_PEM.encode() * 2, b"-----BEGIN CERTIFICATE-----\nA===\n-----END CERTIFICATE-----\n"):
+                with self.subTest(data=data):
+                    if data is None:
+                        imported.unlink()
+                    else:
+                        imported.write_bytes(data)
+                    with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "CA copy is missing or invalid"):
+                        runtime.preflight()
 
     def test_preflight_rejects_receipt_hash_and_missing_native_network_opt_in(self):
         runtime, rows = self.preflight_runtime()

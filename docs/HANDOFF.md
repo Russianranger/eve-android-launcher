@@ -74,8 +74,37 @@ Child logs rotate, process identities are journaled, available-memory reserve is
 checked and the service owns both sessions. See [current tests](TESTING.md).
 
 CI/host fixtures cannot accept real EVE startup/login. The first 0.1.2 Thor
-startup/login support ZIP is still required. Preserve all prior accepted gates.
+attempt reached the preparation preflight failure recorded below; Wine TLS and
+EVE startup/login were not exercised. Preserve all prior accepted gates.
 No Node, immutable server package or existing Wine/FEX binary upgrade is needed.
+
+## October 3 startup failure and 0.1.3 certificate fix
+
+- `eve-support-20261003-064156.zip` and the accompanying screenshot show the
+  0.1.2 launcher reporting "The local server CA changed; Validate and prepare
+  client again" before starting Wine or EVE. The server became ready at
+  06:37:45 CDT; the first client attempt failed at 06:37:55.
+- Revalidation initially required stopping the server, then completed from
+  06:38:34 to 06:40:11 CDT. All 125,116 resources and the three exact patched
+  binaries passed again. Both initial preparation and this revalidation recorded
+  CA SHA-256 `6292129d8ed176f3da9df3c8fe0c1300810652e1c147e41388dc5dec17155beb`.
+  The restarted server was ready at 06:41:44; client preflight failed again at
+  06:41:47. The unchanged receipt hash and repeated successful preparation do
+  not indicate actual certificate rotation or corrupt client content.
+- Preparation normalized the server's CRLF PEM text to LF in the private CA
+  copy, but launch compared both files' raw byte hashes. The same certificate
+  therefore failed the comparison. A host reproduction with a valid CRLF CA
+  confirmed different PEM byte hashes and identical decoded DER certificates.
+- 0.1.3 compares DER certificate identity while retaining compatibility with
+  existing preparation receipts and normalized private copies. A genuinely
+  different CA remains rejected. Update in place; no client reimport,
+  revalidation, runtime reinstall or repeat Wine/FEX probe is needed for the
+  accepted prepared installation.
+- This ZIP confirms successful revalidation and server readiness; preserve the
+  earlier accepted gates. Physical Wine trust, EVE startup, display, login and
+  graphics remain unqualified. The next device
+  test is ready server → Start EVE client → Open client display → local test
+  login → clean client/server stop → export the newest support ZIP.
 
 ## Next milestones
 

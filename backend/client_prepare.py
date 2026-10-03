@@ -5,6 +5,7 @@ PE patch semantics and JSON recipes are adapted from EveJS v0.12.9
 tools/ClientSETUP (AGPL-3.0). See docs/CLIENT-RUNTIME.md and upstream source.
 """
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -82,6 +83,18 @@ def digest(path):
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             value.update(chunk)
     return value.hexdigest()
+
+
+def certificate_sha256(path):
+    """Identify one PEM certificate by DER, independent of text line endings."""
+    pem = bounded_text(path, encoding="ascii").strip()
+    match = re.fullmatch(r"-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]+)-----END CERTIFICATE-----", pem)
+    if not match:
+        raise ValueError("Local server CA is not a single PEM certificate")
+    der = base64.b64decode("".join(match.group(1).split()), validate=True)
+    if not der:
+        raise ValueError("Local server CA certificate is empty")
+    return hashlib.sha256(der).hexdigest()
 
 
 def atomic_json(path, value):
@@ -528,8 +541,7 @@ def prepare_trust(content, state, ca_path):
         return {"phase": "waiting_for_server_certificates", "bundles_prepared": False,
                 "wine_trust_qualified": False, "message": "Prepare the server first to generate its private localhost CA"}
     ca = bounded_text(ca_path, encoding="ascii").strip()
-    if not re.fullmatch(r"-----BEGIN CERTIFICATE-----[\s\S]+-----END CERTIFICATE-----", ca):
-        raise ValueError("Server CA is not a PEM certificate")
+    ca_der_sha256 = certificate_sha256(ca_path)
     result = subprocess.run(["openssl", "x509", "-in", str(ca_path), "-noout", "-checkend", "0"],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if result.returncode:
@@ -550,7 +562,7 @@ def prepare_trust(content, state, ca_path):
     trust.mkdir(parents=True, exist_ok=True)
     (trust / "evejs-ca.pem").write_text(ca + "\n", encoding="ascii")
     return {"phase": "client_bundles_prepared", "bundles_prepared": True, "bundle_count": len(bundles),
-            "ca_sha256": digest(ca_path), "wine_trust_qualified": False,
+            "ca_sha256": digest(ca_path), "ca_der_sha256": ca_der_sha256, "wine_trust_qualified": False,
             "message": "Private client certificate bundles prepared; Wine TLS/gameplay remains to be qualified"}
 
 

@@ -1,14 +1,16 @@
-# EVE Android Launcher 0.1.2: client startup and local login
+# EVE Android Launcher 0.1.3: certificate fix and client startup
 
 Target: AYN Thor Max, ARM64 Android13. The server lifecycle, Wine/FEX x64
 probe and exact-client import/recovery have passed. Preserve those installations
-and saves. This preview adds the first supervised EVE startup/local-login test;
-rendering performance, audio, controllers and gameplay remain later gates.
+and saves. This preview fixes the false CA-change failure found in the first
+0.1.2 startup attempt. Physical EVE startup/local login still requires the test
+below; rendering performance, audio, controllers and gameplay remain later gates.
 
 ## First EVE startup and login test
 
-1. Update to `EVE-Android-Launcher-0.1.2.apk` without uninstalling or clearing app
-   data. Do not reinstall runtimes or import the accepted cache again.
+1. Update to `EVE-Android-Launcher-0.1.3.apk` without uninstalling or clearing app
+   data. Keep the existing runtimes, cache, prefix and world. The accepted
+   installation needs no reimport, revalidation or repeat Wine/FEX probe.
 2. In Server, select **Start server** and wait for **SERVER READY**.
 3. In Client, select **Start EVE client**. Preparation/binary receipts and the
    current private CA are checked, then the basic display starts. The private
@@ -59,11 +61,20 @@ binary checks accepted in 6 minutes 14 seconds. Worker peak RSS was 150.6 MiB;
 Android reported no low-memory condition during this attempt. The user also
 reported success. Preserve the imported cache, existing runtimes and saved world.
 
-No repeat import is required for this accepted test. The 0.1.2 update adds the
-startup/login test above; 0.1.1 did not offer a client launch action.
+No repeat import is required for this accepted test. The 0.1.2 update added the
+startup/login actions; 0.1.3 fixes the certificate comparison before those actions
+can reach Wine/EVE. The 0.1.1 build did not offer a client launch action.
 Its message referring to pending server qualification is stale wording, not a
 failed server gate. The recovery instructions below remain for future interrupted
 imports.
+
+`eve-support-20261003-064156.zip` confirms revalidation also passed all 125,116
+resources and exact binaries on October 3, with the same recorded server CA
+hash as the accepted import. Both launch attempts stopped at preflight because
+CRLF-to-LF normalization changed the private PEM copy's byte hash. No EVE
+startup, display or login pass can be inferred from this attempt. The 0.1.3 DER
+identity check accepts the existing receipt and equivalent copy while rejecting
+an actually different certificate. Continue directly with the startup test.
 
 ## Recover the interrupted Thor client import
 
@@ -98,7 +109,7 @@ previously active content must remain intact during a failed import.
 
 ## Install and server setup
 
-1. Install `EVE-Android-Launcher-0.1.2.apk`. Grant the notification permission when
+1. Install `EVE-Android-Launcher-0.1.3.apk`. Grant the notification permission when
    prompted so the running server has a visible foreground notification.
 2. Open the Server tab and install the server runtime. Keep the app open during
    the initial download and extraction. Use internal storage for the runtime.

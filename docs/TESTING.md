@@ -4,6 +4,20 @@ Target: AYN Thor Max or another ARM64 Android 8.0+ device. The first pass qualif
 local server installation and lifecycle. Client preparation is developed in
 tandem; on-device EVE login and rendered gameplay are subsequent milestones.
 
+## Accepted Thor recovery test
+
+`eve-support-20261002-212837.zip` confirms the 0.1.1 recovery passed: the exact
+build 3396210 cache reached `content_prepared` with all 125,116 resources and three
+binary checks accepted in 6 minutes 14 seconds. Worker peak RSS was 150.6 MiB;
+Android reported no low-memory condition during this attempt. The user also
+reported success. Preserve the imported cache, existing runtimes and saved world.
+
+No repeat import or new APK is required for this accepted test. EVE startup/login
+is the next development milestone; 0.1.1 does not yet offer a client launch action.
+Its message referring to pending server qualification is stale wording, not a
+failed server gate. The recovery instructions below remain for future interrupted
+imports.
+
 ## Recover the interrupted Thor client import
 
 The initial server test passed on the Thor: both starts took about 17 seconds,

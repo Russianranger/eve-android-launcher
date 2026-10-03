@@ -25,12 +25,12 @@ tandem, prioritizing server setup. Preserve the exact client/protocol build
 
 Host fixtures test durability, readiness and shutdown failure behavior. The CI
 native ARM64 runtime smoke qualifies the real server on Linux; it does not prove
-PRoot/Android behavior. The first device gate is install/prepare/start/switch-apps/
-stop/restart and support-log export. Full client assets have not been imported
-here, so EVE login, rendering, audio and controllers remain unqualified.
+PRoot/Android behavior. The Thor server lifecycle, Wine/FEX execution probe and
+exact client import gates have now passed with the evidence below. EVE process
+startup, login, rendering, audio and controllers remain unqualified.
 
 The client probe reports only successful x64 execution in Wine/FEX. Client TLS
-preparation does not pretend that Wine CryptoAPI trust or direct localhost443
+preparation does not pretend that Wine CryptoAPI trust or direct localhost:443
 access has been proved. Those belong to the later client connection gate.
 
 ## Physical evidence and 0.1.1 recovery fix
@@ -48,17 +48,36 @@ access has been proved. Those belong to the later client connection gate.
   extraction, so it cannot establish the precise failed stage.
 - 0.1.1 bounds metadata/binary allocations and Python preparation memory, reduces
   resource-path translation work, adds system/worker memory evidence and a safe
-  resume action using the surviving private ZIP/stage. Full Thor recovery remains
-  a physical gate; do not claim this fix proves client login or rendering.
+  resume action using the surviving private ZIP/stage.
+- `eve-support-20261002-212837.zip`: AYN Thor API33, 0.1.1; interrupted import
+  recovery accepted. `resume-client` ran from 21:21:26 to 21:27:40 CDT on
+  October 2, 2026 (6 minutes 14 seconds). Build3396210 reached
+  `content_prepared`, `content_imported=true`, `resumable_import=false`;
+  all 125,116 indexed/unique resources and three exact binaries passed. Two
+  private CA bundles and the Wine prefix configuration were prepared. Worker
+  peak RSS was 154,200 KiB (150.6 MiB), below its 512 MiB address-space limit.
+  Android sampled at least 10,327,404,544 bytes available (9.62 GiB) and never
+  reported `lowMemory`. Both exported Android exit entries predate this retry.
+  ZIP SHA-256: `36a9d9dc420bef846861e7917561f54fcd371847f2bb4d959081e28569bd0900`.
+  This accepts the import recovery fix, not EVE launch or Wine TLS compatibility.
+  The 0.1.1 message saying launch awaits server qualification is stale; do not
+  repeat the accepted server test on its account.
 
 ## Next milestones
 
-1. Server install/preparation/background/restart and Wine/FEX x64 probe accepted.
-   Qualify the 0.1.1 interrupted client import recovery on the Thor.
-2. Import exact complete EVE client build3396210; qualify Wine/FEX probe and
-   private Wine trust plus all local gateway endpoints, including direct TLS443.
-3. Add accelerated client display/input/audio and prove character select, station,
-   undock, warp, dock and persistent reopen before controller/UI polish.
+1. Accepted: server install/preparation/background/restart, Wine/FEX x64 execution
+   probe, and 0.1.1 exact-client import/recovery. Preserve installed runtimes,
+   imported cache, prefix and world/player data; no repeat import is needed.
+2. Implement a supervised startup test for the prepared EVE 24.01 build 3396210
+   through the existing Wine/FEX runtime, with bounded logs and clean stop.
+   Add the minimum display/input needed to observe startup and attempt local
+   login. Qualify private Wine trust, actual client endpoint routing (including
+   direct localhost TLS443), and outbound traffic containment. The current
+   gateway readiness check on port 26003 does not prove the client's direct port 443 path.
+3. After process startup/local login evidence, improve graphics, audio and
+   controller support, then qualify character select, station, undock, warp,
+   dock and persistent reopen. Do not start broad graphics optimization before
+   the basic client startup/login gate.
 
 Runtime-v1 is immutable. Server package source/build input changes require a new
 runtime tag and matching app URL. APK backend scripts are bound independently

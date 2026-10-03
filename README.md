@@ -41,6 +41,13 @@ resource indexes still must pass before the cache becomes active. Export support
 logs afterward; stage progress and worker/system memory diagnostics are included.
 Do not clear app data or reinstall the already working runtimes.
 
+The Thor recovery test has now passed: exact build 3396210, all 125,116 resources,
+6 minutes 14 seconds, and 150.6 MiB peak worker RSS with no reported low-memory
+condition. See [the accepted physical evidence](docs/HANDOFF.md). Keep the
+prepared cache. The next milestone is supervised EVE process startup and local
+login through the existing Wine/FEX runtime; graphics optimization, audio and
+controllers follow that gate.
+
 ## Client preparation
 
 Use **Install Wine / FEX runtime** before importing a ZIP with `tq/`, adjacent

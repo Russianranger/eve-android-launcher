@@ -12,10 +12,12 @@ Wine/FEX client runtime and validates complete user-supplied client imports.
 selection on the Thor. CPU rendering was too slow for usable text entry. 0.1.5
 prioritizes native Adreno rendering, persistent shader caches, batched input and
 performance diagnostics. Audio, controllers and gameplay qualification follow.
+The 0.1.5 device test passed the native Adreno shader/display checks; 0.1.6 fixes
+the formatted display-report reader that stopped EVE before launch.
 
 ## First server test
 
-Download the APK from [the preview release](https://github.com/Russianranger/eve-android-launcher/releases/tag/v0.1.5).
+Download the APK from [the preview release](https://github.com/Russianranger/eve-android-launcher/releases/tag/v0.1.6).
 In the Server tab, choose **Install server runtime**, **Prepare local world**,
 then **Start server**. Wait for **SERVER READY**, briefly switch apps, then use
 **Save and stop server**. Start it again and export support logs from the Logs tab.
@@ -49,7 +51,7 @@ condition. See [the accepted physical evidence](docs/HANDOFF.md). Keep the
 prepared cache. The current preview uses that prepared cache. Startup/login passed; client
 performance is the current device gate.
 
-## Client performance preview in 0.1.5
+## Client performance preview in 0.1.6
 
 Update in place, start the server and wait for **SERVER READY**, then leave
 **Use Adreno GPU rendering** checked and start/open EVE. Native ARM64EC DXVK 2.5.3

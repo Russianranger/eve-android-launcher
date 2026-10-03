@@ -1,6 +1,6 @@
 # Client runtime qualification
 
-The preview APK prepares a private client cache and installs the exact FEX / Wine ARM64EC runtime already used by the UO launcher. The Thor server lifecycle, Wine/FEX x64 execution probe, exact client import, private TLS, local login and character selection have passed. The 0.1.5 preview prioritizes Adreno rendering and input responsiveness; acceptable performance, audio and controller support still need device qualification.
+The preview APK prepares a private client cache and installs the exact FEX / Wine ARM64EC runtime already used by the UO launcher. The Thor server lifecycle, Wine/FEX x64 execution probe, exact client import, private TLS, local login and character selection have passed. The 0.1.6 preview prioritizes Adreno rendering and input responsiveness and corrects the formatted display-report reader. Native Adreno shader/presentation preflight passed on Thor; EVE GPU performance, audio and controller support still need device qualification.
 
 The accepted 0.1.1 recovery imported build 3396210 with all 125,116 indexed
 resources in 6 minutes 14 seconds, peaking at 150.6 MiB preparation-worker RSS.

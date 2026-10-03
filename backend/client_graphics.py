@@ -190,7 +190,20 @@ def configure_environment(base, mode, folder, state):
 
 
 def last_report(text, helper=None):
-    for line in reversed(text[-65536:].splitlines()):
+    # Saved observer receipts use atomic_json's formatted document; helper
+    # stdout uses compact JSON lines mixed with Wine diagnostics.
+    text = text[-65536:]
+    try:
+        value = json.loads(text)
+    except RecursionError as error:
+        raise ValueError("Graphics report exceeds JSON nesting limit") from error
+    except json.JSONDecodeError:
+        pass
+    else:
+        if isinstance(value, dict) and (helper is None or value.get("helper") == helper):
+            return value
+        raise ValueError("No graphics helper report")
+    for line in reversed(text.splitlines()):
         try:
             value = json.loads(line)
         except RecursionError as error:

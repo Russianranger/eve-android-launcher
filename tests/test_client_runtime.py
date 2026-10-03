@@ -57,7 +57,7 @@ if mode in ('graphicsVulkan', 'graphicsD3d'):
         if behavior == 'graphics-server-lost': (state / 'server-lost').touch()
         display = json.loads((state / 'fixture-display.json').read_text())
         if behavior == 'graphicsD3d-display-bad': display['matched_frames'] = [0, 1]
-        (state / 'run/graphics-display.json').write_text(json.dumps(display))
+        (state / 'run/graphics-display.json').write_text(json.dumps(display, indent=2) + '\n')
         (state / 'logs/client-graphicsD3d-helper.log').write_text(json.dumps(report) + '\n')
     print(json.dumps(report), flush=True)
     sys.exit(5 if behavior in (mode + '-exit', mode + '-orphan') else 0)

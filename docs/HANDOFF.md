@@ -156,11 +156,29 @@ entry-only socket filters and privacy-safe display/input telemetry. See
 [findings and verification limits](CLIENT-PERFORMANCE.md). CI requires real ARM
 Wine/FEX shader/display and native PRoot syscall proof before distribution.
 
+## October 3: physical Adreno preflight and 0.1.6 correction
+
+`eve-support-20261003-180710.zip` (SHA-256
+`a2577231a8ab5e1b2169c356a7e424589d06060eff02af16e79249ba19d1a4de`)
+records passing localhost TLS, Turnip Adreno 740 Vulkan with three presents,
+native ARM64EC DXVK hashes/feature level 11_1/correct shader pixels, and independent
+RFB verification of all three visible frames. D3D helper elapsed time was 2,852 ms;
+this measures the synthetic test, not EVE FPS. Cleanup was clean with no owned
+groups and about 10.3 GiB available memory.
+
+EVE did not launch in this attempt: `parse_display` could not read the formatted
+`graphics-display.json`, despite its passing contents. 0.1.6 reads a whole JSON
+document before the existing compact stdout-line fallback and retains all schema
+checks. Supervisor regressions now use formatted receipts; native CI feeds its
+actual observer file through the production reader. Older launch/client logs in
+the ZIP describe the accepted 0.1.4 session, not this attempt. The next physical
+gate is EVE with GPU rendering and usable input.
+
 ## Next milestones
 
 1. Preserve accepted server/world lifecycle, Wine/FEX probe, exact 125,116-resource
    import, private TLS, client startup and local login/character selection.
-2. Physically qualify 0.1.5 Adreno rendering and usable input, cold/warm-cache
+2. Physically qualify 0.1.6 EVE Adreno rendering and usable input, cold/warm-cache
    startup, display reopen and clean shutdown using a fresh local account.
 3. After performance is usable, qualify character creation/station/undock/warp/dock
    and persistent reopen, then audio and controller support.
@@ -169,4 +187,3 @@ Runtime-v1 is immutable. Server package source/build input changes require a new
 runtime tag and matching app URL. APK backend scripts are bound independently
 and can update without replacing player data. Preview key is retained privately
 in Actions cache; CI must not silently replace the signing identity.
-

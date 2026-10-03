@@ -642,6 +642,83 @@ class GraphicsTests(unittest.TestCase):
             with self.subTest(frames=frames), self.assertRaises(ValueError):
                 graphics.parse_display(noisy_log(dict(report, matched_frames=frames)))
 
+    def test_device_observer_receipt_round_trips_through_the_atomic_json_writer(self):
+        # The device reached all three displayed frames, but this multiline
+        # receipt was rejected even though the compact stdout copy passed.
+        report = dict(display_success(), framebuffer_updates=6, raw_rectangles=20,
+                      received_bytes=4014403)
+        receipt = self.state / "run/graphics-display.json"
+        graphics.atomic_json(receipt, report)
+        text = receipt.read_text()
+        self.assertIn('"matched_frames": [\n', text)
+        self.assertEqual(graphics.parse_display(text), report)
+        self.assertEqual(receipt.read_text(), text)
+
+    def test_probe_readers_accept_complete_pretty_and_compact_json_documents(self):
+        for report, parser in ((vulkan_success(), graphics.parse_vulkan),
+                               (self.report(), lambda text: graphics.parse_d3d(text, self.manifest)),
+                               (display_success(), graphics.parse_display)):
+            for indent in (None, 2):
+                text = " \n" + json.dumps(report, indent=indent) + "\r\n "
+                with self.subTest(helper=report.get("helper", "vulkan"), indent=indent):
+                    self.assertEqual(parser(text), report)
+
+    def test_compact_stdout_reports_ignore_noise_and_unrelated_helpers(self):
+        unrelated = json.dumps({"helper": "unrelated-helper", "passed": False})
+        for report, parser in ((self.report(), lambda text: graphics.parse_d3d(text, self.manifest)),
+                               (display_success(), graphics.parse_display)):
+            text = ("wine:warn: diagnostic {not JSON}\n" + unrelated + "\n"
+                    + json.dumps(report) + "\r\n" + unrelated + "\nhelper finished\n")
+            with self.subTest(helper=report["helper"]):
+                self.assertEqual(parser(text), report)
+        report = vulkan_success()
+        text = "driver diagnostic {not JSON}\n" + unrelated + "\n" + json.dumps(report) + "\nfinished\n"
+        self.assertEqual(graphics.parse_vulkan(text), report)
+
+    def test_complete_nonmatching_documents_cannot_expose_a_nested_helper_report(self):
+        for report, parser in ((vulkan_success(), graphics.parse_vulkan),
+                               (self.report(), lambda text: graphics.parse_d3d(text, self.manifest)),
+                               (display_success(), graphics.parse_display)):
+            nested_documents = (
+                "null", "true", '"diagnostic"',
+                "[\n" + json.dumps(report) + "\n]",
+                '{"helper":"unrelated-helper","nested":\n' + json.dumps(report) + "\n}",
+                json.dumps(dict(report, helper="unrelated-helper"), indent=2),
+            )
+            # Vulkan has no helper marker; changing one alone leaves its
+            # hardware fields valid, so use an unrelated object instead.
+            if "helper" not in report:
+                nested_documents = nested_documents[:-1] + ('{"helper":"unrelated-helper"}',)
+            for text in nested_documents:
+                with self.subTest(helper=report.get("helper", "vulkan"), text=text[:40]), self.assertRaises(ValueError):
+                    parser(text)
+
+    def test_document_readers_reject_truncated_oversized_and_corrupt_pretty_receipts(self):
+        for report, parser in ((vulkan_success(), graphics.parse_vulkan),
+                               (self.report(), lambda text: graphics.parse_d3d(text, self.manifest)),
+                               (display_success(), graphics.parse_display)):
+            pretty = json.dumps(report, indent=2)
+            oversized = dict(report, diagnostic="X" * 65536)
+            for text in (pretty[:-1], pretty + "\ntrailing garbage", pretty + "\n" + pretty,
+                         json.dumps(oversized), json.dumps(oversized, indent=2)):
+                with self.subTest(helper=report.get("helper", "vulkan"), text=text[:40]), self.assertRaises(ValueError):
+                    parser(text)
+            # Bounded logs still accept a complete compact report at the tail.
+            tail = ("diagnostic without a report\n" * 3000) + json.dumps(report) + "\n"
+            with self.subTest(helper=report.get("helper", "vulkan")):
+                self.assertEqual(parser(tail), report)
+
+    def test_last_matching_display_failure_overrides_an_earlier_success(self):
+        report = display_success()
+        failed = dict(report, display_pixels_verified=False, matched_frames=[0, 1],
+                      observer_error="Expected frame 2 did not reach the local display")
+        text = (noisy_log(report) + json.dumps(failed) + "\n"
+                + json.dumps({"helper": "unrelated-helper"}) + "\nfinished\n")
+        with self.assertRaises(ValueError):
+            graphics.parse_display(text)
+        with self.assertRaises(ValueError):
+            graphics.parse_display(json.dumps(failed, indent=2))
+
     def test_decoder_nesting_limit_is_a_validation_error(self):
         for helper, parser in (("none", graphics.parse_vulkan),
                                ("eve-d3d11-probe-1", lambda text: graphics.parse_d3d(text, self.manifest)),

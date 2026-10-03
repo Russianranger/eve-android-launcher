@@ -5,7 +5,7 @@ on:
   pull_request:
   workflow_dispatch:
 env:
-  EVE_APP_VERSION: '0.1.5'
+  EVE_APP_VERSION: '0.1.6'
 permissions:
   contents: read
 defaults:

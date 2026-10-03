@@ -1,4 +1,4 @@
-# EVE Android Launcher 0.1.5: client performance
+# EVE Android Launcher 0.1.6: client performance
 
 The October 3 0.1.4 test passed Wine certificate/localhost TLS, EVE startup,
 local authentication, character selection and clean shutdown. The user reported
@@ -6,9 +6,13 @@ that rendering and text entry were extremely slow. Preserve the accepted Wine/FE
 runtime, imported cache, prefix and world. No repeat import, validation or runtime
 probe is required for this update.
 
+The 0.1.5 attempt passed real Adreno 740 Vulkan, native D3D11 shaders and all three
+visible probe frames. A formatted display-report parsing error stopped EVE before
+launch. 0.1.6 corrects that reader; EVE responsiveness remains the next device gate.
+
 ## GPU and input performance test
 
-1. Update to `EVE-Android-Launcher-0.1.5.apk` without uninstalling or clearing data.
+1. Update to `EVE-Android-Launcher-0.1.6.apk` without uninstalling or clearing data.
 2. Start the server and wait for **SERVER READY**. In Client, leave **Use Adreno GPU
    rendering** checked, then select **Start EVE client**.
 3. The launcher verifies the exact GPU assets and existing trust/TLS setup. It
@@ -130,7 +134,7 @@ previously active content must remain intact during a failed import.
 
 ## Install and server setup
 
-1. Install `EVE-Android-Launcher-0.1.5.apk`. Grant the notification permission when
+1. Install `EVE-Android-Launcher-0.1.6.apk`. Grant the notification permission when
    prompted so the running server has a visible foreground notification.
 2. Open the Server tab and install the server runtime. Keep the app open during
    the initial download and extraction. Use internal storage for the runtime.
@@ -181,4 +185,3 @@ This preview uses a dedicated signing key retained in the repository's private
 GitHub Actions cache. The key is neither committed nor released. If the cache is
 unavailable after the first published APK, CI refuses to replace the signing
 identity; restore the original cache before publishing an installable update.
-

@@ -189,6 +189,9 @@ manifest = json.loads((assets / 'client-graphics-bundle.json').read_text())
 for name in (*manifest['files'], 'client-graphics-bundle.json'):
     shutil.copyfile(assets / name, Path('backend') / name)
 client_graphics.verify_bundle(Path('backend'))
+# Exercise the production reader on the observer's actual formatted receipt,
+# rather than qualifying only the independent CI summary reader.
+client_graphics.parse_display(Path('out/d3d11-rfb-presentation.json').read_text())
 report = json.loads(Path('out/client-graphics-check.json').read_text())
 assert report['passed'] is True and report['physicalThorQualified'] is False
 PYVALIDATE

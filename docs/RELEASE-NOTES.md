@@ -1,3 +1,20 @@
+# EVE Android Launcher 0.1.6 — graphics report reader
+
+The 0.1.5 Thor test passed Turnip/Adreno 740 Vulkan presentation, native ARM64EC
+D3D11 shader rendering and all three visible display frames. EVE then stopped
+before launch because the reader expected compact JSON lines while the saved
+display receipt was formatted JSON. 0.1.6 reads the complete receipt and keeps
+the existing hardware, native DLL identity, pixel and process checks.
+
+Regression coverage uses the observed display receipt, the actual atomic JSON
+writer and formatted reports in supervisor startup/failure tests. Native CI also
+runs the production reader on its actual display receipt before packaging.
+
+Update in place and retry with Adreno rendering checked. Preserve the prepared
+runtime, client cache, prefix and world. Use a fresh local account; ThorTest stays
+retired. Actual GPU EVE performance and input responsiveness still need the next
+device test. See [testing instructions](TESTING.md).
+
 # EVE Android Launcher 0.1.5 — client performance
 
 0.1.4 passed private Wine TLS, startup, local login and character selection on

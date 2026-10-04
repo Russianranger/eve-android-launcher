@@ -27,7 +27,8 @@ Host fixtures test durability, readiness and shutdown failure behavior. The CI
 native ARM64 runtime smoke qualifies the real server on Linux; it does not prove
 PRoot/Android behavior. The Thor server lifecycle, Wine/FEX execution probe and
 exact client import gates have now passed with the evidence below. EVE process
-startup, login, rendering, audio and controllers remain unqualified.
+startup/login and usable Adreno rendering/input have also been accepted on Thor.
+Audio, controllers and the later gameplay/persistence checks remain unqualified.
 
 The client probe reports only successful x64 execution in Wine/FEX. Client TLS
 preparation does not pretend that Wine CryptoAPI trust or direct localhost:443
@@ -246,14 +247,71 @@ frames. The fixed config and bounded presentation-thread class join support
 exports. See [exact source and inference limits](CLIENT-PERFORMANCE.md).
 The physical wait owner is unproven and EVE responsiveness requires Thor testing.
 
+## October 4: 0.1.9 rendering accepted; controller/fullscreen continuation
+
+`eve-support-20261004-031450.zip` (264,829 bytes; SHA-256
+`85d01efb17375992caca7f3d24dba7bb12020046cdefdf7cb4636b03993050dd`)
+confirms 0.1.9 on AYN Thor API33. The user reports successful login, improved
+graphics in the teens and 20s FPS, and that performance works for now. Accept
+Adreno rendering and usable input for this milestone. Do not repeat the earlier
+black-screen qualification or the completed research hour; retain the current
+renderer, caches and presentation settings. Further performance work is deferred.
+
+The physical revised Present(1) preflight passes with effective override 0,
+IMMEDIATE mode and three independently visible frames. EVE itself also logs
+override 0/IMMEDIATE, and the owned 1280x720 window is focused and responsive.
+The display delivers 7,876 updates over 458.264 seconds (17.19 updates/second,
+not an EVE FPS measurement); 275 input operations complete with zero rejections.
+Live CPU sampling confirms main/presentation-thread progress. See
+[detailed performance evidence](CLIENT-PERFORMANCE.md).
+
+The server records local handshake success, new character creation/selection and
+docked fitting bootstrap. The supplied local test credentials must remain out of
+committed documents, defaults and support metadata. The client subsequently exits
+code 0 after 474.5 seconds; without a launcher stop request the supervisor labels
+this unexpected. Owned groups are cleaned successfully, while the server remains
+ready at export. Preserve the accepted visual result and track explicit shutdown,
+reopen persistence and visible station/space gameplay separately.
+
+The user now requests the TRASC launcher's controller scheme: multiple switchable
+layers, persisted per-control bindings to keyboard/mouse actions, and joystick
+support. Make the display fullscreen and move its toolbar actions into a gear
+menu with a sci-fi/space-themed icon. Controller/fullscreen work is the active
+milestone; do not change graphics policy or server/runtime packages for it.
+
+## 0.1.10 controller/fullscreen implementation
+
+TRASC controller behavior is pinned to
+`b3bb19532eb53830af936d5e4ce95e848a46bce4`. Its pure mapper, Android adapter and
+layer editor are adapted to EVE's RFB transport with four exact default layers,
+one-to-six layer editing, inheritance/cyclic/direct/held switches, keyboard/chord,
+mouse/wheel/cursor bindings and atomic bounded private profiles. Shared held state
+aggregates pad, keyboard and touch so one source cannot release another's input.
+Focus/menu/text/editor/pause/device removal release game input; disconnect releases
+wire-held keys/buttons with a 250 ms socket-close deadline. Genuine gamepad source
+filtering keeps physical keyboard/remote arrows from claiming the controller slot.
+
+The display is immersive fullscreen and keeps its guest framebuffer/aspect-fit
+transform. A top-right orbital gear overlays Text/Tab/Enter/Esc/right-click,
+controller settings and Launcher; the toolbar no longer reserves height. Layer
+changes show a short banner. Graphics policy/runtime/source pins remain unchanged.
+Support includes the saved controller profile without entered login text.
+
+Host checks cover 10,000 mixed controller transitions, binding/profile rejection,
+reference-counted modifiers and controller/physical/touch RFB event ordering,
+including independent wire-key release. Android build and physical Thor controls
+qualification are required before accepting this milestone. See [the controls
+test](CONTROLS.md). Preserve the accepted 0.1.9 visual/performance result.
+
 ## Next milestones
 
 1. Preserve accepted server/world lifecycle, Wine/FEX probe, exact 125,116-resource
-   import, private TLS, client startup and local login/character selection.
-2. Physically qualify 0.1.9 EVE Adreno rendering and usable input, cold/warm-cache
-   startup, display reopen and clean shutdown using a fresh local account.
-3. After performance is usable, qualify character creation/station/undock/warp/dock
-   and persistent reopen, then audio and controller support.
+   import, private TLS, client startup/local login and 0.1.9 Adreno rendering/input.
+2. Qualify 0.1.10 TRASC-style controller layers/rebinding and fullscreen
+   display with the space-themed gear menu, then cold/warm startup, display reopen
+   and explicit clean shutdown using the current local test account.
+3. Qualify visible character/station/undock/warp/dock and persistent reopen, then
+   audio. Revisit graphical performance after the controls are usable.
 
 Runtime-v1 is immutable. Server package source/build input changes require a new
 runtime tag and matching app URL. APK backend scripts are bound independently

@@ -2,6 +2,9 @@ package io.github.russianranger.eve;
 
 import android.app.*;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
+import android.content.res.ColorStateList;
 import android.os.*;
 import android.text.InputType;
 import android.view.*;
@@ -12,7 +15,7 @@ import java.io.IOException;
 import java.net.*;
 import java.util.concurrent.*;
 
-/** Initial EVE startup/login display. RuntimeService continues owning the client session. */
+/** Fullscreen EVE display and layered controls. RuntimeService owns the client session. */
 public final class ClientDisplayActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Object socketLock = new Object();
@@ -29,7 +32,17 @@ public final class ClientDisplayActivity extends Activity {
     private AlertDialog activeTextDialog;
     private volatile DisplayPerformance performance;
     private RfbView screen;
-    private TextView status;
+    private TextView status, layerBanner, layerStatus;
+    private FrameLayout menuLayer;
+    private LinearLayout menu;
+    private ImageButton gear;
+    private ControllerManager controller;
+    private DisplayInput gameInput;
+    private PointerMotion pointerMotion;
+    private AlertDialog mappingDialog;
+    private boolean menuOpen, mappingsOpen;
+    private int pointerMask;
+    private final Runnable hideLayer = () -> { if (layerBanner != null) layerBanner.setVisibility(View.GONE); };
     private volatile Socket socket;
     private volatile RfbClient connection;
     private volatile boolean visible;
@@ -40,17 +53,81 @@ public final class ClientDisplayActivity extends Activity {
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setBackgroundColor(Color.BLACK);
-        root.setOnApplyWindowInsetsListener((view, insets) -> { root.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(), insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom()); return insets; });
-        LinearLayout tools = new LinearLayout(this); tools.setBackgroundColor(0xff102334);
-        button(tools, "Launcher", this::finish); button(tools, "Text", this::textEntry);
-        button(tools, "Tab", () -> press(0xff09)); button(tools, "Enter", () -> press(0xff0d));
-        button(tools, "Esc", () -> press(0xff1b)); button(tools, "Right click", () -> screen.rightClick());
-        HorizontalScrollView bar = new HorizontalScrollView(this); bar.addView(tools); root.addView(bar);
-        status = new TextView(this); status.setTextColor(0xff6ee4f0); status.setTextSize(12); status.setPadding(dp(8), dp(3), dp(8), dp(3));
-        status.setText("Connecting to local client display…"); root.addView(status);
-        screen = new RfbView(this); screen.setPointer((x, y, mask) -> submit(client -> client.pointer(x, y, mask)));
-        root.addView(screen, new LinearLayout.LayoutParams(-1, 0, 1)); setContentView(root);
+        fullscreen();
+        FrameLayout root = new FrameLayout(this); root.setBackgroundColor(Color.BLACK);
+        screen = new RfbView(this);
+        root.addView(screen, new FrameLayout.LayoutParams(-1, -1));
+        pointerMotion = new PointerMotion((x, y, mask) -> submit(client -> client.pointer(x, y, mask)),
+            new PointerMotion.Scheduler() {
+                public void post(Runnable task) { screen.postOnAnimation(task); }
+                public void remove(Runnable task) { screen.removeCallbacks(task); }
+            });
+        gameInput = new DisplayInput(new DisplayInput.Sink() {
+            public void key(int symbol, boolean down) { submit(client -> client.key(symbol, down)); }
+            public void pointer(int x, int y, int mask) {
+                if (mask != pointerMask) { pointerMask = mask; pointerMotion.edge(x, y, mask); }
+                else pointerMotion.move(x, y, mask);
+            }
+        });
+        screen.setPointer((x, y, mask) -> { if (gameInputActive()) gameInput.touch(x, y, mask); });
+        status = new TextView(this); status.setTextColor(0xff6ee4f0); status.setTextSize(12);
+        status.setPadding(dp(12), dp(6), dp(12), dp(6)); status.setBackground(panel(0xc0081728));
+        status.setText("Connecting to local client display…");
+        FrameLayout.LayoutParams statusPosition = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        statusPosition.topMargin = dp(12); root.addView(status, statusPosition);
+        layerBanner = new TextView(this); layerBanner.setTextColor(0xffeafcff); layerBanner.setTextSize(15);
+        layerBanner.setPadding(dp(18), dp(8), dp(18), dp(8)); layerBanner.setBackground(panel(0xb0092036));
+        layerBanner.setVisibility(View.GONE);
+        FrameLayout.LayoutParams bannerPosition = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        bannerPosition.topMargin = dp(12); root.addView(layerBanner, bannerPosition);
+        menuLayer = new FrameLayout(this); menuLayer.setBackgroundColor(0x80030b17); menuLayer.setVisibility(View.GONE);
+        menuLayer.setOnClickListener(view -> setMenuOpen(false)); root.addView(menuLayer, new FrameLayout.LayoutParams(-1, -1));
+        menu = new LinearLayout(this); menu.setOrientation(LinearLayout.VERTICAL); menu.setPadding(dp(14), dp(10), dp(14), dp(14));
+        menu.setBackground(panel(0xf009192d)); menu.setOnClickListener(view -> { });
+        TextView title = new TextView(this); title.setText("EVE / FLIGHT CONTROLS"); title.setTextColor(0xff6ee4f0);
+        title.setTextSize(16); title.setPadding(0, dp(6), 0, dp(8)); menu.addView(title);
+        layerStatus = new TextView(this); layerStatus.setTextColor(0xffc6e9f4); layerStatus.setTextSize(13); menu.addView(layerStatus);
+        button(menu, "Back to client", () -> setMenuOpen(false));
+        button(menu, "Next controller layer", () -> controller.nextLayer());
+        button(menu, "Controller mappings", this::controllerMappings);
+        button(menu, "Text entry", this::textEntry);
+        button(menu, "Tab", () -> menuKey(0xff09)); button(menu, "Enter", () -> menuKey(0xff0d));
+        button(menu, "Esc", () -> menuKey(0xff1b));
+        button(menu, "Right click", () -> { setMenuOpen(false); gameInput.mouse("menu-right", 4, true); gameInput.mouse("menu-right", 4, false); });
+        button(menu, "Launcher", this::finish);
+        ScrollView menuScroll = new ScrollView(this); menuScroll.setFillViewport(false); menuScroll.addView(menu);
+        FrameLayout.LayoutParams menuPosition = new FrameLayout.LayoutParams(Math.min(dp(340), getResources().getDisplayMetrics().widthPixels - dp(32)), -1, Gravity.TOP | Gravity.RIGHT);
+        menuPosition.setMargins(dp(12), dp(68), dp(12), dp(12)); menuLayer.addView(menuScroll, menuPosition);
+        gear = new ImageButton(this); gear.setImageResource(R.drawable.ic_client_gear); gear.setPadding(dp(8), dp(8), dp(8), dp(8));
+        gear.setContentDescription("Open flight controls"); gear.setTooltipText("Flight controls");
+        gear.setBackground(new RippleDrawable(ColorStateList.valueOf(0x556ee4f0), panel(0xb009192d), null));
+        gear.setOnClickListener(view -> setMenuOpen(!menuOpen));
+        FrameLayout.LayoutParams gearPosition = new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP | Gravity.RIGHT);
+        gearPosition.setMargins(dp(12), dp(12), dp(12), 0); root.addView(gear, gearPosition);
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            int left = 0, top = 0, right = 0, bottom = 0;
+            if (Build.VERSION.SDK_INT >= 28 && insets.getDisplayCutout() != null) {
+                left = insets.getDisplayCutout().getSafeInsetLeft(); top = insets.getDisplayCutout().getSafeInsetTop();
+                right = insets.getDisplayCutout().getSafeInsetRight(); bottom = insets.getDisplayCutout().getSafeInsetBottom();
+            }
+            gearPosition.setMargins(dp(12) + left, dp(12) + top, dp(12) + right, 0); gear.setLayoutParams(gearPosition);
+            menuPosition.setMargins(dp(12) + left, dp(68) + top, dp(12) + right, dp(12) + bottom); menuScroll.setLayoutParams(menuPosition);
+            return insets;
+        });
+        setContentView(root);
+        controller = new ControllerManager(this, RuntimeManager.get(this).clientState, event -> {
+            switch (event.optString("type")) {
+                case "button":
+                    if (event.optString("action").equals("ClientMenu")) { if (event.optBoolean("down")) setMenuOpen(true); }
+                    else gameInput.action(event.optString("action"), event.optBoolean("down"));
+                    break;
+                case "pointer": gameInput.move((float) event.optDouble("x"), (float) event.optDouble("y")); break;
+                case "wheel": gameInput.wheel(event.optInt("y")); break;
+                case "layer": showLayer(); break;
+                case "capture": if (!event.optBoolean("down")) gameInput.releaseAll(); break;
+            }
+        });
+        layerStatus.setText("Layer " + controller.layerLabel());
         performanceFile = new File(RuntimeManager.get(this).clientState, "logs/display-performance.json");
         diagnostics.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
         diagnostics.setContinueExistingPeriodicTasksAfterShutdownPolicy(false);
@@ -84,7 +161,9 @@ public final class ClientDisplayActivity extends Activity {
     private void button(LinearLayout tools, String title, Runnable action) {
         Button button = new Button(this); button.setText(title); button.setAllCaps(false);
         button.setTextColor(0xffeef8fa); button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xff24516b));
-        button.setOnClickListener(view -> action.run()); tools.addView(button, new LinearLayout.LayoutParams(-2, dp(44)));
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(0x446ee4f0), panel(0xff173951), null));
+        button.setOnClickListener(view -> action.run());
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(48)); params.topMargin = dp(5); tools.addView(button, params);
     }
     private interface Input { void send(RfbClient client) throws IOException; }
     private void submit(Input action) {
@@ -108,9 +187,53 @@ public final class ClientDisplayActivity extends Activity {
             input.getQueue().clear();
         }
     }
+    private GradientDrawable panel(int color) {
+        GradientDrawable background = new GradientDrawable(); background.setColor(color);
+        background.setCornerRadius(dp(12)); background.setStroke(dp(1), 0xff315d78); return background;
+    }
+    private void fullscreen() {
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        if (Build.VERSION.SDK_INT >= 28) {
+            WindowManager.LayoutParams attributes = getWindow().getAttributes();
+            attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            getWindow().setAttributes(attributes);
+        }
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+            WindowInsetsController insets = getWindow().getInsetsController();
+            if (insets != null) { insets.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE); insets.hide(WindowInsets.Type.systemBars()); }
+        } else getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+    }
+    private boolean gameInputActive() { return visible && connection != null && hasWindowFocus() && !menuOpen && !mappingsOpen && activeTextDialog == null; }
+    private void updateCapture() {
+        if (controller == null) return;
+        boolean enabled = gameInputActive();
+        if (controller.active() != enabled) controller.capture(enabled);
+        if (!enabled) { screen.releasePointer(); gameInput.releaseAll(); }
+    }
+    private void setMenuOpen(boolean open) {
+        menuOpen = open; menuLayer.setVisibility(open ? View.VISIBLE : View.GONE);
+        gear.setContentDescription(open ? "Close flight controls" : "Open flight controls");
+        if (controller != null) layerStatus.setText("Layer " + controller.layerLabel());
+        updateCapture(); if (open) menu.getChildAt(0).requestFocus(); else { screen.requestFocus(); fullscreen(); }
+    }
+    private void showLayer() {
+        if (controller == null || layerBanner == null) return;
+        String label = "Layer " + controller.layerLabel(); layerStatus.setText(label); layerBanner.setText(label);
+        layerBanner.setVisibility(View.VISIBLE); handler.removeCallbacks(hideLayer); handler.postDelayed(hideLayer, 1500);
+    }
+    private void controllerMappings() {
+        mappingsOpen = true; setMenuOpen(false); updateCapture();
+        mappingDialog = new ControllerDialog(this, controller, () -> {
+            mappingsOpen = false; mappingDialog = null; screen.requestFocus(); fullscreen(); updateCapture();
+        }).show();
+    }
     private void press(int key) { submit(client -> client.tap(key)); }
+    private void menuKey(int key) { setMenuOpen(false); press(key); }
     private void textEntry() {
         if (activeTextDialog != null) return;
+        setMenuOpen(false);
         EditText text = new EditText(this);
         // Do not offer prediction or retain passwords in diagnostics.
         text.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
@@ -126,10 +249,12 @@ public final class ClientDisplayActivity extends Activity {
                 if (value.length() > 4096) { Toast.makeText(this, "Send up to 4096 characters at once", Toast.LENGTH_SHORT).show(); return; }
                 boolean replacing = replace.isChecked(); submit(client -> client.text(value, replacing));
             }).setNegativeButton("Cancel", (dialog, which) -> text.setText("")).create();
-        activeTextDialog.setOnDismissListener(dialog -> { text.setText(""); activeTextDialog = null; });
-        activeTextDialog.show();
+        activeTextDialog.setOnDismissListener(dialog -> { text.setText(""); activeTextDialog = null; screen.requestFocus(); fullscreen(); updateCapture(); });
+        updateCapture(); activeTextDialog.show();
     }
-    private void displayStatus(long token, String message) { handler.post(() -> { if (visible && generation == token) status.setText(message); }); }
+    private void displayStatus(long token, String message) { handler.post(() -> {
+        if (visible && generation == token) { status.setText(message); status.setVisibility(receivedFrame ? View.GONE : View.VISIBLE); updateCapture(); }
+    }); }
     private void failedInput(RfbClient target, long token) {
         synchronized (socketLock) { if (generation == token && connection == target) close(socket); }
     }
@@ -142,7 +267,7 @@ public final class ClientDisplayActivity extends Activity {
         }
         DisplayPerformance measured = performance; performance = null; screen.setPerformance(null); finishPerformance(measured);
         input.getQueue().clear();
-        try { input.execute(() -> { try { if (client != null) client.pointer(0, 0, 0); } catch (IOException ignored) { } finally { close(previous); } }); }
+        try { input.execute(() -> { try { if (client != null) client.releaseInputs(); } catch (IOException ignored) { } finally { close(previous); } }); }
         catch (RejectedExecutionException stopped) { close(previous); }
         // A blocked sender cannot retain a background display connection.
         handler.postDelayed(() -> close(previous), 250);
@@ -157,6 +282,7 @@ public final class ClientDisplayActivity extends Activity {
                 break;
             }
             Socket attempt = new Socket();
+            RfbClient sessionClient = null;
             DisplayPerformance measured = null;
             boolean connected = false;
             try {
@@ -165,7 +291,9 @@ public final class ClientDisplayActivity extends Activity {
                 attempt.setTcpNoDelay(true); attempt.setSoTimeout(15000);
                 measured = new DisplayPerformance();
                 RfbClient client = new RfbClient(attempt.getInputStream(), attempt.getOutputStream(), new RfbClient.Screen() {
-                    @Override public void resize(int width, int height) { if (generation == token) screen.resize(width, height); }
+                    @Override public void resize(int width, int height) { if (generation == token) {
+                        screen.resize(width, height); handler.post(() -> { if (generation == token) gameInput.size(width, height); });
+                    } }
                     @Override public void pixels(int x, int y, int width, int height, int[] pixels) { if (generation == token) screen.pixels(x, y, width, height, pixels); }
                     @Override public void updated() {
                         if (generation != token) return;
@@ -173,6 +301,7 @@ public final class ClientDisplayActivity extends Activity {
                         if (!receivedFrame) { receivedFrame = true; displayStatus(token, "Local display connected · touch to click · use Text for login fields"); }
                     }
                 }, measured);
+                sessionClient = client;
                 client.handshake();
                 if (!visible || generation != token) break;
                 receivedFrame = false;
@@ -188,15 +317,20 @@ public final class ClientDisplayActivity extends Activity {
                 while (visible && generation == token) client.readUpdate();
             } catch (IOException | RuntimeException error) {
                 if (visible && generation == token) {
+                    receivedFrame = false;
                     if (connected) deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(2);
                     String detail = error.getMessage() == null ? "connection closed" : error.getMessage();
                     displayStatus(token, "Waiting for local client display · " + detail + " · Return to Launcher for logs");
                     if (!detail.equals(previousError)) { RuntimeService.append(this, "Client display connection: " + detail); previousError = detail; }
                 }
             } finally {
+                // A peer that stopped reading must not trap reconnect in a release write.
+                handler.postDelayed(() -> close(attempt), 250);
+                try { if (sessionClient != null) sessionClient.releaseInputs(); } catch (IOException ignored) { }
                 try { attempt.close(); } catch (IOException ignored) { }
                 synchronized (socketLock) {
-                    if (generation == token) { connection = null; socket = null; performance = null; screen.setPerformance(null); }
+                    if (generation == token) { connection = null; socket = null; performance = null; screen.setPerformance(null); receivedFrame = false;
+                        handler.post(() -> { if (generation == token) updateCapture(); }); }
                 }
                 finishPerformance(measured);
             }
@@ -205,22 +339,40 @@ public final class ClientDisplayActivity extends Activity {
         }
     }
     @Override public void onResume() {
-        super.onResume(); final long token;
+        super.onResume(); fullscreen(); final long token;
         synchronized (socketLock) { visible = true; receivedFrame = false; token = ++generation; }
         new Thread(() -> connect(token), "eve-display-reader").start();
     }
     @Override public void onPause() {
+        if (controller != null) controller.capture(false);
+        screen.releasePointer(); gameInput.releaseAll();
+        visible = false;
         if (activeTextDialog != null) activeTextDialog.dismiss();
-        screen.releasePointer(); disconnect();
+        if (mappingDialog != null) mappingDialog.dismiss();
+        disconnect();
         super.onPause();
     }
     @Override public void onDestroy() {
+        if (controller != null) controller.close();
+        gameInput.releaseAll(); pointerMotion.cancel(); handler.removeCallbacks(hideLayer);
         disconnect(); input.shutdown(); screen.dispose();
         getWindow().removeOnFrameMetricsAvailableListener(frameListener); frameThread.quitSafely(); diagnostics.shutdown();
         super.onDestroy();
     }
     private int keysym(KeyEvent event) {
         switch (event.getKeyCode()) {
+            case KeyEvent.KEYCODE_SHIFT_LEFT: return 0xffe1;
+            case KeyEvent.KEYCODE_SHIFT_RIGHT: return 0xffe2;
+            case KeyEvent.KEYCODE_CTRL_LEFT: return 0xffe3;
+            case KeyEvent.KEYCODE_CTRL_RIGHT: return 0xffe4;
+            case KeyEvent.KEYCODE_ALT_LEFT: return 0xffe9;
+            case KeyEvent.KEYCODE_ALT_RIGHT: return 0xffea;
+            case KeyEvent.KEYCODE_MOVE_HOME: return 0xff50;
+            case KeyEvent.KEYCODE_MOVE_END: return 0xff57;
+            case KeyEvent.KEYCODE_PAGE_UP: return 0xff55;
+            case KeyEvent.KEYCODE_PAGE_DOWN: return 0xff56;
+            case KeyEvent.KEYCODE_INSERT: return 0xff63;
+            case KeyEvent.KEYCODE_NUM_LOCK: return 0xff7f;
             case KeyEvent.KEYCODE_ENTER: return 0xff0d;
             case KeyEvent.KEYCODE_TAB: return 0xff09;
             case KeyEvent.KEYCODE_DEL: return 0xff08;
@@ -230,17 +382,31 @@ public final class ClientDisplayActivity extends Activity {
             case KeyEvent.KEYCODE_DPAD_UP: return 0xff52;
             case KeyEvent.KEYCODE_DPAD_RIGHT: return 0xff53;
             case KeyEvent.KEYCODE_DPAD_DOWN: return 0xff54;
-            default: int code = event.getUnicodeChar(); return code == 0 ? 0 : code <= 255 ? code : 0x01000000 | code;
+            default:
+                if (event.getKeyCode() >= KeyEvent.KEYCODE_F1 && event.getKeyCode() <= KeyEvent.KEYCODE_F12)
+                    return 0xffbe + event.getKeyCode() - KeyEvent.KEYCODE_F1;
+                int code = event.getUnicodeChar(event.getMetaState() & ~(KeyEvent.META_CTRL_MASK | KeyEvent.META_ALT_MASK | KeyEvent.META_META_MASK));
+                return code == 0 ? 0 : code <= 255 ? code : 0x01000000 | code;
         }
     }
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
-        if (activeTextDialog != null || !hasWindowFocus()) return super.dispatchKeyEvent(event);
-        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) return super.dispatchKeyEvent(event);
+        if (!gameInputActive()) return super.dispatchKeyEvent(event);
+        if (controller.key(event)) return true;
+        if (ControllerManager.isGamepad(event)) return true;
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) { if (event.getAction() == KeyEvent.ACTION_UP) setMenuOpen(true); return true; }
+        if (!event.isFromSource(InputDevice.SOURCE_KEYBOARD)) return super.dispatchKeyEvent(event);
         int key = keysym(event);
         if (key != 0 && (event.getAction() == KeyEvent.ACTION_DOWN || event.getAction() == KeyEvent.ACTION_UP)) {
-            if (event.getAction() == KeyEvent.ACTION_DOWN) press(key);
+            gameInput.key("physical:" + event.getDeviceId() + ":" + event.getKeyCode(), key, event.getAction() == KeyEvent.ACTION_DOWN);
             return true;
         }
         return super.dispatchKeyEvent(event);
     }
+    @Override public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        return gameInputActive() && controller.motion(event) || super.dispatchGenericMotionEvent(event);
+    }
+    @Override public void onWindowFocusChanged(boolean focus) {
+        super.onWindowFocusChanged(focus); if (focus && activeTextDialog == null) fullscreen(); updateCapture();
+    }
+    @Override public void onBackPressed() { if (menuOpen) setMenuOpen(false); else setMenuOpen(true); }
 }

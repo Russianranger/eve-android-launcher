@@ -197,3 +197,40 @@ request Present(1); native CI and the physical supervisor require integer reques
 The fixed configuration and exact `dxvk-frame` presentation-thread class join
 bounded support evidence. A CPU fixture without present-wait support cannot
 reproduce the physical wait; passing CI therefore does not accept EVE performance.
+
+## October 4: 0.1.9 physical rendering accepted
+
+`eve-support-20261004-031450.zip` (264,829 bytes; SHA-256
+`85d01efb17375992caca7f3d24dba7bb12020046cdefdf7cb4636b03993050dd`)
+records 0.1.9 on AYN Thor API33. The user reports successful login and substantially
+improved graphics in the teens and 20s FPS, acceptable for the current milestone.
+Preserve this accepted result; further graphics optimization is deferred at the
+user's request while controller support and the fullscreen display are added.
+
+Native Adreno 740/DXVK 2.4.1 preflight passes the revised Present(1) test, effective
+override 0, two actual IMMEDIATE modes and all three independently observed
+frames. EVE's own combined log also records `dxgi.syncInterval = 0`, the existing
+30 FPS/one-frame settings, and IMMEDIATE mode. Its owned 1280x720 window is now
+focused and responsive through the three-minute observation, unlike 0.1.8.
+The source-backed presentation workaround is therefore physically effective for
+this tested session; the precise original wait owner remains an inference.
+
+The connected display receives 7,876 updates over 458.264 seconds, averaging
+17.19 updates per second. That is a transport update rate, not an independently
+measured EVE FPS value. All 275 input operations complete, with zero rejections,
+at most one queued operation and a maximum queue delay of 6.25 ms. Decode totals
+13.410 seconds, bitmap publication 6.041 seconds and view drawing 0.552 seconds.
+The retained 53 live performance samples span 269.8 seconds after older rows are
+dropped for the existing byte bound. The EVE main thread progresses from 9,113
+to 22,427 CPU ticks; graphics presentation/submission/completion workers also
+progress. Client-group RSS ranges from 2.61 to 3.21 GiB. These observations
+support a running renderer and usable transport rather than the earlier stall.
+
+The server records the local handshake, new character creation/selection and
+docked fitting bootstrap. Credentials are not copied into project documentation
+or defaults. The client exits with code 0 after 474.5 seconds; no current
+launcher stop operation is recorded, so the supervisor calls it an unexpected
+exit. All owned groups are subsequently empty and `cleanShutdown=true`; the
+server remains ready at export. This does not revoke the user's accepted
+rendering result, but it does not qualify an explicit client/server shutdown,
+reopen persistence, visible station gameplay, undock/warp/dock or audio.

@@ -2,6 +2,8 @@ package io.github.russianranger.eve;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
+import java.util.Set;
 
 /** Basic RFB 3.x display/input transport. The only endpoint is the local client session. */
 final class RfbClient {
@@ -17,6 +19,8 @@ final class RfbClient {
     private volatile int width, height;
     private int[] pixelBuffer = new int[0];
     private byte[] rowBuffer = new byte[0];
+    private final Set<Integer> heldKeys = new HashSet<>();
+    private int pointerX, pointerY;
 
     RfbClient(InputStream input, OutputStream output, Screen screen) {
         this(input, output, screen, new DisplayPerformance());
@@ -112,7 +116,11 @@ final class RfbClient {
         }
     }
     void key(int keysym, boolean down) throws IOException {
-        synchronized (out) { writeKey(keysym, down); out.flush(); }
+        synchronized (out) {
+            writeKey(keysym, down);
+            if (down) heldKeys.add(keysym); else heldKeys.remove(keysym);
+            out.flush();
+        }
     }
     private void writeKey(int keysym, boolean down) throws IOException {
         out.writeByte(4); out.writeByte(down ? 1 : 0); out.writeShort(0); out.writeInt(keysym);
@@ -137,8 +145,17 @@ final class RfbClient {
     }
     void pointer(int x, int y, int mask) throws IOException {
         synchronized (out) {
+            pointerX = Math.max(0, Math.min(width - 1, x));
+            pointerY = Math.max(0, Math.min(height - 1, y));
             out.writeByte(5); out.writeByte(mask & 31);
-            out.writeShort(Math.max(0, Math.min(width - 1, x))); out.writeShort(Math.max(0, Math.min(height - 1, y))); out.flush();
+            out.writeShort(pointerX); out.writeShort(pointerY); out.flush();
+        }
+    }
+    void releaseInputs() throws IOException {
+        synchronized (out) {
+            for (int key : heldKeys) writeKey(key, false);
+            heldKeys.clear();
+            out.writeByte(5); out.writeByte(0); out.writeShort(pointerX); out.writeShort(pointerY); out.flush();
         }
     }
 }

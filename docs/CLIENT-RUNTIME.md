@@ -1,12 +1,12 @@
 # Client runtime qualification
 
-The preview APK prepares a private client cache and installs the exact FEX / Wine ARM64EC runtime already used by the UO launcher. The Thor server lifecycle, Wine/FEX x64 execution probe, exact client import, private TLS, local login and character selection have passed. The 0.1.9 preview prioritizes Adreno rendering and input responsiveness and tests forced IMMEDIATE presentation through DXVK 2.4.1. Native Adreno shader/presentation preflight passed on Thor; EVE GPU performance, audio and controller support still need device qualification.
+The preview APK prepares a private client cache and installs the exact FEX / Wine ARM64EC runtime already used by the UO launcher. The Thor server lifecycle, Wine/FEX x64 execution probe, exact client import, private TLS, local login and character selection have passed. The 0.1.9 device test accepts Adreno rendering and usable input with IMMEDIATE presentation. The 0.1.10 preview adds TRASC's controller layers and fullscreen gear controls; audio and station/space gameplay remain separate device gates.
 
 The accepted 0.1.1 recovery imported build 3396210 with all 125,116 indexed
 resources in 6 minutes 14 seconds, peaking at 150.6 MiB preparation-worker RSS.
 Preserve that cache and the existing runtime/prefix. Startup/local login passed
-in 0.1.4. Client rendering/input optimization is the current gate; audio and
-controller support follow. Detailed
+in 0.1.4 and responsive Adreno rendering/input in 0.1.9. Controller/fullscreen
+qualification is the current gate. Detailed
 physical evidence is recorded in [the handoff](HANDOFF.md).
 
 ## Exact client required
@@ -125,7 +125,7 @@ observational and never authorize Linux process cleanup.
 
 The supervisor requires a bounded, session-matched child-created report, then
 retains its existing observation period. This establishes process creation only.
-Adreno rendering and responsive input remain unqualified. The helper restores/foregrounds only a
+Its 0.1.8 test did not accept Adreno rendering/input. The helper restores/foregrounds only a
 live child's own visible unowned main window, once, using asynchronous window
 operations. It records numeric visibility/focus/rectangle and a bounded WM_NULL
 response probe for at most three minutes, with five-second receipt publication.
@@ -141,7 +141,24 @@ through the Xvnc pixel-copy path. The native shader/display probe now requests
 `Present(1, 0)` and the supervisor requires its exact requested interval, freshly
 logged override and actual IMMEDIATE mode, plus all three visible frames, before
 starting EVE. The preflight receipt records this policy separately from EVE's
-performance gate. Device confirmation of usable EVE rendering/input is required.
+performance gate. The October 4 device test confirms usable EVE rendering/input.
+
+## Fullscreen controller display in 0.1.10
+
+The fullscreen framebuffer keeps its guest resolution and aspect-fit transform.
+An orbital gear menu overlays the display; no permanent toolbar consumes height.
+TRASC's pure controller mapper and Android adapter/editor are adapted from pinned
+commit `b3bb19532eb53830af936d5e4ce95e848a46bce4`. Profiles are bounded, validated,
+atomically saved to private `client-state/controller.json`, and included in support
+exports. No login credentials are stored there.
+
+Keyboard/controller/touch share reference-counted keys and mouse-button ownership.
+Layer transitions release old outputs before remapping held sources; temporary
+layers return on release. Menus, editor/text dialogs, lost focus, pause and device
+removal release held inputs. The RFB transport tracks wire-held keys and releases
+them with mouse mask zero before close, with a 250 ms close deadline. Capture is
+limited to genuine gamepad devices; physical keyboard events retain their separate
+route. See [controls and the physical test](CONTROLS.md).
 
 ## Source and licenses
 

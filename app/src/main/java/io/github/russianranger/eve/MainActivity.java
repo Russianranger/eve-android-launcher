@@ -92,7 +92,7 @@ public final class MainActivity extends Activity {
             action(client, "Install Wine / FEX runtime", "install-client"); action(client, "Import complete client ZIP", "pick-client");
             action(client, "Resume interrupted client import", "resume-client");
             action(client, "Validate and prepare client", "validate-client"); action(client, "Probe Wine / FEX", "probe-client");
-            LinearLayout session = card("Client session", "Use Adreno GPU rendering for the performance test. Software recovery uses the previous slower renderer. Stop the client before changing this option.");
+            LinearLayout session = card("Client session", "Open the fullscreen display for touch, controller layers and gear controls. Use Adreno GPU rendering; software recovery is slower. Stop the client before changing this option.");
             useAdreno = new CheckBox(this); useAdreno.setText("Use Adreno GPU rendering"); useAdreno.setTextColor(0xffeef8fa);
             useAdreno.setChecked(new ClientRuntime(this).renderer().equals("turnip-dxvk"));
             useAdreno.setOnCheckedChangeListener((button, checked) -> {

@@ -1,4 +1,13 @@
-# EVE Android Launcher 0.1.9: presentation-wait compatibility
+# EVE Android Launcher 0.1.10: fullscreen controller qualification
+
+The October 4 0.1.9 test accepts Adreno rendering and usable input, with user-reported
+teens/20s FPS. Preserve the renderer and current local account; do not repeat import,
+runtime, TLS or the prior black-screen investigation. Controller layers/fullscreen
+are the active milestone. Follow [the defaults and six-step controls test](CONTROLS.md).
+Update with `EVE-Android-Launcher-0.1.10.apk`, with client/server stopped, without
+uninstalling or clearing data. Further graphics optimization is deferred.
+
+The previous graphics test and earlier recovery evidence remain below for reference.
 
 The October 3 0.1.4 test passed Wine certificate/localhost TLS, EVE startup,
 local authentication, character selection and clean shutdown. The user reported
@@ -19,7 +28,7 @@ the EVE main thread stops progressing at about 57 seconds and remains in a futex
 wait. 0.1.9 tests a session-only `dxgi.syncInterval=0` override, retaining GPU
 rendering, the 30 FPS cap and queue limit. This bypasses DXVK's FIFO present-wait
 path; the source mechanism and limits are documented in CLIENT-PERFORMANCE.md.
-Actual EVE rendering and input still require device confirmation.
+The subsequent 0.1.9 device test accepts EVE rendering/input for this milestone.
 
 ## GPU and input performance test
 
@@ -157,7 +166,7 @@ previously active content must remain intact during a failed import.
 
 ## Install and server setup
 
-1. Install `EVE-Android-Launcher-0.1.9.apk`. Grant the notification permission when
+1. Install `EVE-Android-Launcher-0.1.10.apk`. Grant the notification permission when
    prompted so the running server has a visible foreground notification.
 2. Open the Server tab and install the server runtime. Keep the app open during
    the initial download and extraction. Use internal storage for the runtime.
@@ -191,6 +200,8 @@ station/undock/warp/dock qualification remain pending.
 - Backend regression tests, client supervision/cleanup and Python/shell checks.
 - Compiled loopback address policy, basic RFB protocol/input fixtures, x64
   certificate-helper compilation and packaged client-network option.
+- Controller layers/chords/holds/profile validation, shared pad/keyboard/touch
+  key and mouse ownership, and actual RFB release/input event ordering.
 - Native ARM64 server dependency build, initial world preparation, application
   readiness, and supervised shutdown when runtime-v1 is first created.
 - Packaged rootfs structure, architecture, seed data, provenance and SHA-256.

@@ -206,9 +206,62 @@ public final class RfbHostTest {
         motion.move(8,8,0); Runnable abandoned = callbacks.get(0); motion.cancel(); abandoned.run();
         check(delivered.size() == 5, "dispose cancels pending input");
     }
+    private static List<String> events(CountingOutput output) throws IOException {
+        List<String> result = new ArrayList<>();
+        DataInputStream wire = new DataInputStream(new ByteArrayInputStream(output.toByteArray()));
+        while (wire.available() > 0) {
+            int type = wire.readUnsignedByte(), state = wire.readUnsignedByte();
+            if (type == 4) { check(wire.readUnsignedShort() == 0, "key padding"); result.add("key:" + wire.readInt() + ":" + state); }
+            else if (type == 5) result.add("pointer:" + wire.readUnsignedShort() + ":" + wire.readUnsignedShort() + ":" + state);
+            else throw new AssertionError("Unexpected input message " + type);
+        }
+        return result;
+    }
+    private static void controllerAndSharedInputReachWire() throws Exception {
+        CountingOutput output = new CountingOutput();
+        RfbClient client = new RfbClient(new ByteArrayInputStream(hello(1280, 720)), output, new Screen());
+        client.handshake(); output.clear();
+        DisplayInput display = new DisplayInput(new DisplayInput.Sink() {
+            public void key(int symbol, boolean down) { try { client.key(symbol, down); } catch (IOException e) { throw new RuntimeException(e); } }
+            public void pointer(int x, int y, int mask) { try { client.pointer(x, y, mask); } catch (IOException e) { throw new RuntimeException(e); } }
+        });
+        display.size(1280, 720);
+        ControllerInput pad = new ControllerInput(new ControllerInput.Sink() {
+            public void button(String action, boolean down) { display.action(action, down); }
+            public void pointer(float x, float y) { display.move(x, y); }
+            public void wheel(int amount) { display.wheel(amount); }
+        });
+        pad.activate(true);
+        display.key("keyboard:1", '1', true); pad.value("X", 1); pad.value("X", 1);
+        pad.value("X", 0); display.key("keyboard:1", '!', false);
+        check(events(output).equals(Arrays.asList("key:49:1", "key:49:0")), "pad/keyboard refcounts preserve original release symbol");
+        output.clear();
+        pad.value("X", 1); pad.value("L2", 1); pad.value("L2", 1); pad.value("L2", 0); pad.value("X", 0);
+        check(events(output).equals(Arrays.asList("key:49:1", "key:49:0", "key:56:1", "key:56:0")), "held hotkey switches once to Hotbar 2 and releases old layer");
+        output.clear();
+        display.position(500, 300); pad.value("R1", 1); display.touch(600, 400, 1);
+        pad.value("R1", 0); display.touch(600, 400, 0);
+        check(events(output).equals(Arrays.asList("pointer:500:300:0", "pointer:500:300:1", "pointer:600:400:1", "pointer:600:400:1", "pointer:600:400:0")), "touch/pad button ownership shares position without early release");
+        output.clear(); pad.selectLayer(3); pad.value("X", 1); pad.value("X", 0);
+        check(events(output).equals(Arrays.asList("key:65505:1", "key:66:1", "key:66:0", "key:65505:0")), "inventory Shift+B modifier/key order reaches RFB");
+        output.clear(); pad.value("L1", 1); display.wheel(1); pad.value("L1", 0);
+        check(events(output).equals(Arrays.asList("pointer:600:400:4", "pointer:600:400:12", "pointer:600:400:4", "pointer:600:400:0")), "wheel impulses preserve a held right mouse button");
+        output.clear(); pad.value("L1", 1); pad.value("LeftUp", 1); pad.activate(false); display.releaseAll();
+        List<String> released = events(output);
+        check(released.contains("key:119:1") && released.contains("key:119:0"), "background/menu release sends movement key-up");
+        check(released.get(released.size()-1).equals("pointer:600:400:0"), "all local pointer owners released");
+        output.clear(); display.key("keyboard:w", 'w', true); display.key("keyboard:ctrl", 0xffe3, true); display.mouse("pad:right", 4, true);
+        client.releaseInputs();
+        List<String> shutdown = events(output);
+        check(shutdown.contains("key:119:0") && shutdown.contains("key:65507:0"), "socket shutdown independently releases all wire-held keys");
+        check(shutdown.get(shutdown.size()-1).equals("pointer:600:400:0"), "socket shutdown releases mouse at existing position");
+        output.clear(); client.releaseInputs();
+        check(events(output).equals(Arrays.asList("pointer:600:400:0")), "wire release is idempotent");
+    }
     public static void main(String[] args) throws Exception {
         rawFrameAndInput(); malformedFrames(); compoundInput(); blockedReceiveDoesNotBlockInput();
         socketReceiveDoesNotBlockInput(false); socketReceiveDoesNotBlockInput(true); motionKeepsButtonEdges();
-        System.out.println("Client display RFB/input/motion/performance host fixtures passed");
+        controllerAndSharedInputReachWire();
+        System.out.println("Client display RFB/controller/shared-hold/release/motion/performance host fixtures passed");
     }
 }

@@ -1,3 +1,24 @@
+# EVE Android Launcher 0.1.10 — fullscreen and layered controller controls
+
+The user accepts 0.1.9 Adreno rendering and usable input, reporting teens/20s FPS.
+This update keeps that renderer and moves the display toolbar into a top-right
+orbital gear menu. The game fills the fullscreen display with aspect-fit scaling;
+the menu overlays it without changing guest resolution or touch coordinates.
+
+Controller input follows the TRASC launcher at commit
+`b3bb19532eb53830af936d5e4ce95e848a46bce4`: four default named layers, LT cycling,
+left-stick WASD/right-stick cursor, keyboard/chord/mouse/wheel bindings and a
+saved editor for one to six layers. Save applies validated settings; Cancel leaves
+the saved profile intact. Layer changes show a brief banner. Menu, text/editor,
+focus loss, app pause and controller disconnect release held inputs. The display
+connection independently releases all wire-held keys/buttons before bounded close.
+
+Update in place. Test the gear, LT layers, clicks and a saved custom binding;
+then switch apps and reopen the display to check for stuck keys or mouse buttons.
+These controls send the same default keys as TRASC; their in-game effect follows
+EVE's configured shortcuts. Rendering optimization and gameplay/audio remain later
+work. No runtime reinstall, client import or graphics reconfiguration is needed.
+
 # EVE Android Launcher 0.1.9 — Xvnc presentation-wait compatibility
 
 The 0.1.8 device test confirms EVE owns foreground/focus, yet its main thread

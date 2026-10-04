@@ -84,6 +84,6 @@ final class RfbView extends View implements RfbClient.Screen {
     }
     @Override public boolean performClick() { super.performClick(); return true; }
     void rightClick() { touching = false; edge(4); edge(0); }
-    void releasePointer() { touching = false; edge(0); }
+    void releasePointer() { boolean held = touching; touching = false; motion.cancel(); if (held) edge(0); }
     void dispose() { motion.cancel(); pointer = null; performance = null; synchronized (lock) { if (image != null) { image.recycle(); image = null; } } }
 }

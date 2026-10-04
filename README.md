@@ -11,7 +11,7 @@ Wine/FEX client runtime and validates complete user-supplied client imports.
 0.1.4 passed private Wine TLS, EVE startup, local authentication and character
 selection on the Thor. CPU rendering was too slow for usable text entry. 0.1.5
 prioritizes native Adreno rendering, persistent shader caches, batched input and
-performance diagnostics. Audio, controllers and gameplay qualification follow.
+performance diagnostics. Audio and gameplay qualification follow.
 The 0.1.5 device test passed the native Adreno shader/display checks; 0.1.6 fixes
 the formatted display-report reader that stopped EVE before launch.
 0.1.6 then reached a persistent shader/loading stall. 0.1.7 tests native DXVK 2.4.1
@@ -22,8 +22,23 @@ workers after startup. 0.1.8 activates EVE's owned window once and records windo
 focus/message-pump evidence; it retains DXVK 2.4.1 and the accepted runtime.
 The 0.1.8 device test confirms focus succeeds while EVE's main thread stalls.
 0.1.9 overrides the session's presentation interval to avoid the FIFO completion
-wait through Xvnc, retaining GPU rendering and the 30 FPS cap. This remains a
-device candidate; the updated shader/display probe now requests Present(1).
+wait through Xvnc, retaining GPU rendering and the 30 FPS cap. The October 4
+device test accepts responsive rendering/input in the teens and 20s FPS.
+0.1.10 brings TRASC's layered controller bindings and fullscreen orbital gear menu.
+
+## Fullscreen controls in 0.1.10
+
+The display fills the screen; a top-right space-themed gear opens the controls
+without shrinking the game. Text, Tab, Enter, Esc, right-click and Launcher now
+live in that menu. LT cycles **Main → Hotbar 2 → Spells → Inventory**, with a
+brief layer banner. Left stick sends WASD; right stick moves the cursor; RB/LB
+hold left/right mouse buttons. Other defaults match the TRASC launcher.
+
+Choose **Controller mappings** in the gear menu to edit every button and stick
+direction, keyboard/chords/clicks/wheel, layer actions, names, deadzone and speed.
+One to six layers are supported. **Save** persists the profile; **Cancel** keeps
+the previous settings. Controls release on menus, focus loss and app switches.
+See [default bindings and the device test](docs/CONTROLS.md).
 
 ## First server test
 
@@ -59,9 +74,9 @@ The Thor recovery test has now passed: exact build 3396210, all 125,116 resource
 6 minutes 14 seconds, and 150.6 MiB peak worker RSS with no reported low-memory
 condition. See [the accepted physical evidence](docs/HANDOFF.md). Keep the
 prepared cache. The current preview uses that prepared cache. Startup/login passed; client
-performance is the current device gate.
+rendering/input are accepted; layered controls are the current device gate.
 
-## Client performance preview in 0.1.9
+## Accepted client renderer from 0.1.9
 
 Update in place, start the server and wait for **SERVER READY**, then leave
 **Use Adreno GPU rendering** checked and start/open EVE. Native ARM64EC DXVK 2.4.1
@@ -77,8 +92,8 @@ presentation and verifies the override before testing three visible frames.
 Touch selects a field; **Text** defaults to replacing its contents and sends one
 buffered batch. Use a fresh disposable local account such as `EvePerf1`; do not
 reuse ThorTest. Detailed CPU/input/display metrics join the bounded support ZIP.
-Host/CI helper results establish interoperability, while actual EVE speed and
-responsiveness remain a physical device test. See [the test sequence](docs/TESTING.md)
+Host/CI helper results establish interoperability; the October 4 user test accepts
+EVE speed and responsiveness for now. See [the test sequence](docs/TESTING.md)
 and [optimization evidence](docs/CLIENT-PERFORMANCE.md).
 
 The fixed-target startup helper preserves the client process group, waits for

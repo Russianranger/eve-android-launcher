@@ -59,6 +59,10 @@ if mode in ('graphicsVulkan', 'graphicsD3d'):
         if behavior == 'graphicsD3d-display-bad': display['matched_frames'] = [0, 1]
         (state / 'run/graphics-display.json').write_text(json.dumps(display, indent=2) + '\n')
         (state / 'logs/client-graphicsD3d-helper.log').write_text(json.dumps(report) + '\n')
+        mode_line = 'VK_PRESENT_MODE_FIFO_KHR' if behavior == 'graphicsD3d-policy-fifo' else 'VK_PRESENT_MODE_IMMEDIATE_KHR'
+        policy_log = 'info:  dxgi.syncInterval = 0\ninfo:  Present mode: ' + mode_line + '\n'
+        if behavior == 'graphicsD3d-policy-missing': policy_log = ''
+        (state / 'logs/client-graphicsD3d-helper-errors.log').write_text(policy_log)
     print(json.dumps(report), flush=True)
     sys.exit(5 if behavior in (mode + '-exit', mode + '-orphan') else 0)
 if mode == 'gate':
@@ -264,6 +268,10 @@ class ClientRuntimeTests(unittest.TestCase):
         self.assertEqual(running["graphicsMode"], "turnip-dxvk")
         self.assertTrue(running["graphicsPreflight"]["hardwarePreflightPassed"])
         self.assertTrue(running["graphicsPreflight"]["display"]["display_pixels_verified"])
+        self.assertEqual(running["graphicsPreflight"]["presentation"]["requestedSyncInterval"], 1)
+        self.assertEqual(running["graphicsPreflight"]["presentation"]["forcedSyncInterval"], 0)
+        self.assertEqual(running["graphicsPreflight"]["presentation"]["observedPresentModes"],
+                         ["VK_PRESENT_MODE_IMMEDIATE_KHR"])
         self.assertFalse(running["graphics_qualified"])
         self.assertFalse(running["login_qualified"])
         for role in ("gate", "graphicsVulkan", "graphicsD3d"):
@@ -282,7 +290,8 @@ class ClientRuntimeTests(unittest.TestCase):
 
     def test_graphics_negative_reports_and_nonzero_exits_prevent_eve(self):
         for behavior in ("graphicsVulkan-bad", "graphicsVulkan-exit", "graphicsD3d-bad",
-                         "graphicsD3d-display-bad", "graphicsD3d-exit"):
+                         "graphicsD3d-display-bad", "graphicsD3d-exit", "graphicsD3d-policy-fifo",
+                         "graphicsD3d-policy-missing"):
             with self.subTest(behavior=behavior):
                 process = self.launch(behavior, graphics=True)
                 self.assertEqual(process.wait(timeout=5), 1)

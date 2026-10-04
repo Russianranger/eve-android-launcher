@@ -5,7 +5,7 @@ on:
   pull_request:
   workflow_dispatch:
 env:
-  EVE_APP_VERSION: '0.1.8'
+  EVE_APP_VERSION: '0.1.9'
 permissions:
   contents: read
 defaults:
@@ -170,6 +170,7 @@ jobs:
           path: |
             out/client-graphics-build.log
             out/client-graphics-check.json
+            out/dxvk.conf
             out/qualified-runtime-identity.json
             out/d3d11-*.json
             out/d3d11-*.log

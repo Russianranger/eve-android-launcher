@@ -145,7 +145,7 @@ def d3d_success(*, d3d11_sha: str = "1" * 64, dxgi_sha: str = "2" * 64) -> dict:
             "feature_level": 0xB000, "pixels_verified": True,
             "offscreen_pixels_verified": True, "display_pixels_verified": False,
             "center_rgba": [32, 223, 64, 255], "corner_rgba": [8, 16, 24, 255],
-            "present_count": 3, "elapsed_ms": 120}
+            "present_count": 3, "requested_sync_interval": 1, "elapsed_ms": 120}
 
 
 def modified(value: dict, path: tuple[str, ...], replacement) -> dict:
@@ -193,6 +193,9 @@ def d3d_failures(value: dict | None = None) -> dict[str, dict]:
         "readback-corner-wrong": (("corner_rgba",), [0, 0, 0, 255]),
         "only-two-presents": (("present_count",), 2),
         "present-count-string": (("present_count",), "3"),
+        "unexercised-vsync-request": (("requested_sync_interval",), 0),
+        "vsync-request-string": (("requested_sync_interval",), "1"),
+        "vsync-request-boolean": (("requested_sync_interval",), True),
     }
     for name in ("d3d11", "dxgi"):
         changes.update({
@@ -544,8 +547,10 @@ class GraphicsTests(unittest.TestCase):
         icd = json.loads((self.state / "run/turnip-icd.json").read_text())
         self.assertEqual(icd["ICD"]["library_path"], str(self.folder / "turnip-26.0.0.so"))
         config = (self.state / "run/dxvk.conf").read_text()
+        self.assertEqual(config, graphics.DXVK_CONFIG)
         self.assertIn("dxgi.maxFrameRate = 30", config)
         self.assertIn("dxgi.maxFrameLatency = 1", config)
+        self.assertIn("dxgi.syncInterval = 0", config)
         self.assertNotIn("enableGraphicsPipelineLibrary", config)
         self.assertEqual(graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state)["DXVK_STATE_CACHE_PATH"],
                          "Z:" + str(self.state / "cache/dxvk-2.4.1-arm64ec").replace("/", "\\"))
@@ -625,6 +630,46 @@ class GraphicsTests(unittest.TestCase):
         for name, rejected in d3d_failures(report).items():
             with self.subTest(name=name), self.assertRaises(ValueError):
                 graphics.parse_d3d(noisy_log(rejected), self.manifest)
+
+    def test_prior_probe_without_requested_vsync_cannot_requalify(self):
+        report = self.report()
+        del report["requested_sync_interval"]
+        with self.assertRaises(ValueError):
+            graphics.parse_d3d(noisy_log(report), self.manifest)
+
+    def test_actual_dxvk_log_proves_requested_vsync_is_forced_to_immediate(self):
+        log = ("info:  Effective configuration:\n"
+               "info:    dxgi.maxFrameLatency = 1\n"
+               "info:    dxgi.maxFrameRate = 30\n"
+               "info:    dxgi.syncInterval = 0\n"
+               "info:  Presenter: Actual swap chain properties:\n"
+               "info:    Present mode: VK_PRESENT_MODE_IMMEDIATE_KHR (dynamic: no)\n")
+        expected = {"presentationPolicy": graphics.PRESENTATION_POLICY,
+                    "requestedSyncInterval": 1, "forcedSyncInterval": 0,
+                    "observedPresentModes": ["VK_PRESENT_MODE_IMMEDIATE_KHR"]}
+        self.assertEqual(graphics.parse_presentation_policy(log), expected)
+        self.assertEqual(graphics.parse_presentation_policy(log.replace("\n", "\r\n")), expected)
+        failures = (
+            log.replace("info:    dxgi.syncInterval = 0\n", ""),
+            log.replace("dxgi.syncInterval = 0", "dxgi.syncInterval = 1"),
+            log.replace("dxgi.syncInterval = 0", "dxgi.syncInterval = false"),
+            log.replace("VK_PRESENT_MODE_IMMEDIATE_KHR", "VK_PRESENT_MODE_FIFO_KHR"),
+            log.replace("VK_PRESENT_MODE_IMMEDIATE_KHR", "VK_PRESENT_MODE_FIFO_RELAXED_KHR"),
+            log.replace("VK_PRESENT_MODE_IMMEDIATE_KHR", "VK_PRESENT_MODE_MAILBOX_KHR"),
+            log + "info:    Present mode: VK_PRESENT_MODE_FIFO_KHR (dynamic: yes)\n",
+            log.replace("info:    Present mode: VK_PRESENT_MODE_IMMEDIATE_KHR (dynamic: no)\n", ""),
+        )
+        for text in failures:
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                graphics.parse_presentation_policy(text)
+
+    def test_gpu_preparation_replaces_stale_private_presentation_policy(self):
+        self.map_dlls()
+        config = self.state / "run/dxvk.conf"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text("dxgi.maxFrameRate = 0\ndxgi.maxFrameLatency = 8\ndxgi.syncInterval = 1\n")
+        graphics.prepare(self.folder, self.state, self.content, "turnip-dxvk")
+        self.assertEqual(config.read_bytes(), graphics.DXVK_CONFIG.encode("utf-8"))
 
     def test_loaded_pe_machine_is_observational_only(self):
         report = self.report()
@@ -756,4 +801,3 @@ class GraphicsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

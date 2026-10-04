@@ -120,12 +120,27 @@ class DiagnosticsTests(unittest.TestCase):
         self.task(tid=21, name="dxvk-submit")
         self.task(tid=22, name="dxvk-queue")
         self.task(tid=23, name="dxvk-submit-secret")
+        self.task(tid=24, name="dxvk-frame")
+        self.task(tid=25, name="dxvk-frame-secret")
         self.history.begin()
         self.history.sample(self.snapshot(1), {"client": 20}, "running")
         classes = self.read()["samples"][0]["clientThreads"]["classes"]
         self.assertEqual({label: item["threads"] for label, item in classes.items()},
-                         {"submission": 1, "completion": 1, "other": 1})
+                         {"submission": 1, "completion": 1, "presentation": 1, "other": 2})
         self.assertEqual(classes["submission"]["cpuSampledThreads"], 0)
+
+    def test_presentation_wait_row_is_retained_beside_main_and_compilers(self):
+        self.task(tid=20, name="private-main", wait="futex_wait_queue")
+        for tid in range(30, 50):
+            self.task(tid=tid, name="dxvk-shader-n")
+        self.task(tid=50, name="dxvk-frame", wait="futex_wait_queue")
+        self.history.begin()
+        self.history.sample(self.snapshot(1), {"client": 20}, "running")
+        summary = self.read()["samples"][0]["clientThreads"]
+        self.assertTrue(summary["rows"][0]["main"])
+        frame = next(row for row in summary["rows"] if row["class"] == "presentation")
+        self.assertEqual(frame["wchan"], "futex_wait_queue")
+        self.assertEqual(len(summary["rows"]), diagnostics.THREAD_ROWS)
 
     def test_process_reused_during_task_read_discards_all_rows_and_counters(self):
         self.task()

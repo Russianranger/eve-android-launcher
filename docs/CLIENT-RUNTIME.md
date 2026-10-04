@@ -1,6 +1,6 @@
 # Client runtime qualification
 
-The preview APK prepares a private client cache and installs the exact FEX / Wine ARM64EC runtime already used by the UO launcher. The Thor server lifecycle, Wine/FEX x64 execution probe, exact client import, private TLS, local login and character selection have passed. The 0.1.7 preview prioritizes Adreno rendering and input responsiveness, retains the formatted display-report fix and tests DXVK 2.4.1 synchronization compatibility. Native Adreno shader/presentation preflight passed on Thor; EVE GPU performance, audio and controller support still need device qualification.
+The preview APK prepares a private client cache and installs the exact FEX / Wine ARM64EC runtime already used by the UO launcher. The Thor server lifecycle, Wine/FEX x64 execution probe, exact client import, private TLS, local login and character selection have passed. The 0.1.9 preview prioritizes Adreno rendering and input responsiveness and tests forced IMMEDIATE presentation through DXVK 2.4.1. Native Adreno shader/presentation preflight passed on Thor; EVE GPU performance, audio and controller support still need device qualification.
 
 The accepted 0.1.1 recovery imported build 3396210 with all 125,116 indexed
 resources in 6 minutes 14 seconds, peaking at 150.6 MiB preparation-worker RSS.
@@ -125,13 +125,23 @@ observational and never authorize Linux process cleanup.
 
 The supervisor requires a bounded, session-matched child-created report, then
 retains its existing observation period. This establishes process creation only.
-Rendering and login remain unqualified. The helper restores/foregrounds only a
+Adreno rendering and responsive input remain unqualified. The helper restores/foregrounds only a
 live child's own visible unowned main window, once, using asynchronous window
 operations. It records numeric visibility/focus/rectangle and a bounded WM_NULL
 response probe for at most three minutes, with five-second receipt publication.
 No window titles, input, pixels or stack dumps are collected. Window polling ends
 without terminating EVE. Current and prior `run/client-window.json` receipts join
 support exports; startup preferences and user saves are preserved.
+
+## Presentation compatibility in 0.1.9
+
+The private `run/dxvk.conf` adds `dxgi.syncInterval = 0` while retaining the 30 FPS
+cap and one-frame queue. This bypasses DXVK's FIFO presentation-completion wait
+through the Xvnc pixel-copy path. The native shader/display probe now requests
+`Present(1, 0)` and the supervisor requires its exact requested interval, freshly
+logged override and actual IMMEDIATE mode, plus all three visible frames, before
+starting EVE. The preflight receipt records this policy separately from EVE's
+performance gate. Device confirmation of usable EVE rendering/input is required.
 
 ## Source and licenses
 

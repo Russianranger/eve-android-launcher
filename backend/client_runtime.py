@@ -589,10 +589,12 @@ class Runtime:
             "--report", str(display_report), "--stdout", str(helper_log), "--stderr", str(helper_errors), "--", *helper)
         self.wait_graphics("graphicsD3d", command, helper_env, self.s.graphics_timeout)
         d3d = client_graphics.parse_d3d(client_prepare.bounded_text(helper_log, limit=65536), self.graphics_bundle)
+        presentation = client_graphics.parse_presentation_policy(
+            client_prepare.bounded_text(helper_errors, limit=65536))
         visible = client_graphics.parse_display(client_prepare.bounded_text(display_report, limit=65536))
         client_graphics.verify_mapped(self.s.graphics_folder, self.s.state)
         report = {"mode": "turnip-dxvk", "observedAt": time.time(), "supervisorIdentity": self.identities.get("supervisorIdentity"), "hardwarePreflightPassed": True,
-                  "vulkan": vulkan, "d3d11": d3d, "display": visible,
+                  "vulkan": vulkan, "d3d11": d3d, "presentation": presentation, "display": visible,
                   "qualificationScope": "native hardware D3D11 helper and local display; EVE performance requires observation"}
         atomic_json(self.s.state / "graphics-preflight.json", report)
         return report

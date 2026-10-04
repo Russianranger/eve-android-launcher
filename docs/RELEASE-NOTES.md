@@ -1,3 +1,26 @@
+# EVE Android Launcher 0.1.9 — Xvnc presentation-wait compatibility
+
+The 0.1.8 device test confirms EVE owns foreground/focus, yet its main thread
+stops progressing and its window does not answer responsiveness probes. Focus
+correction did not resolve the black screen; memory and display work remain low.
+
+This candidate adds only `dxgi.syncInterval = 0` to the private DXVK configuration.
+DXVK 2.4.1 waits indefinitely for FIFO presentation completion before releasing
+its frame-latency signal. Mesa 26's X11 pixel-copy path can return the image without
+advancing the present ID that wait needs. EVE switches to FIFO, while the old probe
+used Present(0). The override bypasses that wait, with GPU rendering, 30 FPS cap,
+one-frame queue, driver/compiler versions, cache and saved EVE preferences retained.
+The wait mechanism is source-backed; the actual EVE fix still needs Thor confirmation.
+
+The original shader/display probe now requests Present(1) for all three changing
+frames. Qualification requires the fixed override, actual IMMEDIATE presentation
+mode, exact native DLL identities and observed display pixels. Diagnostics retain
+the exact frame-thread class and fixed session configuration in support exports.
+
+Update in place with client/server stopped. Keep Adreno checked; use a fresh
+account if login appears. If still black after three minutes, export while running,
+then stop. Do not reset the imported client, prefix, shader cache or world.
+
 # EVE Android Launcher 0.1.8 — owned window startup
 
 The 0.1.7 Thor test still remains black. Live diagnostics show native graphics

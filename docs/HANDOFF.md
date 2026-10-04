@@ -226,11 +226,31 @@ existing bounded performance history. Support includes the current/prior window
 receipt. Host/native/Android checks must pass before distributing the candidate;
 actual EVE improvement still requires the Thor test.
 
+## October 3: 0.1.8 focused stall and 0.1.9 presentation candidate
+
+`eve-support-20261003-221113.zip` (SHA-256
+`5e758cce24118c65da2e9da58b4fd10092508f47ebc742d7a4a9eb9c81b5895f`)
+records successful owned-window foreground/focus but 27 timed-out responsiveness
+probes. EVE's main thread stops progressing after 56.9 seconds; idle graphics
+workers, stable memory and inexpensive display work persist for 255 seconds.
+The focus candidate did not fix the black screen. Actual DXVK presentation
+switches to FIFO with present-wait enabled.
+
+Pinned DXVK 2.4.1 waits indefinitely for FIFO presentation completion; the exact
+shipped Mesa 26 software X11 copy path can return an image without advancing the
+present ID that wait needs. 0.1.9 adds only private `dxgi.syncInterval = 0` while
+retaining the 30 FPS cap, one-frame queue, versions, cache and game preferences.
+The native probe now requests Present(1), as EVE does; both CI and physical
+preflight require logged override 0, actual IMMEDIATE mode and three visible
+frames. The fixed config and bounded presentation-thread class join support
+exports. See [exact source and inference limits](CLIENT-PERFORMANCE.md).
+The physical wait owner is unproven and EVE responsiveness requires Thor testing.
+
 ## Next milestones
 
 1. Preserve accepted server/world lifecycle, Wine/FEX probe, exact 125,116-resource
    import, private TLS, client startup and local login/character selection.
-2. Physically qualify 0.1.8 EVE Adreno rendering and usable input, cold/warm-cache
+2. Physically qualify 0.1.9 EVE Adreno rendering and usable input, cold/warm-cache
    startup, display reopen and clean shutdown using a fresh local account.
 3. After performance is usable, qualify character creation/station/undock/warp/dock
    and persistent reopen, then audio and controller support.

@@ -21,6 +21,7 @@
 #define PATH_CAP 2048
 #define DLL_LIMIT (64u * 1024u * 1024u)
 #define IMAGE_SIDE 128u
+#define REQUESTED_SYNC_INTERVAL 1u
 #define RELEASE(type, obj) do { if (obj) { type##_Release(obj); obj = NULL; } } while (0)
 #define CHECK(call, name) do { stage = name; hr = (call); if (FAILED(hr)) goto cleanup; } while (0)
 #define CHECK_OBJECT(call, object, name) do { CHECK(call, name); \
@@ -532,15 +533,18 @@ int wmain(int argc, WCHAR **argv)
         ID3D11DeviceContext_OMSetRenderTargets(context, 1, &back_view, NULL);
         ID3D11DeviceContext_ClearRenderTargetView(context, back_view, present_clear[index]);
         ID3D11DeviceContext_Draw(context, 3, 0);
-        CHECK(IDXGISwapChain_Present(swapchain, 0, 0), "present_window_frame");
+        /* Exercise the game's vsync request. The private DXVK policy must
+         * still present these frames in immediate mode to the local display. */
+        CHECK(IDXGISwapChain_Present(swapchain, REQUESTED_SYNC_INTERVAL, 0), "present_window_frame");
         if (hr != S_OK) { stage = "present_not_visible"; hr = E_FAIL; goto cleanup; }
         ++present_count; pump_messages();
         /* A bounded hold gives independent X11/RFB qualification enough time
          * to observe each real present. API S_OK alone is not display proof. */
         fprintf(stderr, "{\"helper\":\"eve-d3d11-frame-1\",\"frame\":%u,"
+            "\"requested_sync_interval\":%u,"
             "\"window\":{\"x\":32,\"y\":32,\"width\":128,\"height\":128},"
             "\"center_rgba\":[32,223,64,255],\"corner_rgba\":[%u,%u,%u,%u],\"hold_ms\":%u}\n",
-            index, present_corner[index][0], present_corner[index][1],
+            index, REQUESTED_SYNC_INTERVAL, present_corner[index][0], present_corner[index][1],
             present_corner[index][2], present_corner[index][3], index == 2 ? 1000u : 500u);
         fflush(stderr);
         Sleep(index == 2 ? 1000u : 500u);
@@ -575,12 +579,12 @@ cleanup:
         "\"feature_level\":%u,"
         "\"pixels_verified\":%s,\"offscreen_pixels_verified\":%s,\"display_pixels_verified\":false,"
         "\"center_rgba\":[%u,%u,%u,%u],\"corner_rgba\":[%u,%u,%u,%u],"
-        "\"present_count\":%u,\"elapsed_ms\":%llu}\n", description.VendorId, description.DeviceId,
+        "\"present_count\":%u,\"requested_sync_interval\":%u,\"elapsed_ms\":%llu}\n", description.VendorId, description.DeviceId,
         description.Flags, (unsigned long long)description.DedicatedVideoMemory,
         (unsigned long long)description.DedicatedSystemMemory, (unsigned long long)description.SharedSystemMemory,
         (unsigned int)feature_level, pixels_verified ? "true" : "false",
         pixels_verified ? "true" : "false",
-        center[0],center[1],center[2],center[3],corner[0],corner[1],corner[2],corner[3],present_count,
+        center[0],center[1],center[2],center[3],corner[0],corner[1],corner[2],corner[3],present_count,REQUESTED_SYNC_INTERVAL,
         (unsigned long long)(GetTickCount64()-begin));
     return success ? 0 : 1;
 }

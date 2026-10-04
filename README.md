@@ -20,6 +20,10 @@ diagnostics after Stop. Actual EVE GPU responsiveness remains the device gate.
 0.1.7 also remained black. Its retained samples show idle background graphics
 workers after startup. 0.1.8 activates EVE's owned window once and records window
 focus/message-pump evidence; it retains DXVK 2.4.1 and the accepted runtime.
+The 0.1.8 device test confirms focus succeeds while EVE's main thread stalls.
+0.1.9 overrides the session's presentation interval to avoid the FIFO completion
+wait through Xvnc, retaining GPU rendering and the 30 FPS cap. This remains a
+device candidate; the updated shader/display probe now requests Present(1).
 
 ## First server test
 
@@ -57,7 +61,7 @@ condition. See [the accepted physical evidence](docs/HANDOFF.md). Keep the
 prepared cache. The current preview uses that prepared cache. Startup/login passed; client
 performance is the current device gate.
 
-## Client performance preview in 0.1.8
+## Client performance preview in 0.1.9
 
 Update in place, start the server and wait for **SERVER READY**, then leave
 **Use Adreno GPU rendering** checked and start/open EVE. Native ARM64EC DXVK 2.4.1
@@ -66,6 +70,9 @@ replace that runtime or reset the accepted prefix/content/world. Before EVE,
 hardware-only preflight checks Vulkan, shader pixels and visible display frames.
 The initial render/display cap is 30 FPS with a one-frame DXGI queue. Shader caches
 persist across launches. Software recovery retains the previous WineD3D/llvmpipe path.
+The session disables vertical synchronization to bypass the Xvnc present-wait
+path; saved EVE preferences are preserved. The native probe requests synchronized
+presentation and verifies the override before testing three visible frames.
 
 Touch selects a field; **Text** defaults to replacing its contents and sends one
 buffered batch. Use a fresh disposable local account such as `EvePerf1`; do not

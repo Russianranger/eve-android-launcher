@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import struct
 
 from pe_image import arm64ec_metadata
@@ -27,6 +28,13 @@ MODES = ("turnip-dxvk", "software")
 LIMIT = 64 * 1024**2
 DXVK_CACHE_LIMIT = 256 * 1024**2
 DXVK_CACHE_FILES = 16
+# The private Xvnc presentation path needs immediate mode even when the game
+# requests vsync. Keep frame pacing and the one-frame queue separately bounded.
+DXVK_CONFIG = ("# Private initial responsiveness settings.\n"
+               "dxgi.maxFrameRate = 30\n"
+               "dxgi.maxFrameLatency = 1\n"
+               "dxgi.syncInterval = 0\n")
+PRESENTATION_POLICY = "requested-vsync-forced-immediate-1"
 SOURCE_PINS = {
     "dxvkRepository": "https://github.com/doitsujin/dxvk",
     "dxvkSubmodules": {"include/vulkan": "46dc0f6e514f5730784bb2cac2a7c731636839e8",
@@ -148,7 +156,7 @@ def prepare(folder: Path, state: Path, content: Path, mode: str) -> dict:
         "library_path": str(folder / "turnip-26.0.0.so"), "api_version": "1.3.0"}})
     config = state / "run/dxvk.conf"
     temporary = config.with_name(".dxvk.conf.tmp")
-    temporary.write_text("# Private initial responsiveness settings.\ndxgi.maxFrameRate = 30\ndxgi.maxFrameLatency = 1\n")
+    temporary.write_text(DXVK_CONFIG)
     os.replace(temporary, config)
     return manifest
 
@@ -256,6 +264,7 @@ def parse_d3d(text, manifest):
             or not integer(r.get("feature_level"), 0xb000)
             or r.get("pixels_verified") is not True or r.get("offscreen_pixels_verified") is not True
             or not color(r.get("center_rgba"), [32, 223, 64, 255]) or not color(r.get("corner_rgba"), [8, 16, 24, 255])
+            or not integer(r.get("requested_sync_interval"), 1, 1)
             or not integer(r.get("present_count"), 3, 3) or not isinstance(a, dict)
             or not integer(a.get("vendor_id"), 0x5143, 0x5143)
             or not integer(a.get("flags")) or a["flags"] & 2
@@ -272,6 +281,20 @@ def parse_d3d(text, manifest):
                 or m["path"].replace("/", "\\").casefold() != ("C:\\windows\\system32\\"+name+".dll").casefold()):
             raise ValueError("Wrong or non-native graphics DLL loaded: " + name)
     return r
+
+
+def parse_presentation_policy(text):
+    """Require the qualification's real DXVK log to prove the private policy."""
+    sync_intervals = re.findall(r"^info:[ \t]+dxgi\.syncInterval[ \t]*=[ \t]*(\S+)[ \t]*\r?$",
+                               text, re.MULTILINE)
+    present_modes = re.findall(r"^info:[ \t]+Present mode:[ \t]*(VK_PRESENT_MODE_[A-Z_]+)\b",
+                              text, re.MULTILINE)
+    if (not sync_intervals or any(value != "0" for value in sync_intervals)
+            or not present_modes or any(value != "VK_PRESENT_MODE_IMMEDIATE_KHR" for value in present_modes)):
+        raise ValueError("Requested vsync did not use the forced immediate presentation policy")
+    return {"presentationPolicy": PRESENTATION_POLICY,
+            "requestedSyncInterval": 1, "forcedSyncInterval": 0,
+            "observedPresentModes": present_modes}
 
 
 def parse_display(text):

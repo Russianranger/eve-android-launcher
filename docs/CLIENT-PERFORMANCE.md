@@ -159,3 +159,41 @@ pump, exit propagation and inherited Linux
 process-group/session ownership. The supervisor requires a fresh nonce-matched
 child-created receipt before observing startup. Rendering/login remain separate
 device gates. CPU diagnostics also reserve bounded process-main-thread rows.
+
+## 0.1.8 focused stall and 0.1.9 presentation candidate
+
+`eve-support-20261003-221113.zip` (SHA-256
+`5e758cce24118c65da2e9da58b4fd10092508f47ebc742d7a4a9eb9c81b5895f`)
+confirms that the activation attempt succeeded: the live owned 1280x720 EVE
+window has foreground/focus, but all 27 bounded WM_NULL probes time out through
+180 seconds. Fifty live samples span 255 seconds. The child main thread stops
+accumulating CPU ticks after 56.9 seconds and remains in a futex wait, as do the
+named graphics workers. About 7.5 GiB remains available; no crash, device loss or
+OOM is recorded. The Android bridge decodes 94 updates in 87.6 ms total, with
+20.3 ms publication and 11.4 ms drawing. Focus did not resolve the upstream stall.
+
+EVE's actual swapchain switches from IMMEDIATE to FIFO; present-wait/present-ID
+extensions are enabled. Exact
+[DXVK PresentBase](https://github.com/doitsujin/dxvk/blob/0cf05780abd7250c2cd713b7749cf32180157cf5/src/dxgi/dxgi_swapchain.cpp)
+applies the supported `dxgi.syncInterval` override before D3D11 sees the request.
+Its [presenter](https://github.com/doitsujin/dxvk/blob/0cf05780abd7250c2cd713b7749cf32180157cf5/src/dxvk/dxvk_presenter.cpp)
+waits indefinitely for FIFO presentation completion before signaling the callback
+fence used by the one-frame latency wait. IMMEDIATE bypasses this completion wait.
+
+The shipped Mesa 26 source archive (SHA-256
+`2a44e98e64d5c36cec64633de2d0ec7eff64703ee25b35364ba8fcaa84f33f72`)
+shows `wsi_common_x11.c`'s software/no-MIT-SHM image-copy path returns images
+without advancing the completed present ID. Production uses `MESA_VK_WSI_DEBUG=sw`
+for hardware Turnip rendering into Xvnc's pixel-copy display. That describes WSI,
+not CPU rendering. The exact physical wait owner and DRI3 capabilities are not
+recorded, so the EVE cause remains a source-backed hypothesis.
+
+0.1.9 changes only the private presentation setting to `dxgi.syncInterval = 0`.
+The 30 FPS cap, one-frame queue, native GPU path, versions, compiler/pipeline
+settings, caches and saved game preferences remain. The earlier synthetic probe
+requested Present(0) and bypassed EVE's request. Its three changing frames now
+request Present(1); native CI and the physical supervisor require integer request
+1, effective override 0, actual IMMEDIATE mode and independent visible pixels.
+The fixed configuration and exact `dxvk-frame` presentation-thread class join
+bounded support evidence. A CPU fixture without present-wait support cannot
+reproduce the physical wait; passing CI therefore does not accept EVE performance.

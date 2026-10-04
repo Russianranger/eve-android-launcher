@@ -1,4 +1,4 @@
-# EVE Android Launcher 0.1.8: owned-window startup and client performance
+# EVE Android Launcher 0.1.9: presentation-wait compatibility
 
 The October 3 0.1.4 test passed Wine certificate/localhost TLS, EVE startup,
 local authentication, character selection and clean shutdown. The user reported
@@ -14,16 +14,24 @@ compilation. 0.1.7 tests native DXVK 2.4.1 synchronization compatibility and ret
 live diagnostics after Stop. It also stayed black. The retained graphics workers
 are idle after initialization; synchronous compilation or another EVE wait remains
 possible. 0.1.8 tests one-time activation of EVE's owned window and records focus
-and message-pump state. The cause and device correction remain unconfirmed.
+and message-pump state. Its device test confirms an owned, focused window, but
+the EVE main thread stops progressing at about 57 seconds and remains in a futex
+wait. 0.1.9 tests a session-only `dxgi.syncInterval=0` override, retaining GPU
+rendering, the 30 FPS cap and queue limit. This bypasses DXVK's FIFO present-wait
+path; the source mechanism and limits are documented in CLIENT-PERFORMANCE.md.
+Actual EVE rendering and input still require device confirmation.
 
 ## GPU and input performance test
 
-1. Update to `EVE-Android-Launcher-0.1.8.apk` without uninstalling or clearing data.
+1. Stop the client and save/stop the server, then update to
+   `EVE-Android-Launcher-0.1.9.apk` without uninstalling or clearing data.
 2. Start the server and wait for **SERVER READY**. In Client, leave **Use Adreno GPU
    rendering** checked, then select **Start EVE client**.
 3. The launcher verifies the exact GPU assets and existing trust/TLS setup. It
    checks a real Turnip/Adreno device, native D3D11 shader pixels and three changing
-   frames through the local display before launching EVE. A small colored probe
+   frames through the local display before launching EVE. The revised probe
+   requests Present(1), while the effective DXVK configuration and observed
+   presentation mode must prove that the override avoids FIFO. A small colored probe
    window is expected briefly. The startup helper then activates EVE's own window
    once; it does not continually take focus or change saved graphics settings.
    If EVE remains black for three minutes, return to Launcher and export support
@@ -64,6 +72,8 @@ DXVK, `client/logs/display-performance.json` and retained
 and server logs. Timing/count metrics omit entered text, key values and images.
 `client/run/client-window.json` and its prior copy record bounded numeric window
 visibility, minimization, foreground/focus ownership and message-pump response.
+`client/run/dxvk.conf` records the fixed session presentation policy. The exact
+DXVK frame thread is classified as `presentation` in the existing bounded history.
 Framebuffer update rate measures display delivery; it is not EVE FPS. Android
 frame GPU duration measures presentation of the bitmap, not the game's GPU work.
 
@@ -147,7 +157,7 @@ previously active content must remain intact during a failed import.
 
 ## Install and server setup
 
-1. Install `EVE-Android-Launcher-0.1.8.apk`. Grant the notification permission when
+1. Install `EVE-Android-Launcher-0.1.9.apk`. Grant the notification permission when
    prompted so the running server has a visible foreground notification.
 2. Open the Server tab and install the server runtime. Keep the app open during
    the initial download and extraction. Use internal storage for the runtime.

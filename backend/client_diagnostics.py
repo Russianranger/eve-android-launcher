@@ -36,6 +36,7 @@ THREAD_CLASSES = {
     "dxvk-shader-l": "shader-low",
     "dxvk-submit": "submission",
     "dxvk-queue": "completion",
+    "dxvk-frame": "presentation",
 }
 
 

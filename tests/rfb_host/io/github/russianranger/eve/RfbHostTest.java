@@ -1,11 +1,13 @@
 package io.github.russianranger.eve;
 
 import java.io.*;
+import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Deterministic peer fixtures for the startup display's RFB boundary. */
 public final class RfbHostTest {
@@ -120,6 +122,74 @@ public final class RfbHostTest {
             check(performance.json().contains("\"socket_read_ms\"") && !performance.json().contains("password"), "content-free diagnostic schema");
         } finally { peer.close(); pipe.close(); threads.shutdownNow(); }
     }
+    private static void socketReceiveDoesNotBlockInput(boolean partialPixels) throws Exception {
+        byte[] packet = update(2, 1, 0, new byte[]{0x56, 0x34, 0x12, 0, (byte)0xef, (byte)0xcd, (byte)0xab, 0});
+        int prefix = partialPixels ? packet.length - 5 : 0;
+        CountDownLatch ready = new CountDownLatch(1), waiting = new CountDownLatch(1);
+        CountDownLatch inputReceived = new CountDownLatch(1), finishFrame = new CountDownLatch(1);
+        ExecutorService threads = Executors.newFixedThreadPool(3);
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
+            Future<?> peer = threads.submit(() -> {
+                try (Socket socket = listener.accept()) {
+                    socket.setSoTimeout(5000); socket.setTcpNoDelay(true);
+                    OutputStream output = socket.getOutputStream();
+                    DataInputStream wire = new DataInputStream(socket.getInputStream());
+                    output.write(hello(2, 1)); output.flush();
+                    wire.readFully(new byte[56]); // Complete client hello, format, encodings and first request.
+                    check(ready.await(2, TimeUnit.SECONDS), "socket fixture ready after handshake");
+                    if (prefix > 0) { output.write(packet, 0, prefix); output.flush(); }
+                    // No further framebuffer bytes are sent until all input has arrived.
+                    key(wire, 0xffe1, true); key(wire, 0xffe1, false);
+                    key(wire, 0xff09, true); key(wire, 0xff09, false);
+                    key(wire, 0xffe3, true); key(wire, 'a', true); key(wire, 'a', false); key(wire, 0xffe3, false);
+                    for (int symbol : new int[]{'a', 0x0101f642}) { key(wire, symbol, true); key(wire, symbol, false); }
+                    for (int mask = 1; mask >= 0; mask--) check(wire.readUnsignedByte() == 5 && wire.readUnsignedByte() == mask
+                        && wire.readUnsignedShort() == 1 && wire.readUnsignedShort() == 0, "socket pointer down/up order while receive blocks");
+                    inputReceived.countDown();
+                    check(finishFrame.await(2, TimeUnit.SECONDS), "socket fixture released after input verification");
+                    output.write(packet, prefix, packet.length - prefix); output.flush();
+                    check(wire.readUnsignedByte() == 3 && wire.readUnsignedByte() == 1 && wire.readUnsignedShort() == 0
+                        && wire.readUnsignedShort() == 0 && wire.readUnsignedShort() == 2 && wire.readUnsignedShort() == 1,
+                        "incremental request after blocked frame completes");
+                }
+                return null;
+            });
+            try (Socket socket = new Socket("127.0.0.1", listener.getLocalPort())) {
+                socket.setSoTimeout(5000); socket.setTcpNoDelay(true);
+                AtomicBoolean watching = new AtomicBoolean();
+                InputStream monitored = new FilterInputStream(socket.getInputStream()) {
+                    private long received;
+                    @Override public int read(byte[] bytes, int offset, int length) throws IOException {
+                        // This runs immediately before the real socket read, after the
+                        // peer's complete prefix has been consumed (including fragmented reads).
+                        if (watching.get() && received >= prefix) waiting.countDown();
+                        int count = in.read(bytes, offset, length);
+                        if (watching.get() && count > 0) received += count;
+                        return count;
+                    }
+                };
+                Screen screen = new Screen(); DisplayPerformance performance = new DisplayPerformance();
+                RfbClient client = new RfbClient(monitored, socket.getOutputStream(), screen, performance);
+                client.handshake(); watching.set(true); ready.countDown();
+                Future<?> receiving = threads.submit(() -> { client.readUpdate(); return null; });
+                check(waiting.await(2, TimeUnit.SECONDS), partialPixels ? "native socket waits for remaining raw pixels" : "native socket waits for message header");
+                Future<?> sending = threads.submit(() -> {
+                    client.key(0xffe1, true); client.key(0xffe1, false); client.tap(0xff09);
+                    client.text("a\ud83d\ude42", true); client.pointer(1, 0, 1); client.pointer(1, 0, 0);
+                    return null;
+                });
+                sending.get(2, TimeUnit.SECONDS);
+                check(inputReceived.await(2, TimeUnit.SECONDS), "peer received every input operation while native read waits");
+                check(!receiving.isDone(), "socket receive remains blocked until fixture releases frame");
+                finishFrame.countDown(); receiving.get(2, TimeUnit.SECONDS); peer.get(2, TimeUnit.SECONDS);
+                check(screen.updates == 1 && Arrays.equals(screen.pixels, new int[]{0xff123456, 0xffabcdef}), "socket raw frame decodes after input");
+                check(performance.socketBytes.get() == hello(2, 1).length + packet.length, "socket receive counters include complete frame once");
+            }
+        } finally {
+            ready.countDown(); finishFrame.countDown(); threads.shutdownNow();
+            check(threads.awaitTermination(2, TimeUnit.SECONDS), "socket fixture threads stopped");
+        }
+    }
     private static void motionKeepsButtonEdges() {
         List<String> delivered = new ArrayList<>(); List<Runnable> callbacks = new ArrayList<>();
         PointerMotion motion = new PointerMotion((x,y,mask) -> delivered.add(x+":"+y+":"+mask), new PointerMotion.Scheduler() {
@@ -137,7 +207,8 @@ public final class RfbHostTest {
         check(delivered.size() == 5, "dispose cancels pending input");
     }
     public static void main(String[] args) throws Exception {
-        rawFrameAndInput(); malformedFrames(); compoundInput(); blockedReceiveDoesNotBlockInput(); motionKeepsButtonEdges();
+        rawFrameAndInput(); malformedFrames(); compoundInput(); blockedReceiveDoesNotBlockInput();
+        socketReceiveDoesNotBlockInput(false); socketReceiveDoesNotBlockInput(true); motionKeepsButtonEdges();
         System.out.println("Client display RFB/input/motion/performance host fixtures passed");
     }
 }

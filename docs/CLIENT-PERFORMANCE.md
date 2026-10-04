@@ -10,7 +10,7 @@ and the user's successful login/character-selection report.
 
 | Finding | Change | Verification and limit |
 |---|---|---|
-| Launch explicitly forced WineD3D/llvmpipe CPU rendering | Native ARM64EC DXVK 2.5.3 → existing Wine Vulkan → glibc Turnip 26/KGSL | Real native/D3D/display helper gates; actual EVE FPS still needs Thor |
+| Launch explicitly forced WineD3D/llvmpipe CPU rendering | Native ARM64EC DXVK 2.4.1 → existing Wine Vulkan → glibc Turnip 26/KGSL | Real native/D3D/display helper gates; actual EVE FPS still needs Thor |
 | First display session forwarded 39.1 MiB over 784 seconds; comparison discarded most unchanged pixels | Keep existing Raw RFB and comparison behavior; raise GPU display cap from 15 to 30 | Host decoder/loopback tests have 30 Hz capacity; this is not device FPS |
 | Twenty characters previously used 160 underlying writes and 40 flushes | Compound text/tap/chord output buffered under one lock | The same 320 bytes now require one underlying write/flush; duplex protocol fixture |
 | Text always appended and touch movement could fill input queue | Replace selected field by default; coalesce movement while preserving button edges | Unicode/chord/press-release/cancel and lifecycle tests |
@@ -80,9 +80,43 @@ are retained. See [the test sequence](TESTING.md).
 
 ## Reproducibility
 
-The build pins DXVK source `c707d9026f33b6ab89639f154b6ac5f6326fa037`, its Vulkan,
+The build pins DXVK source `0cf05780abd7250c2cd713b7749cf32180157cf5`, its Vulkan,
 SPIR-V and libdisplay-info gitlinks, and the same LLVM-mingw 20250920 used by the
 accepted Wine runtime. Only two ELF files are reused from UO v0.2.17; unrelated
 TRASC/Wine/D3D9/game patches are excluded. Exact Mesa/glslang/probe source and the
 original recipes accompany the source archive. Build scripts and qualification
 reports are retained by Actions; release packaging includes corresponding source.
+
+## 0.1.6 physical stall and 0.1.7 compatibility candidate
+
+`eve-support-20261003-194841.zip` (SHA-256
+`4a61fb9e589c78d0297f61562848f2605a28041bbdb08cda02d2cb857be5e765`)
+passes the native hardware preflight and launches EVE through DXVK 2.5.3. The
+game creates a 1280x720 swapchain on Adreno 740. The user's screenshot shows a
+black screen, 2.5 HUD FPS and pending shader compilation after a prolonged wait.
+The display connection records 94 updates over 388.8 seconds, but decoding takes
+only 73.5 ms total, bitmap publication 19.4 ms and view drawing 10.1 ms. No GPU
+reset, compiler exception or OOM is recorded. Stop replaces live status CPU/RSS,
+so this evidence cannot distinguish busy compilation from blocked work.
+
+[DXVK issue 4484](https://github.com/doitsujin/dxvk/issues/4484) identifies an
+Adreno/KGSL performance regression introduced by the DXVK 2.5 submission timeline
+change. The exact shipped Mesa 26.0.0 source still uses the common software
+timeline wrapper in `tu_knl_kgsl.cc`; its underlying KGSL synchronization type is
+binary. This supports a targeted test of the prior synchronization path, without
+proving that it caused this particular EVE stall. DXVK 2.4.1 uses fences for
+submission completion; it still uses timeline semaphores where D3D11 fence APIs
+require them. Reversing the newer queue code in 2.5.3 would also affect later
+transfer/resource-relocation changes, so the build selects unmodified 2.4.1.
+
+0.1.7 keeps the same Wine/FEX, Turnip, toolchain, dependency commits, display and
+30 FPS/one-frame settings. Bundle `eve-turnip-dxvk-2` must pass all original native
+EC/hash/pixel/display/CPU-rejection gates. Its 2.4.1 cache is separate; 2.5.3 state
+is preserved. Default compiler concurrency and pipeline-library settings remain.
+
+`client-performance.json` and one prior session retain bounded aggregate CPU/RSS,
+compiler-thread CPU/state/wait-channel and metadata-only cache counts/bytes after
+Stop. They contain no command lines, stacks, credentials or frame images. Real
+loopback tests send keys, Unicode replacement text and pointer edges while the
+reader blocks on either a header or partial pixels; no transport lock defect was
+found. Device startup, login and usable input must now be retested.

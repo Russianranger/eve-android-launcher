@@ -28,6 +28,7 @@ from typing import Any
 
 import client_prepare
 import client_graphics
+import client_diagnostics
 from process_metrics import available_memory_kib
 import wine_trust_overlay
 import server_runtime
@@ -123,6 +124,8 @@ class Runtime:
         self.graphics_bundle: dict[str, Any] = {}
         self.graphics_reports: dict[str, Any] = {}
         self.previous_snapshot = None
+        self.diagnostics = client_diagnostics.PerformanceHistory(
+            self.s.state, client_graphics.cache_directories(self.s.state))
 
     def request_stop(self, *_: Any) -> None:
         self.cancelled = True
@@ -179,6 +182,11 @@ class Runtime:
         for role, process in self.children.items():
             memory[role + "GroupRssKiB"] = sum(item.get("rssKiB", 0) for item in snapshot.members(process.pid))
             process_cpu[role] = cpu.get(process.pid, {})
+        groups = {role: process.pid for role, process in self.children.items()}
+        if phase in ("stopped", "failed"):
+            self.diagnostics.finish(phase)
+        else:
+            self.diagnostics.sample(snapshot, groups, phase, force=phase == "stopping")
         report = {"schemaVersion": 1, "phase": phase, "message": message,
                   "ready": ready, "client_launch_qualified": False,
                   "login_qualified": False, "graphics_qualified": False,
@@ -355,7 +363,17 @@ class Runtime:
         thread = threading.Thread(target=pump, daemon=True)
         self.pumps.append(thread)
         thread.start()
-        self.refresh_owned_processes(persist=True)
+        snapshot = self.refresh_owned_processes(persist=True)
+        if role == "client":
+            self.diagnostics.begin()
+            self.diagnostics.report.update(
+                graphicsMode=self.s.graphics_mode if self.s.graphics_mode in client_graphics.MODES else "unknown",
+                dxvkVersion=client_graphics.DXVK_VERSION, mesaVersion=client_graphics.MESA_VERSION)
+            for name in ("supervisorIdentity", "clientIdentity"):
+                identity = self.identities.get(name, {})
+                if isinstance(identity.get("pid"), int) and str(identity.get("startTicks", "")).isdigit():
+                    self.diagnostics.report[name] = {"pid": identity["pid"], "startTicks": identity["startTicks"]}
+            self.diagnostics.sample(snapshot, {name: child.pid for name, child in self.children.items()}, "starting")
         return process
 
     def wait_graphics(self, role: str, command: tuple[str, ...], env: dict[str, str], timeout: float) -> None:

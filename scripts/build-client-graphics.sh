@@ -64,9 +64,9 @@ export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.aarch64.json
 export VK_ICD_FILENAMES="$VK_DRIVER_FILES"
 export DXVK_LOG_LEVEL=info DXVK_LOG_PATH='Z:\graphics-out'
 export DXVK_CONFIG_FILE='Z:\graphics-out\dxvk.conf'
-export DXVK_STATE_CACHE_PATH='Z:\graphics-out\cache\dxvk-2.5.3-arm64ec'
+export DXVK_STATE_CACHE_PATH='Z:\graphics-out\cache\dxvk-2.4.1-arm64ec'
 export MESA_SHADER_CACHE_DIR=/graphics-out/cache/mesa-26.0.0
-mkdir -p /graphics-out/cache/dxvk-2.5.3-arm64ec /graphics-out/cache/mesa-26.0.0
+mkdir -p /graphics-out/cache/dxvk-2.4.1-arm64ec /graphics-out/cache/mesa-26.0.0
 cat > /graphics-out/dxvk.conf <<'CONFIG'
 dxgi.maxFrameRate = 30
 dxgi.maxFrameLatency = 1
@@ -195,3 +195,4 @@ client_graphics.parse_display(Path('out/d3d11-rfb-presentation.json').read_text(
 report = json.loads(Path('out/client-graphics-check.json').read_text())
 assert report['passed'] is True and report['physicalThorQualified'] is False
 PYVALIDATE
+

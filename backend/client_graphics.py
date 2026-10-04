@@ -12,7 +12,9 @@ from server_runtime import atomic_json
 
 WINE_COMMIT = "a6844d10622fc1a973ec1f22fc4f78a0fcd6cb29"
 FEX_COMMIT = "320c5f18475b0c8a7e99c51a5fdc5b5e35b147ab"
-DXVK_COMMIT = "c707d9026f33b6ab89639f154b6ac5f6326fa037"
+DXVK_COMMIT = "0cf05780abd7250c2cd713b7749cf32180157cf5"
+DXVK_VERSION = "2.4.1"
+MESA_VERSION = "26.0.0"
 BASELINE_SHA256 = "f036c00a290abb953bec26be80c4d8fe492fd986e7a589c51008124432c8641e"
 TOOLCHAIN_SHA256 = "bce5cc755c613515fd44e1ee9523123d854103abae147571adb645450036274d"
 KNOWN_BINARY_HASHES = {
@@ -53,9 +55,9 @@ def verify_bundle(folder: Path) -> dict:
         value = json.loads(path.read_text())
     except RecursionError as error:
         raise ValueError("Graphics manifest exceeds nesting limit") from error
-    expected = {"format": 1, "bundle": "eve-turnip-dxvk-1", "runtime": "fex-arm64ec-1",
-                "wine_commit": WINE_COMMIT, "fex_commit": FEX_COMMIT, "mesa": "26.0.0",
-                "dxvk": "2.5.3", "dxvk_commit": DXVK_COMMIT,
+    expected = {"format": 1, "bundle": "eve-turnip-dxvk-2", "runtime": "fex-arm64ec-1",
+                "wine_commit": WINE_COMMIT, "fex_commit": FEX_COMMIT, "mesa": MESA_VERSION,
+                "dxvk": DXVK_VERSION, "dxvk_commit": DXVK_COMMIT,
                 "architecture": "arm64ec-and-arm64-glibc", "kmd": "kgsl",
                 "baselineRuntimeSha256": BASELINE_SHA256}
     if not isinstance(value, dict) or type(value.get("format")) is not int or any(value.get(key) != item for key, item in expected.items()):
@@ -115,6 +117,11 @@ def verify_mapped(folder: Path, state: Path) -> dict:
     return manifest
 
 
+def cache_directories(state: Path) -> tuple[Path, Path]:
+    return (state / ("cache/dxvk-" + DXVK_VERSION + "-arm64ec"),
+            state / ("cache/mesa-" + MESA_VERSION))
+
+
 def prepare(folder: Path, state: Path, content: Path, mode: str) -> dict:
     if mode not in MODES:
         raise ValueError("Unsupported client renderer")
@@ -131,11 +138,12 @@ def prepare(folder: Path, state: Path, content: Path, mode: str) -> dict:
             raise ValueError("Missing exact client graphics search directory")
         if any(path.name.casefold() in ("d3d11.dll", "dxgi.dll") for path in directory.iterdir()):
             raise ValueError("Imported D3D11/DXGI DLL would shadow the selected graphics bundle; use software recovery")
-    for cache in (state / "cache/dxvk-2.5.3-arm64ec", state / "cache/mesa-26.0.0"):
+    dxvk_cache, mesa_cache = cache_directories(state)
+    for cache in (dxvk_cache, mesa_cache):
         if cache.is_symlink():
             raise ValueError("Linked graphics cache directory is not supported")
         cache.mkdir(parents=True, exist_ok=True)
-    prune_dxvk_cache(state / "cache/dxvk-2.5.3-arm64ec")
+    prune_dxvk_cache(dxvk_cache)
     atomic_json(state / "run/turnip-icd.json", {"file_format_version": "1.0.0", "ICD": {
         "library_path": str(folder / "turnip-26.0.0.so"), "api_version": "1.3.0"}})
     config = state / "run/dxvk.conf"
@@ -180,11 +188,12 @@ def configure_environment(base, mode, folder, state):
         env.update(LIBGL_ALWAYS_SOFTWARE="1", GALLIUM_DRIVER="llvmpipe", LP_NUM_THREADS="4")
     else:
         icd = str(state / "run/turnip-icd.json")
+        dxvk_cache, mesa_cache = cache_directories(state)
         env.update(VK_DRIVER_FILES=icd, VK_ICD_FILENAMES=icd, MESA_VK_WSI_DEBUG="sw",
                    DXVK_LOG_LEVEL="info", DXVK_LOG_PATH="Z:" + str(state / "logs").replace("/", "\\"),
                    DXVK_HUD="devinfo,fps,compiler", DXVK_CONFIG_FILE="Z:" + str(state / "run/dxvk.conf").replace("/", "\\"),
-                   DXVK_STATE_CACHE_PATH="Z:" + str(state / "cache/dxvk-2.5.3-arm64ec").replace("/", "\\"),
-                   MESA_SHADER_CACHE_DIR=str(state / "cache/mesa-26.0.0"),
+                   DXVK_STATE_CACHE_PATH="Z:" + str(dxvk_cache).replace("/", "\\"),
+                   MESA_SHADER_CACHE_DIR=str(mesa_cache),
                    MESA_SHADER_CACHE_MAX_SIZE="512M")
     return env
 

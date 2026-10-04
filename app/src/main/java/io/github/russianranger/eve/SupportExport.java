@@ -20,7 +20,8 @@ final class SupportExport {
         for (String name : new String[]{"prepared.json"}) result.put("server/" + name, new File(runtime.serverState, name));
         gatherLogs(result, new File(runtime.serverState, "logs"), "server/logs/", 0);
         gatherLogs(result, runtime.clientState, "client/", 0);
-        for (String name : new String[]{"status.json", "validation.json", "prepared.json", "probe.json", "import.json"}) result.put("client/" + name, new File(runtime.clientState, name));
+        for (String name : new String[]{"status.json", "validation.json", "prepared.json", "probe.json", "import.json",
+                "client-performance.json", "client-performance.json.1"}) result.put("client/" + name, new File(runtime.clientState, name));
         return result;
     }
     private static void gatherLogs(Map<String, File> result, File dir, String prefix, int depth) {

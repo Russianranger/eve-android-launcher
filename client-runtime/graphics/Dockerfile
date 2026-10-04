@@ -1,5 +1,7 @@
 # Reuse the qualified Wine trust image's pinned llvm-mingw20250920 and /opt/wine.
 # No runtime rootfs rebuild or Wine/FEX version change.
+# DXVK 2.4.1 retains per-submit fences instead of the 2.5 timeline queue that
+# regresses on Turnip's emulated KGSL timelines. Build the unmodified source.
 ARG BUILDER_IMAGE=eve-wine-trust-overlay:local
 FROM ${BUILDER_IMAGE} AS builder
 RUN test "$(uname -m)" = aarch64 \
@@ -42,3 +44,4 @@ ENV WINEPREFIX=/graphics-regression-prefix WINEARCH=win64 WINEDEBUG=-all,err+all
     WINEDLLOVERRIDES="winemenubuilder,mshtml,mscoree=;d3d11,dxgi=n;d3dcompiler_47,crypt32=b" \
     WINEESYNC=0 WINEFSYNC=0 FEX_DISABLETELEMETRY=1 MESA_VK_WSI_DEBUG=sw
 CMD ["/bin/true"]
+

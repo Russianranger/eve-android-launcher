@@ -1,6 +1,6 @@
 # Client runtime qualification
 
-The preview APK prepares a private client cache and installs the exact FEX / Wine ARM64EC runtime already used by the UO launcher. The Thor server lifecycle, Wine/FEX x64 execution probe, exact client import, private TLS, local login and character selection have passed. The 0.1.6 preview prioritizes Adreno rendering and input responsiveness and corrects the formatted display-report reader. Native Adreno shader/presentation preflight passed on Thor; EVE GPU performance, audio and controller support still need device qualification.
+The preview APK prepares a private client cache and installs the exact FEX / Wine ARM64EC runtime already used by the UO launcher. The Thor server lifecycle, Wine/FEX x64 execution probe, exact client import, private TLS, local login and character selection have passed. The 0.1.7 preview prioritizes Adreno rendering and input responsiveness, retains the formatted display-report fix and tests DXVK 2.4.1 synchronization compatibility. Native Adreno shader/presentation preflight passed on Thor; EVE GPU performance, audio and controller support still need device qualification.
 
 The accepted 0.1.1 recovery imported build 3396210 with all 125,116 indexed
 resources in 6 minutes 14 seconds, peaking at 150.6 MiB preparation-worker RSS.
@@ -101,7 +101,7 @@ loopback, rewrites wildcard binds to loopback and maps localhost:443 to port 260
 including IPv6 mapped loopback. Direct syscall denial is checked before Wine is
 started. Import/probe/server processes do not enable this option.
 
-The performance preview uses native ARM64EC DXVK 2.5.3 and Turnip 26 on Adreno,
+The performance preview uses native ARM64EC DXVK 2.4.1 and Turnip 26 on Adreno,
 with a 1280×720 touch/text RFB display and explicit WineD3D/llvmpipe recovery.
 The existing Wine/FEX runtime remains installed. See [graphics qualification and
 measurement limits](CLIENT-PERFORMANCE.md). The service retains foreground ownership across Activity changes.

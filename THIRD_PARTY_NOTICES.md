@@ -64,12 +64,12 @@ v0.2.0 release. No game files are included.
 
 ## Native ARM64EC DXVK and Turnip graphics
 
-Version 0.1.5 packages only DXVK's D3D11 and DXGI DLLs, built as native ARM64EC
-from [DXVK 2.5.3](https://github.com/doitsujin/dxvk/tree/c707d9026f33b6ab89639f154b6ac5f6326fa037),
-commit `c707d9026f33b6ab89639f154b6ac5f6326fa037`. DXVK is distributed under
+Version 0.1.7 packages only DXVK's D3D11 and DXGI DLLs, built as native ARM64EC
+from [DXVK 2.4.1](https://github.com/doitsujin/dxvk/tree/0cf05780abd7250c2cd713b7749cf32180157cf5),
+commit `0cf05780abd7250c2cd713b7749cf32180157cf5`. DXVK is distributed under
 its zlib/libpng license, copyright Philip Rebohle, Joshua Ashton, Robin Kertels
 and Jeffrey Ellison. The unchanged upstream license is included in the APK and
-launcher source as `docs/licenses/dxvk-2.5.3-LICENSE.txt`.
+launcher source as `docs/licenses/dxvk-2.4.1-LICENSE.txt`.
 
 `client-graphics-corresponding-source.tar.gz`, published with the APK, retains
 the complete pinned DXVK source, its original license and notices, and the

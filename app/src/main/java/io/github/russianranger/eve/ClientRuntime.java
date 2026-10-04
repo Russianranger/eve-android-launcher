@@ -384,10 +384,10 @@ final class ClientRuntime {
                 || !new File(manager.clientState, "prefix/drive_c/windows/system32").isDirectory())
             throw new IOException("Pass the Wine / FEX probe to initialize the prefix before GPU rendering");
         JSONObject manifest = json(new File(manager.backend, "client-graphics-bundle.json"));
-        if (manifest.optInt("format") != 1 || !manifest.optString("bundle").equals("eve-turnip-dxvk-1")
+        if (manifest.optInt("format") != 1 || !manifest.optString("bundle").equals("eve-turnip-dxvk-2")
                 || !manifest.optString("runtime").equals(RUNTIME)
                 || !manifest.optString("wine_commit").equals("a6844d10622fc1a973ec1f22fc4f78a0fcd6cb29")
-                || !manifest.optString("mesa").equals("26.0.0") || !manifest.optString("dxvk").equals("2.5.3"))
+                || !manifest.optString("mesa").equals("26.0.0") || !manifest.optString("dxvk").equals("2.4.1"))
             throw new IOException("GPU assets do not match the pinned runtime");
         JSONObject files = manifest.getJSONObject("files");
         String[] names = {"turnip-26.0.0.so", "vulkan-probe", "dxvk-d3d11-arm64ec.dll", "dxvk-dxgi-arm64ec.dll", "eve-d3d11-probe.exe"};

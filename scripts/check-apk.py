@@ -21,6 +21,7 @@ def check(path: Path) -> None:
             "assets/wine_trust_overlay.py", "assets/wine-trust-overlay.json",
             "assets/wine-crypt32-aarch64.dll", "assets/wine-crypt32-i386.dll",
             "assets/pe_image.py", "assets/process_metrics.py", "assets/client_graphics.py", "assets/graphics_present.py",
+            "assets/client_diagnostics.py",
             "assets/client-graphics-bundle.json", "assets/turnip-26.0.0.so", "assets/vulkan-probe",
             "assets/dxvk-d3d11-arm64ec.dll", "assets/dxvk-dxgi-arm64ec.dll", "assets/eve-d3d11-probe.exe",
         )

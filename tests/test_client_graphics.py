@@ -243,13 +243,13 @@ def display_failures() -> dict[str, dict]:
 
 BASE_MANIFEST = json.loads(r'''{
   "format": 1,
-  "bundle": "eve-turnip-dxvk-1",
+  "bundle": "eve-turnip-dxvk-2",
   "runtime": "fex-arm64ec-1",
   "wine_commit": "a6844d10622fc1a973ec1f22fc4f78a0fcd6cb29",
   "fex_commit": "320c5f18475b0c8a7e99c51a5fdc5b5e35b147ab",
   "mesa": "26.0.0",
-  "dxvk": "2.5.3",
-  "dxvk_commit": "c707d9026f33b6ab89639f154b6ac5f6326fa037",
+  "dxvk": "2.4.1",
+  "dxvk_commit": "0cf05780abd7250c2cd713b7749cf32180157cf5",
   "architecture": "arm64ec-and-arm64-glibc",
   "kmd": "kgsl",
   "files": {
@@ -430,6 +430,14 @@ class GraphicsTests(unittest.TestCase):
                     graphics.verify_bundle(self.folder)
         self.write_manifest()
 
+    def test_previous_timeline_queue_bundle_cannot_qualify(self):
+        previous = copy.deepcopy(self.manifest)
+        previous.update(bundle="eve-turnip-dxvk-1", dxvk="2.5.3",
+                        dxvk_commit="c707d9026f33b6ab89639f154b6ac5f6326fa037")
+        self.write_manifest(previous)
+        with self.assertRaises(ValueError):
+            graphics.verify_bundle(self.folder)
+
     def test_nested_source_pins_and_integer_manifest_metadata_are_checked(self):
         changes = [(("format",), True),
                    (("toolchain", "sha256"), "0" * 64),
@@ -498,7 +506,7 @@ class GraphicsTests(unittest.TestCase):
 
     def test_session_binding_must_match_exact_native_assets(self):
         system32 = self.map_dlls()
-        self.assertEqual(graphics.verify_mapped(self.folder, self.state)["bundle"], "eve-turnip-dxvk-1")
+        self.assertEqual(graphics.verify_mapped(self.folder, self.state)["bundle"], "eve-turnip-dxvk-2")
         for name in graphics.DLLS:
             with self.subTest(name=name):
                 path = system32 / (name + ".dll")
@@ -518,6 +526,7 @@ class GraphicsTests(unittest.TestCase):
         protected = {
             self.state / "prefix/system.reg": b"accepted existing prefix",
             self.state / "trust/evejs-ca.pem": b"accepted local CA",
+            self.state / "cache/dxvk-2.5.3-arm64ec/exefile.dxvk-cache": b"retained previous-version cache",
             self.content / "eve-client-content.json": b"accepted resources receipt",
             self.content / "tq/bin64/exefile.exe": b"accepted client EXE",
         }
@@ -525,8 +534,8 @@ class GraphicsTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
         result = graphics.prepare(self.folder, self.state, self.content, "turnip-dxvk")
-        self.assertEqual(result["bundle"], "eve-turnip-dxvk-1")
-        cache = self.state / "cache/dxvk-2.5.3-arm64ec/exefile.dxvk-cache"
+        self.assertEqual(result["bundle"], "eve-turnip-dxvk-2")
+        cache = self.state / "cache/dxvk-2.4.1-arm64ec/exefile.dxvk-cache"
         cache.write_bytes(b"retained shader state")
         graphics.prepare(self.folder, self.state, self.content, "turnip-dxvk")
         self.assertEqual(cache.read_bytes(), b"retained shader state")
@@ -537,6 +546,9 @@ class GraphicsTests(unittest.TestCase):
         config = (self.state / "run/dxvk.conf").read_text()
         self.assertIn("dxgi.maxFrameRate = 30", config)
         self.assertIn("dxgi.maxFrameLatency = 1", config)
+        self.assertNotIn("enableGraphicsPipelineLibrary", config)
+        self.assertEqual(graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state)["DXVK_STATE_CACHE_PATH"],
+                         "Z:" + str(self.state / "cache/dxvk-2.4.1-arm64ec").replace("/", "\\"))
 
     def test_software_recovery_does_not_require_or_mutate_gpu_bundle(self):
         keep = self.state / "keep-existing-state"
@@ -573,7 +585,7 @@ class GraphicsTests(unittest.TestCase):
                 path.unlink()
 
     def test_dxvk_cache_limits_evict_oldest_owned_files_and_preserve_other_data(self):
-        cache = self.state / "cache/dxvk-2.5.3-arm64ec"
+        cache = self.state / "cache/dxvk-2.4.1-arm64ec"
         cache.mkdir(parents=True)
         paths = []
         for index in range(5):
@@ -744,3 +756,4 @@ class GraphicsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -22,7 +22,7 @@ import zipfile
 from pe_image import arm64ec_metadata
 
 
-DXVK_COMMIT = "c707d9026f33b6ab89639f154b6ac5f6326fa037"
+DXVK_COMMIT = "0cf05780abd7250c2cd713b7749cf32180157cf5"
 SUBMODULES = {
     "include/vulkan": "46dc0f6e514f5730784bb2cac2a7c731636839e8",
     "include/spirv": "8b246ff75c6615ba4532fe4fde20f1be090c3764",
@@ -128,7 +128,7 @@ def fetch_sources(source: Path, output: Path) -> None:
         "fexCommit": "320c5f18475b0c8a7e99c51a5fdc5b5e35b147ab",
         "toolchain": "llvm-mingw-20250920-ucrt-ubuntu-22.04-aarch64",
         "toolchainSha256": "bce5cc755c613515fd44e1ee9523123d854103abae147571adb645450036274d",
-        "dxvkVersion": "2.5.3", "dxvkCommit": DXVK_COMMIT, "submodules": SUBMODULES,
+        "dxvkVersion": "2.4.1", "dxvkCommit": DXVK_COMMIT, "submodules": SUBMODULES,
         "turnipVersion": "26.0.0", "mesaSourceSha256": SOURCE_ARCHIVES["mesa-26.0.0.tar.xz"],
         "turnipOriginalBinaryRelease": RELEASE, "turnipOriginalBundleSha256": BUNDLE_HASH,
         "turnipOriginalCorrespondingSourcesSha256": SOURCES_HASH,
@@ -230,10 +230,10 @@ def make_manifest(assets):
                 raise ValueError('Probe EXE must execute x64 application code, not native EC')
         files[name] = item
     manifest = {
-        'format': 1, 'bundle': 'eve-turnip-dxvk-1', 'runtime': 'fex-arm64ec-1',
+        'format': 1, 'bundle': 'eve-turnip-dxvk-2', 'runtime': 'fex-arm64ec-1',
         'wine_commit': 'a6844d10622fc1a973ec1f22fc4f78a0fcd6cb29',
         'fex_commit': '320c5f18475b0c8a7e99c51a5fdc5b5e35b147ab',
-        'mesa': '26.0.0', 'dxvk': '2.5.3', 'dxvk_commit': 'c707d9026f33b6ab89639f154b6ac5f6326fa037',
+        'mesa': '26.0.0', 'dxvk': '2.4.1', 'dxvk_commit': DXVK_COMMIT,
         'architecture': 'arm64ec-and-arm64-glibc', 'kmd': 'kgsl', 'files': files,
         'baselineRuntimeSha256': 'f036c00a290abb953bec26be80c4d8fe492fd986e7a589c51008124432c8641e',
         'toolchain': {'name': 'llvm-mingw-20250920-ucrt-ubuntu-22.04-aarch64',
@@ -291,3 +291,4 @@ if __name__ == '__main__':
         runtime_identity(Path(sys.argv[2]))
     else:
         raise SystemExit('fetch-sources.py fetch SOURCE OUTPUT | manifest ASSETS | runtime-identity OUTPUT_JSON')
+

@@ -1,3 +1,27 @@
+# EVE Android Launcher 0.1.7 — Adreno synchronization compatibility
+
+0.1.6 launches EVE on native DXVK/Adreno 740, but the device test remains black
+with pending shader compilation. Android decoding and drawing consume little
+time, and there is no recorded crash or memory failure.
+
+This preview builds unmodified DXVK 2.4.1 as native ARM64EC D3D11/DXGI. It avoids
+the submission-completion timeline path introduced in DXVK 2.5, which upstream
+reports identify as a performance regression with Turnip's emulated KGSL
+timelines. Turnip 26 and the accepted Wine/FEX runtime remain in place. This is
+a targeted compatibility candidate; the device test must confirm whether it
+resolves EVE's stall. No shader-worker, API, network-policy or presentation
+settings are changed. The prior 2.5.3 shader cache is retained separately.
+
+Bounded client CPU/RSS, compiler-thread state/CPU/wait-channel and cache metadata
+samples now survive Stop, including one prior session. Support exports include
+them without credentials, stack dumps, command lines or screenshots. Real socket
+tests confirm input can be sent while the display reader waits for pixels.
+
+Update in place. Keep Adreno rendering checked and use a fresh local account.
+If the black screen persists for three minutes, export support logs, then stop
+the client and server. There is no need to wait ten minutes or reset saved data.
+See [testing instructions](TESTING.md) and [evidence](CLIENT-PERFORMANCE.md).
+
 # EVE Android Launcher 0.1.6 — graphics report reader
 
 The 0.1.5 Thor test passed Turnip/Adreno 740 Vulkan presentation, native ARM64EC

@@ -174,11 +174,38 @@ actual observer file through the production reader. Older launch/client logs in
 the ZIP describe the accepted 0.1.4 session, not this attempt. The next physical
 gate is EVE with GPU rendering and usable input.
 
+## October 3: EVE Adreno startup stall and 0.1.7 candidate
+
+`eve-support-20261003-194841.zip` (SHA-256
+`4a61fb9e589c78d0297f61562848f2605a28041bbdb08cda02d2cb857be5e765`)
+confirms 0.1.6 passed native graphics preflight and started EVE with native DXVK
+2.5.3/Turnip Adreno 740. It creates a 1280x720 swapchain but remains black with
+pending shader tasks and a 2.5 FPS HUD. No recorded crash, GPU reset or OOM occurs;
+the user stops cleanly. Android receive/decode/publish/draw metrics show the
+screen is nearly static upstream of the display bridge. Stop overwrites live
+CPU/RSS, leaving the exact stall mechanism unproven.
+
+0.1.7 selects unmodified native ARM64EC DXVK 2.4.1, commit
+`0cf05780abd7250c2cd713b7749cf32180157cf5`. Upstream DXVK issue 4484 ties a KGSL
+performance regression to the 2.5 submission timeline change; exact Mesa 26 source
+still emulates timelines. Reversing that code in 2.5.3 conflicts with later
+transfer changes, and the proposed native KGSL timeline driver patch remains WIP.
+Only D3D11/DXGI changes; Wine/FEX, Turnip, dependencies, hardware gates and display
+settings remain. Old 2.5.3 shader state is retained; new state is version-owned.
+
+Bounded CPU/RSS, compiler-thread CPU/state/wait-channel and cache metadata samples
+survive Stop and include one prior session in support exports. No credentials,
+command lines, stacks or images are recorded. Real socket regressions confirm
+duplex input with both idle and partial-pixel reads; no input lock fix was needed.
+The candidate must pass native/Android CI and then the Thor login/input test.
+If still black after three minutes, export while running and stop; do not reset
+accepted data or repeat the import/runtime gates.
+
 ## Next milestones
 
 1. Preserve accepted server/world lifecycle, Wine/FEX probe, exact 125,116-resource
    import, private TLS, client startup and local login/character selection.
-2. Physically qualify 0.1.6 EVE Adreno rendering and usable input, cold/warm-cache
+2. Physically qualify 0.1.7 EVE Adreno rendering and usable input, cold/warm-cache
    startup, display reopen and clean shutdown using a fresh local account.
 3. After performance is usable, qualify character creation/station/undock/warp/dock
    and persistent reopen, then audio and controller support.

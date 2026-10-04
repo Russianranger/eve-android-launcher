@@ -64,10 +64,19 @@ def run_case(name: str, wrapper: bool, expected_exit: int, extra_env: dict | Non
                         if not entry.name.isdigit() or int(entry.name) == process.pid:
                             continue
                         try:
-                            command_line = (entry / "cmdline").read_bytes().lower()
+                            with (entry / "cmdline").open("rb") as cmdline:
+                                command_line = cmdline.read(4097).lower()
                         except OSError:
                             continue
-                        if b"exefile.exe" not in command_line:
+                        if len(command_line) > 4096:
+                            continue
+                        # Match the fixed original fixture, not an incidental
+                        # mention of its basename in another process's argv.
+                        arguments = command_line.rstrip(b"\0").split(b"\0")
+                        if not any(argument in (
+                                b"/client/tq/bin64/exefile.exe",
+                                b"z:\\client\\tq\\bin64\\exefile.exe")
+                                for argument in arguments):
                             continue
                         child = record(int(entry.name))
                         if child:
@@ -124,7 +133,12 @@ def main() -> None:
         assert fixture["passed"] is True and fixture["foregroundOwned"] is True and fixture["focusOwned"] is True
         assert fixture["restored"] is True and fixture["hiddenUntouched"] is True and fixture["ownedPopupUntouched"] is True
         assert fixture["windowsPid"] == report["childWindowsPid"]
-        assert fixture["unixGroup"] == focused["launcherUnixPid"] and fixture["unixSession"] == focused["launcherUnixPid"]
+        # Windows CreateFile(/proc/self) opens in wineserver, so it cannot
+        # establish the game's Unix identity. Use independent native /proc
+        # observations of the exact fixed child argv above for that proof.
+        assert all(member["group"] == focused["launcherUnixPid"] and
+                   member["session"] == focused["launcherUnixPid"]
+                   for member in focused["ownedGameMembers"])
         hung = run_case("hung-pump", True, 37, {"EVE_WINDOW_FIXTURE_HUNG": "1"})
         assert hung["ownedGameMembers"]
         assert hung["fixture"]["hungMessagePump"] is True and hung["fixture"]["passed"] is False
@@ -137,6 +151,7 @@ def main() -> None:
         assert missing["window"].get("childWindowsPid") in (0, None)
         result = {"passed": True, "helper": "eve-client-window-1",
                   "qualification": "original-window-fixture-native-arm64-wine-fex-only",
+                  "unixOwnershipProof": "native-proc-exact-fixed-child-argv",
                   "physicalThorQualified": False,
                   "helperSha256": hashlib.sha256(HELPER.read_bytes()).hexdigest(),
                   "directMinimized": direct, "ownedFocus": focused, "hungPump": hung, "missingChild": missing}

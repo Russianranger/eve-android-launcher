@@ -1,7 +1,10 @@
 /* Original CI-only GDI child installed at the wrapper's fixed retail path.
  * This GUI-subsystem fixture starts minimized without activation. Direct launch
  * must exit 38; the unchanged production wrapper must restore/focus it and
- * forward exit 37. No game files, D3D driver, or user input are needed. */
+ * forward exit 37. No game files, D3D driver, or user input are needed.
+ * The host checks Linux /proc externally to prove Unix process ownership.
+ * Never read /proc/self through Wine: wineserver opens that file, so its
+ * identity would be reported instead of this fixture's Unix identity. */
 #ifndef UNICODE
 #define UNICODE
 #endif
@@ -15,7 +18,6 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <wchar.h>
 
 static unsigned int activation_messages, focus_messages;
@@ -45,41 +47,20 @@ static BOOL own_window(HWND hwnd)
     return hwnd && GetWindowThreadProcessId(hwnd, &pid) && pid == GetCurrentProcessId();
 }
 
-static void unix_identity(unsigned long *pid, unsigned long *parent, unsigned long *group, unsigned long *session)
-{
-    char data[2048], *fields;
-    DWORD read = 0;
-    HANDLE file = CreateFileW(L"Z:\\proc\\self\\stat", GENERIC_READ, FILE_SHARE_READ,
-                              NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    *pid = *parent = *group = *session = 0;
-    if (file == INVALID_HANDLE_VALUE) return;
-    if (ReadFile(file, data, sizeof(data)-1, &read, NULL) && read) {
-        char state;
-        data[read] = 0;
-        *pid = strtoul(data, NULL, 10);
-        fields = strrchr(data, ')');
-        if (!fields || sscanf(fields + 1, " %c %lu %lu %lu", &state, parent, group, session) != 4)
-            *pid = *parent = *group = *session = 0;
-    }
-    CloseHandle(file);
-}
-
 static void report(BOOL passed, BOOL restored, BOOL foreground, BOOL focused,
                    BOOL hidden_untouched, BOOL popup_untouched, BOOL tool_untouched, DWORD exit_code)
 {
     char json[1024];
-    unsigned long pid, parent, group, session;
     DWORD written;
     HANDLE file;
     int length;
-    unix_identity(&pid, &parent, &group, &session);
     length = snprintf(json, sizeof(json),
         "{\"format\":1,\"helper\":\"eve-client-window-fixture-1\",\"passed\":%s,"
-        "\"windowsPid\":%lu,\"unixPid\":%lu,\"unixParent\":%lu,\"unixGroup\":%lu,\"unixSession\":%lu,"
+        "\"windowsPid\":%lu,"
         "\"restored\":%s,\"foregroundOwned\":%s,\"focusOwned\":%s,\"activationMessages\":%u,"
         "\"focusMessages\":%u,\"hiddenUntouched\":%s,\"ownedPopupUntouched\":%s,"
         "\"toolWindowUntouched\":%s,\"hungMessagePump\":%s,\"exitCode\":%lu}\n",
-        passed ? "true" : "false", (unsigned long)GetCurrentProcessId(), pid, parent, group, session,
+        passed ? "true" : "false", (unsigned long)GetCurrentProcessId(),
         restored ? "true" : "false", foreground ? "true" : "false", focused ? "true" : "false",
         activation_messages, focus_messages, hidden_untouched ? "true" : "false",
         popup_untouched ? "true" : "false", tool_untouched ? "true" : "false",

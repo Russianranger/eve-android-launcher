@@ -30,10 +30,19 @@ RUN bash /graphics-tests/scripts/build-client-graphics-probe.sh /graphics-out/as
  && python3 /graphics-recipe/fetch-sources.py runtime-identity /graphics-out/qualified-runtime-identity.json \
  && cp /graphics-out/qualified-runtime-identity.json /graphics-src/
 COPY backend/graphics_present.py /graphics-tests/graphics_present.py
+COPY native/eve-client-window.c native/eve-client-window-fixture.c /graphics-tests/native/
+COPY scripts/check-client-window-runtime.py scripts/build-client-window.sh /graphics-tests/scripts/
+RUN EVE_CLIENT_WINDOW_CC=/toolchain/bin/x86_64-w64-mingw32-clang \
+      bash /graphics-tests/scripts/build-client-window.sh /graphics-out/window-build \
+ && mv /graphics-out/window-build/eve-client-window.exe /graphics-out/assets/ \
+ && mv /graphics-out/window-build/eve-client-window-fixture.exe /graphics-out/ \
+ && rmdir /graphics-out/window-build
 COPY client-runtime/graphics/Dockerfile scripts/build-client-graphics.sh /graphics-recipe/
 RUN cp -R /graphics-recipe /graphics-src/recipe \
  && cp /graphics-tests/native/eve-d3d11-probe.c /graphics-src/recipe/ \
  && cp /graphics-tests/graphics_present.py /graphics-tests/scripts/build-client-graphics-probe.sh /graphics-src/recipe/ \
+ && cp /graphics-tests/native/eve-client-window*.c /graphics-tests/scripts/check-client-window-runtime.py \
+      /graphics-tests/scripts/build-client-window.sh /graphics-src/recipe/ \
  && cp /graphics-build/meson-logs/meson-log.txt /graphics-src/recipe/ \
  && tar --exclude=.git --sort=name --owner=0 --group=0 --numeric-owner \
       -czf /graphics-out/client-graphics-corresponding-source.tar.gz -C /graphics-src . \
@@ -44,4 +53,3 @@ ENV WINEPREFIX=/graphics-regression-prefix WINEARCH=win64 WINEDEBUG=-all,err+all
     WINEDLLOVERRIDES="winemenubuilder,mshtml,mscoree=;d3d11,dxgi=n;d3dcompiler_47,crypt32=b" \
     WINEESYNC=0 WINEFSYNC=0 FEX_DISABLETELEMETRY=1 MESA_VK_WSI_DEBUG=sw
 CMD ["/bin/true"]
-

@@ -201,11 +201,36 @@ The candidate must pass native/Android CI and then the Thor login/input test.
 If still black after three minutes, export while running and stop; do not reset
 accepted data or repeat the import/runtime gates.
 
+## October 3: 0.1.7 still black and 0.1.8 owned-window candidate
+
+`eve-support-20261003-203244.zip` (SHA-256
+`0b54714dfd01b47325e2662a16e03bd7b53d6b64c8e64cc30c7ec31f608799a3`)
+records the user-reported black screen without HUD. The complete combined log
+still reaches native DXVK 2.4.1 swapchain setup. Thirty-six live samples over
+181 seconds show idle named graphics workers, stable 1.30 GiB client RSS and
+about 7.5 GiB available. CPU is mainly in other select/pipe workers; display
+decode/publication/drawing remains cheap. This refutes an active background
+compiler backlog as the observed workload but cannot rule out synchronous
+compilation or another startup wait. EVE Adreno rendering remains unaccepted.
+
+0.1.8 retains the same renderer/cache/driver/Wine/FEX settings. Exact DXVK source
+has a foreground-dependent fullscreen occlusion path that differs from WineD3D.
+An original fixed-target launcher therefore activates only its live EVE child's
+owned main window once and records bounded numeric window/focus/message-pump
+evidence. It does not change saved EVE settings or repeatedly take focus. The
+supervisor requires a fresh session-matched child-created receipt before reporting
+process startup. Native Wine/FEX qualification checks minimized negative control,
+owned focus restoration, child exit forwarding and inherited Linux PGID/session;
+Windows PIDs never authorize cleanup. Main-thread samples are reserved in the
+existing bounded performance history. Support includes the current/prior window
+receipt. Host/native/Android checks must pass before distributing the candidate;
+actual EVE improvement still requires the Thor test.
+
 ## Next milestones
 
 1. Preserve accepted server/world lifecycle, Wine/FEX probe, exact 125,116-resource
    import, private TLS, client startup and local login/character selection.
-2. Physically qualify 0.1.7 EVE Adreno rendering and usable input, cold/warm-cache
+2. Physically qualify 0.1.8 EVE Adreno rendering and usable input, cold/warm-cache
    startup, display reopen and clean shutdown using a fresh local account.
 3. After performance is usable, qualify character creation/station/undock/warp/dock
    and persistent reopen, then audio and controller support.

@@ -120,3 +120,42 @@ Stop. They contain no command lines, stacks, credentials or frame images. Real
 loopback tests send keys, Unicode replacement text and pointer edges while the
 reader blocks on either a header or partial pixels; no transport lock defect was
 found. Device startup, login and usable input must now be retested.
+
+## 0.1.7 live stall and 0.1.8 owned-window candidate
+
+`eve-support-20261003-203244.zip` (SHA-256
+`0b54714dfd01b47325e2662a16e03bd7b53d6b64c8e64cc30c7ec31f608799a3`)
+confirms DXVK 2.4.1, passing physical Adreno/TLS preflight and another EVE black
+screen, now without a visible HUD. The combined log still reaches a 1280x720
+swapchain and eight compiler threads; the truncated standalone D3D log must not
+be mistaken for an earlier failure. Thirty-six live samples span 181 seconds.
+Once initialized, the named shader/submission/completion workers have zero CPU
+deltas and sleep in futex waits. Client CPU remains about half of one logical
+core, largely in other select/pipe workers; RSS stabilizes around 1.30 GiB with
+7.5 GiB available. Mesa cache grows once by 3.4 KiB and then remains static.
+Android decode/publication/draw totals about 115 ms over 141 seconds.
+
+This does not demonstrate an active background shader backlog. It also cannot
+exclude synchronous shader/library compilation or a fence wait on another thread.
+The precise wait owner is still unproven. Default compiler, feature-level, queue,
+driver, display and cache settings therefore remain unchanged in 0.1.8.
+
+Exact [DXVK 2.4.1 Win32 WSI](https://github.com/doitsujin/dxvk/blob/0cf05780abd7250c2cd713b7749cf32180157cf5/src/wsi/win32/wsi_window_win32.cpp)
+treats a window outside the foreground as occluded. The fullscreen presenter can
+exit fullscreen and report `DXGI_STATUS_OCCLUDED`, whereas the pinned WineD3D
+path's occlusion check uses minimization. A separate
+[EVE focus report](https://github.com/pop-os/cosmic-epoch/issues/3328) describes a
+black game window until focus, on different hardware/client/compositor; it is
+supporting context, not confirmation for Thor. This motivates one controlled
+owned-window activation and direct focus evidence rather than a graphics upgrade.
+
+The fixed-target launcher holds the exact EVE child handle, verifies its window
+PID before each asynchronous restore/foreground/raise, and makes one startup
+activation attempt. Numeric metadata and a 50 ms WM_NULL probe are sampled for
+at most three minutes and published every five seconds; no titles, pixels, input
+or stack dumps are retained. The helper forwards child exit and must pass native
+Wine/FEX proof of foreground restoration, bounded behavior with a hung message
+pump, exit propagation and inherited Linux
+process-group/session ownership. The supervisor requires a fresh nonce-matched
+child-created receipt before observing startup. Rendering/login remain separate
+device gates. CPU diagnostics also reserve bounded process-main-thread rows.

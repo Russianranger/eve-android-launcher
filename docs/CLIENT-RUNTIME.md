@@ -114,6 +114,25 @@ state remain in their existing private locations. A direct TLS/proxy environment
 configuration in the preparation policy is still not itself proof; actual startup
 requires the independent native network and Wine TLS gates.
 
+## Owned-window startup in 0.1.8
+
+The original x64 `eve-client-window.exe` launches only the prepared fixed
+`Z:\\client\\tq\\bin64\\exefile.exe` with the existing local arguments. It holds
+that exact child handle until exit and forwards the exit status. It preserves the
+inherited console/process group; native Wine/FEX qualification must establish
+Linux PGID/session inheritance before packaging. Windows PIDs in its report are
+observational and never authorize Linux process cleanup.
+
+The supervisor requires a bounded, session-matched child-created report, then
+retains its existing observation period. This establishes process creation only.
+Rendering and login remain unqualified. The helper restores/foregrounds only a
+live child's own visible unowned main window, once, using asynchronous window
+operations. It records numeric visibility/focus/rectangle and a bounded WM_NULL
+response probe for at most three minutes, with five-second receipt publication.
+No window titles, input, pixels or stack dumps are collected. Window polling ends
+without terminating EVE. Current and prior `run/client-window.json` receipts join
+support exports; startup preferences and user saves are preserved.
+
 ## Source and licenses
 
 The flat JSON patch recipes in `backend/` are unmodified copies from the user's `EveJS-v0.12.9.zip`, `tools/ClientSETUP/`, licensed under the supplied GNU AGPLv3. The Python PE patch behavior adapts that release's `blue_dll_patch.ps1`; the resource gate follows its `scripts/Test-EvEJSResources.ps1`. The server source and license are retained in the repository's vendor snapshot. No CCP executable or game asset is committed.

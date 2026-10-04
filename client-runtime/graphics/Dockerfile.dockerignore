@@ -8,8 +8,12 @@
 !scripts/
 !scripts/build-client-graphics.sh
 !scripts/build-client-graphics-probe.sh
+!scripts/check-client-window-runtime.py
+!scripts/build-client-window.sh
 !native/
 !native/eve-d3d11-probe.c
+!native/eve-client-window.c
+!native/eve-client-window-fixture.c
 !backend/
 !backend/pe_image.py
 !backend/graphics_present.py

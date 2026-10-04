@@ -159,6 +159,40 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(completion["wchan"], "dma_fence_wait")
         self.assertEqual(len(summary["rows"]), diagnostics.THREAD_ROWS)
 
+    def test_main_thread_is_retained_beside_compilers_and_busy_support_threads(self):
+        self.task(tid=20, name="private-main-name", wait="futex_wait_queue")
+        for tid in range(30, 50):
+            self.task(tid=tid, name="other", ticks=100)
+        self.task(tid=50, name="dxvk-shader-h")
+        self.task(tid=51, name="dxvk-queue")
+        self.history.begin()
+        self.history.wrapper_pid = 20
+        self.history.sample(self.snapshot(1), {"client": 20}, "running")
+        summary = self.read()["samples"][0]["clientThreads"]
+        self.assertEqual(summary["rows"][0]["tid"], 20)
+        self.assertTrue(summary["rows"][0]["main"])
+        self.assertEqual(summary["rows"][0]["processClass"], "wrapper")
+        self.assertIn("completion", {row["class"] for row in summary["rows"]})
+        self.assertNotIn("private-main-name", self.history.path.read_text())
+
+    def test_per_member_main_rows_are_bounded_and_wrapper_child_classes_are_safe(self):
+        members = []
+        for pid in range(20, 26):
+            path = self.proc / str(pid)
+            (path / "task" / str(pid)).mkdir(parents=True)
+            raw = proc_stat(pid, "private-name")
+            (path / "stat").write_text(raw)
+            (path / "task" / str(pid) / "stat").write_text(raw)
+            (path / "task" / str(pid) / "wchan").write_text("futex_wait_queue")
+            members.append({"pid": pid, "startTicks": "10", "cpuTicks": 0, "rssKiB": 123})
+        self.history.begin()
+        self.history.wrapper_pid = 20
+        self.history.sample(server_runtime.ProcessSnapshot(1, {20: members}), {"client": 20}, "running")
+        rows = self.read()["samples"][0]["clientThreads"]["rows"]
+        self.assertEqual([row["processClass"] for row in rows[:diagnostics.MAIN_ROWS]],
+                         ["wrapper", "child", "child", "child"])
+        self.assertEqual(len(rows), diagnostics.MAIN_ROWS)
+
     def test_task_bound_and_blocked_compiler_aggregates_are_visible(self):
         for tid in range(30, 50):
             self.task(tid=tid, name="other", state="R", ticks=100)

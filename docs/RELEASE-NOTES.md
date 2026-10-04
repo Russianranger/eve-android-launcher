@@ -1,3 +1,25 @@
+# EVE Android Launcher 0.1.8 — owned window startup
+
+The 0.1.7 Thor test still remains black. Live diagnostics show native graphics
+setup, stable memory and idle background shader/submission/completion workers.
+Those samples do not exclude synchronous compilation or another EVE wait.
+
+This candidate adds an original x64 fixed-target launcher that holds EVE's child
+process handle, activates only that child's visible main window once, and records
+bounded numeric visibility, minimization, focus and message-pump evidence. DXVK
+can treat a fullscreen window without foreground ownership as occluded, unlike
+the previous WineD3D path. Focus is a compatibility hypothesis, not a confirmed
+cause. No saved EVE settings or renderer/compiler tuning changes are included.
+
+Startup now requires a fresh session-matched child-created receipt before it
+reports process startup. The helper forwards EVE's exit; native CI verifies the
+child keeps the launcher's Linux process group/session and clean ownership.
+Diagnostics reserve client main-thread rows and exports keep the window receipt.
+
+Update in place and retry with Adreno rendering checked. Use a fresh account.
+If still black after three minutes, export while running, then stop the client
+and save/stop the server. Preserve the imported client, prefix and world.
+
 # EVE Android Launcher 0.1.7 — Adreno synchronization compatibility
 
 0.1.6 launches EVE on native DXVK/Adreno 740, but the device test remains black

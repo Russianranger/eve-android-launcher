@@ -25,6 +25,7 @@ SAMPLE_SECONDS = 5
 CACHE_SECONDS = 30
 TASK_LIMIT = 256
 THREAD_ROWS = 16
+MAIN_ROWS = 4
 CACHE_ENTRY_LIMIT = 4096
 STAT_LIMIT = 4096
 ROLES = ("client", "graphicsD3d", "graphicsVulkan", "gate", "wineServer", "display")
@@ -139,6 +140,7 @@ class PerformanceHistory:
         self.proc = proc
         self.file_limit = file_limit
         self.active = False
+        self.wrapper_pid: int | None = None
         self.previous_snapshot = None
         self.previous_threads: dict[tuple[int, str, int, str], int] = {}
         self.previous_thread_time: float | None = None
@@ -150,6 +152,7 @@ class PerformanceHistory:
     def begin(self) -> None:
         """Rotate only when a new EVE process has successfully been spawned."""
         self.active = True
+        self.wrapper_pid = None
         self.samples.clear()
         self.previous_snapshot = None
         self.previous_threads.clear()
@@ -159,6 +162,7 @@ class PerformanceHistory:
         self.report = {"format": 1, "startedAt": time.time(), "sampleIntervalSeconds": SAMPLE_SECONDS,
                        "sampleLimit": SAMPLE_LIMIT, "taskLimit": TASK_LIMIT,
                        "threadRowLimit": THREAD_ROWS, "cacheIntervalSeconds": CACHE_SECONDS,
+                       "mainThreadRowLimit": MAIN_ROWS,
                        "fileLimitBytes": self.file_limit,
                        "cpuPercentMeaning": "100 percent is one logical CPU", "phase": "starting"}
         try:
@@ -224,6 +228,9 @@ class PerformanceHistory:
                             state = task["state"]
                             wait = _wait_channel(task_path)
                             member_rows.append({"pid": pid, "tid": int(entry.name), "class": label, "state": state,
+                                         "main": task["pid"] == proc_pid,
+                                         "processClass": ("wrapper" if pid == self.wrapper_pid else "child")
+                                                         if self.wrapper_pid is not None else "client",
                                          "wchan": wait, "cpuTicks": after, "cpuCorePercent": percent})
                         except (OSError, ValueError, IndexError):
                             unavailable += 1
@@ -252,12 +259,14 @@ class PerformanceHistory:
         # Reserve a row for every recognized class, including blocked GPU
         # completion; fill the remaining rows with the highest measured CPU.
         rows.sort(key=lambda row: row["cpuCorePercent"] or 0, reverse=True)
-        selected = []
+        main_rows = [row for row in rows if row["main"]]
+        main_rows.sort(key=lambda row: row["processClass"] != "wrapper")
+        selected = main_rows[:MAIN_ROWS]
         for label in THREAD_CLASSES.values():
             candidate = next((row for row in rows if row["class"] == label), None)
-            if candidate is not None:
+            if candidate is not None and candidate not in selected:
                 selected.append(candidate)
-        selected.extend(row for row in rows if row not in selected)
+        selected.extend(row for row in rows if row not in selected and not row["main"])
         return {"processes": len(members), "tasksObserved": observed, "tasksRead": len(rows),
                 "unavailable": unavailable, "identityChanges": identity_changes,
                 "truncated": truncated, "states": dict(states),

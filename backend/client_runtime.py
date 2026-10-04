@@ -18,12 +18,14 @@ import os
 import re
 from pathlib import Path
 import signal
+import stat
 import socket
 import struct
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from typing import Any
 
 import client_prepare
@@ -41,6 +43,8 @@ NETWORK_POLICY = "loopback-v1"
 LOG_LIMIT = 8 * 1024**2
 LOG_HISTORY = 2
 OWNED_ROLES = ("client", "graphicsD3d", "graphicsVulkan", "gate", "wineServer", "display")
+WINDOW_HELPER_LIMIT = 8 * 1024**2
+WINDOW_RECEIPT_LIMIT = 4096
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,7 @@ class Settings:
     graphics_mode: str = "turnip-dxvk"
     graphics_folder: Path = Path("/opt/eve-android")
     graphics_timeout: float = 90
+    window_start_timeout: float = 20
     hosts_file: Path = Path("/etc/hosts")
     # Constructor-only fixture injection. Retail CLI cannot substitute commands.
     display_command: tuple[str, ...] | None = None
@@ -115,6 +120,11 @@ class Runtime:
         self.logs = self.s.state / "logs"
         self.status_file = self.run / "status.json"
         self.journal = self.run / "processes.json"
+        self.window_helper = self.s.gate.with_name("eve-client-window.exe")
+        self.window_receipt = self.run / "client-window.json"
+        self.window_session: str | None = None
+        self.window_child_ids: tuple[int, int] | None = None
+        self.window_report: dict[str, Any] = {}
         self.identities: dict[str, Any] = {}
         self.children: dict[str, subprocess.Popen] = {}
         self.pumps: list[threading.Thread] = []
@@ -159,6 +169,16 @@ class Runtime:
             identity = self.identities.get(role + "Identity", {})
             leader_matches = any(item["pid"] == process.pid and item["startTicks"] == identity.get("startTicks")
                                  and item["session"] == process.pid for item in members)
+            if not leader_matches and process.returncode is None:
+                # A fresh, unreaped zombie still reserves the owned PID and
+                # private group/session. Capture its children before poll()
+                # reaps that final identity; snapshots omit zombies for metrics.
+                leader = process_record(process.pid)
+                leader_matches = bool(leader and leader.get("state") == "Z"
+                                      and leader.get("pid") == process.pid
+                                      and leader.get("startTicks") == identity.get("startTicks")
+                                      and leader.get("group") == process.pid
+                                      and leader.get("session") == process.pid)
             if not leader_matches:
                 known = {(item["pid"], item["startTicks"]) for item in self.identities.get(role + "Members", [])}
                 members = [item for item in members if (item["pid"], item["startTicks"]) in known]
@@ -195,6 +215,7 @@ class Runtime:
                   "graphicsMode": self.s.graphics_mode,
                   "renderer": "DXVK / Turnip (Adreno)" if self.s.graphics_mode == "turnip-dxvk" else "WineD3D / llvmpipe",
                   "graphicsPreflight": self.graphics_reports, "processCpu": process_cpu,
+                  "clientWindow": self.window_report,
                   "memory": memory, **self.identities, **details}
         atomic_json(self.status_file, report)
         if self.children:
@@ -205,7 +226,8 @@ class Runtime:
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(("BOX64_", "FEX_", "DOTNET_", "COMPlus_"))
                and key not in ("DISPLAY", "LD_PRELOAD", "LD_LIBRARY_PATH", "HTTP_PROXY",
-                               "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")}
+                               "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy",
+                               "EVE_WINDOW_SESSION")}
         env.update({"HOME": "/root", "PATH": "/opt/wine/bin:/usr/bin:/bin", "LANG": "C.UTF-8",
                     "DISPLAY": ":" + str(self.s.display_number),
                     "WINEPREFIX": str(self.s.state / "prefix"), "WINEARCH": "win64",
@@ -260,6 +282,7 @@ class Runtime:
                 raise RuntimeErrorDetail("Wine and wineserver must remain the pinned native ARM64 executables")
         if not self.s.gate.is_file() or self.s.gate.is_symlink():
             raise RuntimeErrorDetail("The APK is missing its Wine certificate and localhost TLS helper")
+        self.verify_window_helper()
         probe = read_json(self.s.state / "probe.json")
         if probe.get("translated_x64_probe_passed") is not True or probe.get("exit_code") != 37:
             raise RuntimeErrorDetail("Pass Probe Wine / FEX before launching EVE")
@@ -306,6 +329,147 @@ class Runtime:
         return {"contentBuild": client_prepare.BUILD, "binarySha256": expected_hashes,
                 "caPemSha256": current_sha, "caDerSha256": current_der_sha,
                 "wineTrustOverlay": overlay["overlay"], "graphicsMode": self.s.graphics_mode}
+
+    def verify_window_helper(self) -> None:
+        try:
+            if (not self.window_helper.is_file() or self.window_helper.is_symlink()
+                    or not 0 < self.window_helper.stat().st_size <= WINDOW_HELPER_LIMIT):
+                raise ValueError("Invalid helper file")
+            with self.window_helper.open("rb") as source:
+                header = source.read(4096)
+            offset = int.from_bytes(header[60:64], "little")
+            if (len(header) < 64 or header[:2] != b"MZ" or offset < 64 or offset + 94 > len(header)
+                    or header[offset:offset + 4] != b"PE\0\0"
+                    or int.from_bytes(header[offset + 4:offset + 6], "little") != 0x8664
+                    or int.from_bytes(header[offset + 24:offset + 26], "little") != 0x20b
+                    or int.from_bytes(header[offset + 92:offset + 94], "little") != 3):
+                raise ValueError("Helper is not original x64 PE")
+        except (OSError, ValueError) as error:
+            raise RuntimeErrorDetail("The APK is missing its original x64 client window helper") from error
+
+    def launch_client(self) -> None:
+        if self.s.client_command is not None:
+            # Constructor-only process fixtures retain their direct launch path.
+            self.spawn("client", self.s.client_command, cwd=self.s.content / "tq")
+            return
+        self.window_session = uuid.uuid4().hex
+        self.window_child_ids = None
+        self.window_report = {}
+        try:
+            previous = self.window_receipt.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            if stat.S_ISREG(previous.st_mode) and previous.st_size <= WINDOW_RECEIPT_LIMIT:
+                self.window_receipt.replace(self.window_receipt.with_name(self.window_receipt.name + ".1"))
+            elif stat.S_ISREG(previous.st_mode) or stat.S_ISLNK(previous.st_mode):
+                self.window_receipt.unlink()
+            else:
+                raise RuntimeErrorDetail("The previous client window receipt is invalid; export support logs")
+        environment = self.environment()
+        environment["EVE_WINDOW_SESSION"] = self.window_session
+        command = (self.s.wine, "Z:" + str(self.window_helper).replace("/", "\\"))
+        self.spawn("client", command, env=environment, cwd=self.s.content / "tq")
+
+    def check_window_receipt(self) -> dict[str, Any] | None:
+        if self.window_session is None:
+            return None
+        try:
+            if self.window_receipt.is_symlink():
+                raise ValueError("Linked receipt")
+            value = json.loads(client_prepare.bounded_text(self.window_receipt, limit=WINDOW_RECEIPT_LIMIT))
+        except FileNotFoundError:
+            if self.window_child_ids is not None:
+                raise RuntimeErrorDetail("The owned client window receipt disappeared; export support logs")
+            return None
+        except (OSError, ValueError, TypeError, RecursionError) as error:
+            raise RuntimeErrorDetail("The owned client window receipt is invalid; export support logs") from error
+        try:
+            if (not isinstance(value, dict) or type(value.get("format")) is not int or value["format"] != 1
+                    or value.get("helper") != "eve-client-window-1" or value.get("session") != self.window_session
+                    or not re.fullmatch(r"[0-9a-f]{32}", self.window_session)
+                    or value.get("phase") not in ("child_created", "window_observed", "child_exited", "failed")):
+                raise ValueError("Wrong receipt identity")
+            elapsed = value.get("elapsedMs")
+            if type(elapsed) is not int or not 0 <= elapsed <= 2**63 - 1:
+                raise ValueError("Invalid elapsed time")
+            if value["phase"] == "failed":
+                raise RuntimeErrorDetail("The owned client window helper failed; export support logs")
+            pids = (value.get("wrapperWindowsPid"), value.get("childWindowsPid"))
+            if any(type(pid) is not int or not 0 < pid <= 0xffffffff for pid in pids) or pids[0] == pids[1]:
+                raise ValueError("Invalid Windows process identities")
+            exit_code = value.get("childExitCode")
+            if exit_code is not None and (type(exit_code) is not int or not 0 <= exit_code <= 0xffffffff):
+                raise ValueError("Invalid exit code")
+            if self.window_child_ids is not None and pids != self.window_child_ids:
+                raise ValueError("Changed Windows process identities")
+            if value["phase"] == "child_exited":
+                raise RuntimeErrorDetail("EVE exited while its owned client window helper was running")
+            if exit_code is not None:
+                raise ValueError("Live child has an exit code")
+            safe = {key: value[key] for key in ("format", "helper", "session", "phase", "wrapperWindowsPid",
+                                               "childWindowsPid", "elapsedMs", "childExitCode") if key in value}
+            for key in ("windowsOwned", "visibleWindows", "unownedWindows", "iconicWindows"):
+                if key in value:
+                    if type(value[key]) is not int or not 0 <= value[key] <= 256:
+                        raise ValueError("Invalid window count")
+                    safe[key] = value[key]
+            for key, limit in (("selectedWindow", 2**64 - 1), ("focusAttemptWindow", 2**64 - 1),
+                               ("windowThreadId", 0xffffffff), ("probeWin32Error", 0xffffffff),
+                               ("win32Error", 0xffffffff), ("probeTimeoutMs", 50)):
+                if key in value:
+                    if type(value[key]) is not int or not 0 <= value[key] <= limit:
+                        raise ValueError("Invalid window integer")
+                    safe[key] = value[key]
+            for key in ("windowScanTruncated", "windowVisible", "windowIconic", "foregroundOwned", "focusOwned",
+                        "guiInfoAvailable", "focusAttempted", "focusCallSucceeded", "focusSucceeded", "restoreQueued",
+                        "raiseQueued", "observationComplete", "startupWindowTimedOut"):
+                if key in value:
+                    if type(value[key]) is not bool:
+                        raise ValueError("Invalid window flag")
+                    safe[key] = value[key]
+            for key in ("focusAttemptElapsedMs", "responsive", "rect"):
+                if key not in value:
+                    continue
+                item = value[key]
+                if item is not None:
+                    if key == "responsive" and type(item) is not bool:
+                        raise ValueError("Invalid responsiveness flag")
+                    if key == "focusAttemptElapsedMs" and (type(item) is not int or not 0 <= item <= 2**63 - 1):
+                        raise ValueError("Invalid focus time")
+                    if key == "rect":
+                        if (not isinstance(item, dict) or set(item) != {"left", "top", "right", "bottom"}
+                                or any(type(coordinate) is not int or not -(2**31) <= coordinate < 2**31
+                                       for coordinate in item.values())):
+                            raise ValueError("Invalid window rectangle")
+                safe[key] = item
+        except (ValueError, KeyError, TypeError) as error:
+            raise RuntimeErrorDetail("The owned client window receipt is invalid; export support logs") from error
+        self.window_child_ids = pids
+        # Receipt metadata cannot alter process ownership or readiness claims.
+        self.window_report = safe
+        return self.window_report
+
+    def wait_window_child(self) -> None:
+        if self.window_session is None:
+            return
+        deadline = time.monotonic() + self.s.window_start_timeout
+        last_health = 0.0
+        while time.monotonic() < deadline:
+            self.cancellation_point()
+            self.refresh_owned_processes(persist=True)
+            self.check_child("display")
+            self.check_child("wineServer")
+            self.check_child("client")
+            self.memory_check()
+            if time.monotonic() - last_health >= 5:
+                self.require_server()
+                last_health = time.monotonic()
+            if self.check_window_receipt() is not None:
+                self.refresh_owned_processes(persist=True)
+                return
+            time.sleep(self.s.tick)
+        raise RuntimeErrorDetail("The client window helper did not confirm EVE process creation within 20 seconds")
 
     @staticmethod
     def verify_network_gate() -> None:
@@ -366,7 +530,9 @@ class Runtime:
         snapshot = self.refresh_owned_processes(persist=True)
         if role == "client":
             self.diagnostics.begin()
+            self.diagnostics.wrapper_pid = process.pid if self.window_session is not None else None
             self.diagnostics.report.update(
+                wrappedClient=self.window_session is not None,
                 graphicsMode=self.s.graphics_mode if self.s.graphics_mode in client_graphics.MODES else "unknown",
                 dxvkVersion=client_graphics.DXVK_VERSION, mesaVersion=client_graphics.MESA_VERSION)
             for name in ("supervisorIdentity", "clientIdentity"):
@@ -656,9 +822,6 @@ class Runtime:
                     self.update_local_hosts()
                 self.graphics_reports = self.run_graphics()
                 self.cancellation_point()
-                client_command = self.s.client_command or (
-                    self.s.wine, "Z:\\client\\tq\\bin64\\exefile.exe", "/noCrashReportUpload",
-                    "/resfileserver=http://127.0.0.1:26002/resfiles/", "/port:26000")
                 self.status("starting", "Launching EVE build 3396210 through the existing Wine/FEX runtime", displayReady=True,
                             wineTrustQualified=True, localhostTlsQualified=True)
                 if self.s.graphics_mode == "turnip-dxvk":
@@ -668,22 +831,26 @@ class Runtime:
                 # GPU qualification can take minutes; the previously accepted
                 # server session must still be alive before starting EVE.
                 self.require_server()
-                self.spawn("client", client_command, cwd=self.s.content / "tq")
+                self.launch_client()
+                self.wait_window_child()
                 deadline = time.monotonic() + self.s.observe_seconds
                 while time.monotonic() < deadline:
                     self.cancellation_point()
                     self.check_child("display")
                     self.check_child("wineServer")
                     self.check_child("client")
+                    self.check_window_receipt()
                     self.memory_check()
                     time.sleep(self.s.tick)
                 self.check_child("client")
+                self.check_window_receipt()
                 atomic_json(self.s.state / "launch-observation.json", {
                     "format": 1, "observedAt": time.time(), **qualification,
                     "processStartupObserved": True, "login_qualified": False,
                     "graphics_qualified": False, "wine_cryptoapi_trust": True, "localhost443_tls": True,
                     "networkPolicy": NETWORK_POLICY, "renderer": "DXVK / Turnip (Adreno)" if self.s.graphics_mode == "turnip-dxvk" else "WineD3D / llvmpipe",
-                    "graphicsPreflight": self.graphics_reports, "displayPort": self.s.display_port})
+                    "graphicsPreflight": self.graphics_reports, "clientWindow": self.window_report,
+                    "displayPort": self.s.display_port})
                 last_health = 0.0
                 while not self.stopping():
                     self.check_child("display")
@@ -692,6 +859,7 @@ class Runtime:
                     self.memory_check()
                     if time.monotonic() - last_health >= 5:
                         self.require_server()
+                        self.check_window_receipt()
                         self.status("running", "EVE process and display started; check the client login screen", True,
                                     displayReady=True, processStartupObserved=True,
                                     wineTrustQualified=True, localhostTlsQualified=True)

@@ -96,6 +96,7 @@ timeout --kill-after=5 15 /opt/wine/bin/wineserver -k
 timeout --kill-after=5 15 /opt/wine/bin/wineserver -w
 # A native ARM64 CI machine does not have an Android KGSL device. Pin only our
 # Turnip ICD and require a failure, proving no hidden Lavapipe fallback.
+python3 /graphics-tests/scripts/check-client-window-runtime.py
 test ! -e /dev/kgsl-3d0
 python3 - <<'PY'
 import json
@@ -194,5 +195,10 @@ client_graphics.verify_bundle(Path('backend'))
 client_graphics.parse_display(Path('out/d3d11-rfb-presentation.json').read_text())
 report = json.loads(Path('out/client-graphics-check.json').read_text())
 assert report['passed'] is True and report['physicalThorQualified'] is False
+window = json.loads(Path('out/client-window-check.json').read_text())
+helper = assets / 'eve-client-window.exe'
+import hashlib
+assert window['passed'] is True and window['physicalThorQualified'] is False
+assert hashlib.sha256(helper.read_bytes()).hexdigest() == window['helperSha256']
+shutil.copyfile(helper, Path('backend/eve-client-window.exe'))
 PYVALIDATE
-

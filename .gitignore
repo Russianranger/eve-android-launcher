@@ -8,6 +8,8 @@ runtime-work/
 __pycache__/
 *.pyc
 /backend/eve-client-gate.exe
+/backend/eve-client-window.exe
+/backend/eve-client-window-fixture.exe
 /backend/wine-crypt32-*.dll
 /backend/wine-trust-overlay.json
 /backend/client-graphics-bundle.json

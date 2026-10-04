@@ -22,6 +22,7 @@ def check(path: Path) -> None:
             "assets/wine-crypt32-aarch64.dll", "assets/wine-crypt32-i386.dll",
             "assets/pe_image.py", "assets/process_metrics.py", "assets/client_graphics.py", "assets/graphics_present.py",
             "assets/client_diagnostics.py",
+            "assets/eve-client-window.exe",
             "assets/client-graphics-bundle.json", "assets/turnip-26.0.0.so", "assets/vulkan-probe",
             "assets/dxvk-d3d11-arm64ec.dll", "assets/dxvk-dxgi-arm64ec.dll", "assets/eve-d3d11-probe.exe",
         )
@@ -32,12 +33,17 @@ def check(path: Path) -> None:
             if name.startswith("lib/"):
                 if data[:5] != b"\x7fELF\x02" or struct.unpack_from("<H", data, 18)[0] != 183:
                     raise ValueError(f"Expected a 64-bit ARM ELF: {name}")
-            if name.endswith("eve-client-gate.exe"):
+            if name.endswith(("eve-client-gate.exe", "eve-client-window.exe")):
                 if data[:2] != b"MZ" or len(data) < 64:
-                    raise ValueError("Missing Windows certificate helper")
+                    raise ValueError("Missing original Windows helper")
                 offset = struct.unpack_from("<I", data, 60)[0]
                 if data[offset:offset + 4] != b"PE\0\0" or struct.unpack_from("<H", data, offset + 4)[0] != 0x8664:
-                    raise ValueError("Expected the x64 Wine certificate helper")
+                    raise ValueError("Expected an original x64 Wine helper")
+                if name.endswith("eve-client-window.exe") and (
+                        offset + 94 > len(data)
+                        or struct.unpack_from("<H", data, offset + 24)[0] != 0x20b
+                        or struct.unpack_from("<H", data, offset + 92)[0] != 3):
+                    raise ValueError("Window helper must preserve the original x64 CUI console/group")
             if name.endswith("libproot.so") and b"--eve-client-network" not in data:
                 raise ValueError("PRoot is missing the client loopback network policy")
         other_abis = [name for name in archive.namelist()

@@ -5,7 +5,7 @@ on:
   pull_request:
   workflow_dispatch:
 env:
-  EVE_APP_VERSION: '0.1.7'
+  EVE_APP_VERSION: '0.1.8'
 permissions:
   contents: read
 defaults:
@@ -178,6 +178,8 @@ jobs:
             out/eve-d3d11-probe*.log
             out/xvnc.log
             out/prefix.log
+            out/client-window-*.json
+            out/client-window-*.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -198,6 +200,7 @@ jobs:
             backend/dxvk-d3d11-arm64ec.dll
             backend/dxvk-dxgi-arm64ec.dll
             backend/eve-d3d11-probe.exe
+            backend/eve-client-window.exe
       - uses: actions/upload-artifact@v4
         with:
           name: client-graphics-corresponding-source

@@ -1,4 +1,4 @@
-# EVE Android Launcher 0.1.7: client performance
+# EVE Android Launcher 0.1.8: owned-window startup and client performance
 
 The October 3 0.1.4 test passed Wine certificate/localhost TLS, EVE startup,
 local authentication, character selection and clean shutdown. The user reported
@@ -11,17 +11,21 @@ visible probe frames. A formatted display-report parsing error stopped EVE befor
 launch. 0.1.6 corrects that reader; EVE responsiveness remains the next device gate.
 Its subsequent EVE test presented the Adreno HUD over a black screen with pending
 compilation. 0.1.7 tests native DXVK 2.4.1 synchronization compatibility and retains
-live diagnostics after Stop. It is not yet physically qualified.
+live diagnostics after Stop. It also stayed black. The retained graphics workers
+are idle after initialization; synchronous compilation or another EVE wait remains
+possible. 0.1.8 tests one-time activation of EVE's owned window and records focus
+and message-pump state. The cause and device correction remain unconfirmed.
 
 ## GPU and input performance test
 
-1. Update to `EVE-Android-Launcher-0.1.7.apk` without uninstalling or clearing data.
+1. Update to `EVE-Android-Launcher-0.1.8.apk` without uninstalling or clearing data.
 2. Start the server and wait for **SERVER READY**. In Client, leave **Use Adreno GPU
    rendering** checked, then select **Start EVE client**.
 3. The launcher verifies the exact GPU assets and existing trust/TLS setup. It
    checks a real Turnip/Adreno device, native D3D11 shader pixels and three changing
    frames through the local display before launching EVE. A small colored probe
-   window is expected briefly. Allow the first shader compilation to finish.
+   window is expected briefly. The startup helper then activates EVE's own window
+   once; it does not continually take focus or change saved graphics settings.
    If EVE remains black for three minutes, return to Launcher and export support
    logs while it is running, then stop the client and save/stop the server. The
    retained samples also survive Stop; do not clear the prefix or shader cache.
@@ -58,6 +62,8 @@ Vulkan/D3D helper logs, fresh `exefile_d3d11.log`/`exefile_dxgi.log` when EVE us
 DXVK, `client/logs/display-performance.json` and retained
 `client/client-performance.json` / `client/client-performance.json.1`, alongside existing TLS/process
 and server logs. Timing/count metrics omit entered text, key values and images.
+`client/run/client-window.json` and its prior copy record bounded numeric window
+visibility, minimization, foreground/focus ownership and message-pump response.
 Framebuffer update rate measures display delivery; it is not EVE FPS. Android
 frame GPU duration measures presentation of the bitmap, not the game's GPU work.
 
@@ -141,7 +147,7 @@ previously active content must remain intact during a failed import.
 
 ## Install and server setup
 
-1. Install `EVE-Android-Launcher-0.1.7.apk`. Grant the notification permission when
+1. Install `EVE-Android-Launcher-0.1.8.apk`. Grant the notification permission when
    prompted so the running server has a visible foreground notification.
 2. Open the Server tab and install the server runtime. Keep the app open during
    the initial download and extraction. Use internal storage for the runtime.

@@ -601,6 +601,14 @@ class ClientRuntimeTests(unittest.TestCase):
         wineserver.write_bytes(fake_elf)
         gate = self.root / "gate.exe"
         gate.write_bytes(b"original fixture helper")
+        window = bytearray(192)
+        window[:2] = b"MZ"
+        window[60:64] = (64).to_bytes(4, "little")
+        window[64:68] = b"PE\0\0"
+        window[68:70] = (0x8664).to_bytes(2, "little")
+        window[88:90] = (0x20b).to_bytes(2, "little")
+        window[156:158] = (3).to_bytes(2, "little")
+        gate.with_name("eve-client-window.exe").write_bytes(window)
         (self.state / "prefix").mkdir()
         (self.state / "prefix/system.reg").write_text("existing qualified prefix")
         (self.state / "probe.json").write_text(json.dumps({"translated_x64_probe_passed": True, "exit_code": 37}))
@@ -618,6 +626,259 @@ class ClientRuntimeTests(unittest.TestCase):
                                                graphics_mode="software",
                                                minimum_available_kib=0))
         return runtime, rows
+
+    def window_runtime(self):
+        runtime = MODULE.Runtime(MODULE.Settings(content=self.content, state=self.state, server_state=self.server,
+                                               graphics_mode="software", tick=.001, window_start_timeout=.04,
+                                               minimum_available_kib=0))
+        runtime.run.mkdir(exist_ok=True)
+        runtime.window_session = "a" * 32
+        return runtime
+
+    def write_window_receipt(self, runtime, **changes):
+        value = {"format": 1, "helper": "eve-client-window-1", "session": runtime.window_session,
+                 "phase": "child_created", "wrapperWindowsPid": 100, "childWindowsPid": 104,
+                 "childExitCode": None, "elapsedMs": 10}
+        value.update(changes)
+        runtime.window_receipt.write_text(json.dumps(value))
+        return value
+
+    def test_production_wrapper_launch_clears_stale_receipt_and_scopes_nonce(self):
+        runtime = self.window_runtime()
+        runtime.window_receipt.write_text("stale receipt")
+        with mock.patch.dict(os.environ, EVE_WINDOW_SESSION="stale-parent-secret"), \
+                mock.patch.object(runtime, "spawn") as spawn:
+            self.assertNotIn("EVE_WINDOW_SESSION", runtime.environment())
+            runtime.launch_client()
+        command = spawn.call_args.args[1]
+        self.assertEqual(command, (runtime.s.wine, "Z:\\opt\\eve-android\\eve-client-window.exe"))
+        self.assertFalse(runtime.window_receipt.exists())
+        self.assertEqual(runtime.window_receipt.with_name(runtime.window_receipt.name + ".1").read_text(), "stale receipt")
+        self.assertRegex(runtime.window_session, r"^[0-9a-f]{32}$")
+        self.assertNotEqual(runtime.window_session, "a" * 32)
+        self.assertEqual(spawn.call_args.kwargs["env"]["EVE_WINDOW_SESSION"], runtime.window_session)
+        self.assertNotIn("exefile.exe", command)
+
+    def test_new_wrapper_launch_rotates_once_and_unlinks_linked_current_receipt(self):
+        runtime = self.window_runtime()
+        previous = runtime.window_receipt.with_name(runtime.window_receipt.name + ".1")
+        previous.write_text("older receipt")
+        runtime.window_receipt.write_text("latest receipt")
+        with mock.patch.object(runtime, "spawn"):
+            runtime.launch_client()
+        self.assertEqual(previous.read_text(), "latest receipt")
+        outside = self.root / "private-outside-file"
+        outside.write_text("untouched")
+        runtime.window_receipt.symlink_to(outside)
+        with mock.patch.object(runtime, "spawn"):
+            runtime.launch_client()
+        self.assertEqual(outside.read_text(), "untouched")
+        self.assertEqual(previous.read_text(), "latest receipt")
+        self.assertFalse(runtime.window_receipt.exists())
+        runtime.window_receipt.write_text("X" * (MODULE.WINDOW_RECEIPT_LIMIT + 1))
+        with mock.patch.object(runtime, "spawn"):
+            runtime.launch_client()
+        self.assertEqual(previous.read_text(), "latest receipt")
+        self.assertFalse(runtime.window_receipt.exists())
+
+    def test_fixture_client_command_retains_direct_launch_without_receipt_gate(self):
+        runtime = MODULE.Runtime(self.settings())
+        with mock.patch.object(runtime, "spawn") as spawn, mock.patch.object(runtime, "check_window_receipt") as receipt:
+            runtime.launch_client()
+            runtime.wait_window_child()
+        self.assertIsNone(runtime.window_session)
+        self.assertEqual(spawn.call_args.args[1], runtime.s.client_command)
+        receipt.assert_not_called()
+
+    def test_created_receipt_confirms_only_child_creation_and_filters_unknown_metadata(self):
+        runtime = self.window_runtime()
+        self.write_window_receipt(runtime, responsive=False, windowVisible=False, focusSucceeded=False,
+                                  selectedWindow=0, rect=None, privatePassword="must-not-copy")
+        with mock.patch.object(runtime, "require_server"), mock.patch.object(runtime, "refresh_owned_processes") as refresh:
+            runtime.wait_window_child()
+        self.assertEqual(refresh.call_count, 2)
+        self.assertTrue(all(call == mock.call(persist=True) for call in refresh.call_args_list))
+        self.assertEqual(runtime.window_report["phase"], "child_created")
+        self.assertFalse(runtime.window_report["responsive"])
+        self.assertNotIn("privatePassword", runtime.window_report)
+        self.assertNotIn("ready", runtime.window_report)
+        self.assertNotIn("graphics_qualified", runtime.window_report)
+        self.write_window_receipt(runtime, phase="window_observed", responsive=False, focusSucceeded=False,
+                                  probeTimeoutMs=50, rect={"left": -10, "top": 0, "right": 1270, "bottom": 720})
+        observed = runtime.check_window_receipt()
+        self.assertEqual(observed["phase"], "window_observed")
+        self.assertFalse(observed["responsive"])
+        self.assertFalse(observed["focusSucceeded"])
+        self.assertEqual(observed["probeTimeoutMs"], 50)
+
+    def test_window_receipt_rejects_stale_identity_terminal_phases_and_invalid_numbers(self):
+        cases = ({"session": "b" * 32}, {"format": True}, {"wrapperWindowsPid": True},
+                 {"childWindowsPid": 0}, {"childWindowsPid": 100}, {"elapsedMs": float("nan")},
+                 {"childExitCode": 5}, {"phase": "unknown"}, {"selectedWindow": -1},
+                 {"windowsOwned": 257}, {"responsive": 1}, {"windowVisible": "false"}, {"probeTimeoutMs": 51},
+                 {"rect": {"left": 0, "top": 0, "right": 10, "bottom": True}},
+                 {"phase": "failed"}, {"phase": "child_exited", "childExitCode": 0})
+        for change in cases:
+            with self.subTest(change=change):
+                runtime = self.window_runtime()
+                self.write_window_receipt(runtime, **change)
+                with self.assertRaises(MODULE.RuntimeErrorDetail):
+                    runtime.check_window_receipt()
+        runtime = self.window_runtime()
+        self.write_window_receipt(runtime)
+        runtime.check_window_receipt()
+        self.write_window_receipt(runtime, childWindowsPid=108)
+        with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "invalid"):
+            runtime.check_window_receipt()
+        runtime.window_receipt.unlink()
+        with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "disappeared"):
+            runtime.check_window_receipt()
+
+    def test_receipt_bound_malformed_and_symlink_rejection(self):
+        runtime = self.window_runtime()
+        for data in ("[]", "{", "X" * (MODULE.WINDOW_RECEIPT_LIMIT + 1)):
+            runtime.window_receipt.write_text(data)
+            with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "invalid"):
+                runtime.check_window_receipt()
+        runtime.window_receipt.unlink()
+        outside = self.root / "outside-receipt"
+        outside.write_text("private data")
+        runtime.window_receipt.symlink_to(outside)
+        with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "invalid"):
+            runtime.check_window_receipt()
+
+    def test_receipt_wait_timeout_stop_and_wrapper_exit_do_not_qualify_startup(self):
+        runtime = self.window_runtime()
+        with mock.patch.object(runtime, "require_server"), mock.patch.object(runtime, "refresh_owned_processes") as refresh:
+            with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "did not confirm"):
+                runtime.wait_window_child()
+        self.assertGreater(refresh.call_count, 0)
+        (runtime.run / "stop").write_text("stop")
+        with self.assertRaises(InterruptedError):
+            runtime.wait_window_child()
+        (runtime.run / "stop").unlink()
+        runtime.children["client"] = mock.Mock()
+        runtime.children["client"].poll.return_value = 0
+        runtime.children["client"].returncode = 0
+        with mock.patch.object(runtime, "refresh_owned_processes"), \
+                self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "exited unexpectedly"):
+            runtime.wait_window_child()
+
+    def test_window_helper_requires_nonlinked_original_x64_pe(self):
+        runtime, _ = self.preflight_runtime()
+        original = runtime.window_helper.read_bytes()
+        runtime.verify_window_helper()
+        for data in (b"", b"MZ", original[:68] + b"\xb7\xaa" + original[70:],
+                     original[:156] + b"\x02\0" + original[158:]):
+            runtime.window_helper.write_bytes(data)
+            with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "original x64"):
+                runtime.verify_window_helper()
+        runtime.window_helper.unlink()
+        outside = self.root / "linked-helper"
+        outside.write_bytes(original)
+        runtime.window_helper.symlink_to(outside)
+        with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "original x64"):
+            runtime.verify_window_helper()
+
+    def test_receipt_confirmation_persists_real_owned_descendant_before_cleanup(self):
+        runtime = self.window_runtime()
+        wrapper = self.root / "wrapper-fixture.py"
+        wrapper.write_text(
+            "import json,os,pathlib,subprocess,sys,time\n"
+            "state=pathlib.Path(sys.argv[1])\n"
+            "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'])\n"
+            "(state/'child-native.pid').write_text(str(child.pid))\n"
+            "value={'format':1,'helper':'eve-client-window-1','session':os.environ['EVE_WINDOW_SESSION'],"
+            "'phase':'child_created','wrapperWindowsPid':100,'childWindowsPid':104,'childExitCode':None,'elapsedMs':10}\n"
+            "temporary=state/'run/client-window-fixture.tmp'\n"
+            "temporary.write_text(json.dumps(value))\n"
+            "temporary.replace(state/'run/client-window.json')\n"
+            "child.wait()\n")
+        runtime.spawn("client", (sys.executable, str(wrapper), str(self.state)),
+                      env={"PATH": "/usr/bin:/bin", "EVE_WINDOW_SESSION": runtime.window_session}, cwd=self.state)
+        self.processes.append(runtime.children["client"])
+        runtime.s = MODULE.Settings(content=self.content, state=self.state, server_state=self.server,
+                                    graphics_mode="software", tick=.01, window_start_timeout=2,
+                                    shutdown_timeout=.5, minimum_available_kib=0)
+        try:
+            with mock.patch.object(runtime, "require_server"):
+                runtime.wait_window_child()
+            child = int((self.state / "child-native.pid").read_text())
+            journal = json.loads(runtime.journal.read_text())
+            self.assertIn(child, {member["pid"] for member in journal["clientMembers"]})
+            self.assertNotIn(104, {member["pid"] for member in journal["clientMembers"]})
+            self.assertTrue(runtime.shutdown())
+            self.assertFalse(MODULE.process_record(child) and MODULE.process_record(child)["state"] != "Z")
+        finally:
+            with contextlib.suppress(Exception):
+                runtime.shutdown()
+
+    def test_no_receipt_zombie_wrapper_journals_new_child_before_poll_and_cleans_it(self):
+        runtime = self.window_runtime()
+        wrapper = self.root / "wrapper-exit-fixture.py"
+        wrapper.write_text(
+            "import os,pathlib,subprocess,sys,time\n"
+            "state=pathlib.Path(sys.argv[1])\n"
+            "while not (state/'create-child').exists(): time.sleep(.002)\n"
+            "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'])\n"
+            "(state/'child-native.pid').write_text(str(child.pid))\n"
+            "os._exit(23)\n")
+        process = runtime.spawn("client", (sys.executable, str(wrapper), str(self.state)),
+                                env={"PATH": "/usr/bin:/bin", "EVE_WINDOW_SESSION": runtime.window_session}, cwd=self.state)
+        self.processes.append(process)
+        child = None
+        try:
+            before = json.loads(runtime.journal.read_text())["clientMembers"]
+            self.assertEqual({member["pid"] for member in before}, {process.pid})
+            (self.state / "create-child").write_text("go")
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                leader = MODULE.process_record(process.pid)
+                if leader and leader["state"] == "Z":
+                    break
+                time.sleep(.01)
+            else:
+                self.fail("Fixture wrapper did not become an unreaped zombie")
+            child = int((self.state / "child-native.pid").read_text())
+            self.assertIsNone(process.returncode)
+            self.assertFalse(runtime.window_receipt.exists())
+            with mock.patch.object(runtime, "require_server"), \
+                    self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "exited unexpectedly with code 23"):
+                runtime.wait_window_child()
+            journal = json.loads(runtime.journal.read_text())
+            self.assertIn(child, {member["pid"] for member in journal["clientMembers"]})
+            self.assertEqual(process.returncode, 23)
+            self.assertIsNone(runtime.window_child_ids)
+            self.assertEqual(runtime.window_report, {})
+            self.assertTrue(runtime.shutdown())
+            record = MODULE.process_record(child)
+            self.assertFalse(record and record["state"] != "Z")
+        finally:
+            with contextlib.suppress(Exception):
+                runtime.shutdown()
+            if child is not None:
+                record = MODULE.process_record(child)
+                if record and record["state"] != "Z":
+                    with contextlib.suppress(ProcessLookupError):
+                        os.kill(child, signal.SIGKILL)
+
+    def test_zombie_leader_fallback_rejects_reaped_or_mismatched_identity_group_and_session(self):
+        member = {"pid": 40002, "startTicks": "20", "group": 40001, "session": 40001, "state": "S"}
+        record = {"pid": 40001, "startTicks": "10", "group": 40001, "session": 40001, "state": "Z"}
+        for changes in ({"pid": 123}, {"startTicks": "11"}, {"group": 123}, {"session": 123}, {"state": "S"}):
+            with self.subTest(changes=changes):
+                runtime = self.window_runtime()
+                runtime.children["client"] = mock.Mock(pid=40001, returncode=None)
+                runtime.identities["clientIdentity"] = {"pid": 40001, "startTicks": "10"}
+                snapshot = MODULE.server_runtime.ProcessSnapshot(1, {40001: [member]})
+                with mock.patch.object(MODULE.server_runtime.ProcessSnapshot, "capture", return_value=snapshot), \
+                        mock.patch.object(MODULE, "process_record", return_value={**record, **changes}):
+                    self.assertEqual(runtime.refresh_owned_processes().members(40001), [])
+        runtime.children["client"].returncode = 23
+        with mock.patch.object(MODULE.server_runtime.ProcessSnapshot, "capture", return_value=snapshot), \
+                mock.patch.object(MODULE, "process_record", return_value=record) as read:
+            self.assertEqual(runtime.refresh_owned_processes().members(40001), [])
+        read.assert_not_called()
 
     def test_preflight_preserves_accepted_cache_and_rejects_rotated_ca(self):
         runtime, rows = self.preflight_runtime()

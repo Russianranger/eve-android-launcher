@@ -14,13 +14,16 @@ prioritizes native Adreno rendering, persistent shader caches, batched input and
 performance diagnostics. Audio, controllers and gameplay qualification follow.
 The 0.1.5 device test passed the native Adreno shader/display checks; 0.1.6 fixes
 the formatted display-report reader that stopped EVE before launch.
-0.1.6 then reached a persistent shader/loading stall. 0.1.7 uses native DXVK 2.4.1
-to avoid an upstream Adreno synchronization regression and retains live
+0.1.6 then reached a persistent shader/loading stall. 0.1.7 tests native DXVK 2.4.1
+as an Adreno synchronization compatibility candidate and retains live
 diagnostics after Stop. Actual EVE GPU responsiveness remains the device gate.
+0.1.7 also remained black. Its retained samples show idle background graphics
+workers after startup. 0.1.8 activates EVE's owned window once and records window
+focus/message-pump evidence; it retains DXVK 2.4.1 and the accepted runtime.
 
 ## First server test
 
-Download the APK from [the preview release](https://github.com/Russianranger/eve-android-launcher/releases/tag/v0.1.7).
+Download the APK from [the passing preview build artifacts](https://github.com/Russianranger/eve-android-launcher/actions/workflows/build.yml).
 In the Server tab, choose **Install server runtime**, **Prepare local world**,
 then **Start server**. Wait for **SERVER READY**, briefly switch apps, then use
 **Save and stop server**. Start it again and export support logs from the Logs tab.
@@ -54,7 +57,7 @@ condition. See [the accepted physical evidence](docs/HANDOFF.md). Keep the
 prepared cache. The current preview uses that prepared cache. Startup/login passed; client
 performance is the current device gate.
 
-## Client performance preview in 0.1.7
+## Client performance preview in 0.1.8
 
 Update in place, start the server and wait for **SERVER READY**, then leave
 **Use Adreno GPU rendering** checked and start/open EVE. Native ARM64EC DXVK 2.4.1
@@ -70,6 +73,12 @@ reuse ThorTest. Detailed CPU/input/display metrics join the bounded support ZIP.
 Host/CI helper results establish interoperability, while actual EVE speed and
 responsiveness remain a physical device test. See [the test sequence](docs/TESTING.md)
 and [optimization evidence](docs/CLIENT-PERFORMANCE.md).
+
+The fixed-target startup helper preserves the client process group, waits for
+EVE's exit and reports only numeric window/focus state. It activates the owned
+window once during startup, then stops observing after three minutes. It never
+changes the saved EVE graphics preferences. If the screen remains black after
+three minutes, export support logs while it is running, then stop the client.
 
 The accepted native loopback policy, private CA checks and Wine crypt32 overlay
 remain active. Client stop targets only recorded owned process identities; world

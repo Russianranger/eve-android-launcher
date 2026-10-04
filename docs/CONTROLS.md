@@ -1,4 +1,4 @@
-# EVE fullscreen controls — 0.1.10
+# EVE fullscreen controls — 0.1.11
 
 The top-right orbital gear opens an overlay. **Back to client** closes it;
 **Launcher** returns to the launcher while the foreground service continues owning
@@ -24,14 +24,17 @@ These are keyboard/mouse outputs, so their gameplay effect depends on EVE shortc
 | Select / Start | Escape / I |
 | Left stick press / Right stick press | Home / C |
 
-LT cycles **Main → Hotbar 2 → Spells → Inventory → Main**. A short top-center
+LT cycles **Main → Alt 1 → Alt 2 → Alt 3 → Main**. A short top-center
 banner identifies the layer. Other layers inherit Main except these bindings:
 
 | Layer | Overrides |
 | --- | --- |
-| Hotbar 2 | X/Y/B → 8/9/0; D-pad Up/Right → minus/equal |
-| Spells | X/Y/B/D-pad Up/Right/Down/Left → Alt + 1/2/3/4/5/6/7 |
-| Inventory | X → Shift+B; Y → I; B → Escape; D-pad Up/Down → wheel up/down |
+| Alt 1 | X/Y/B → 8/9/0; D-pad Up/Right → minus/equal |
+| Alt 2 | X/Y/B/D-pad Up/Right/Down/Left → Alt + 1/2/3/4/5/6/7 |
+| Alt 3 | X → Shift+B; Y → I; B → Escape; D-pad Up/Down → wheel up/down |
+
+Existing profiles load the new names for the previously shipped default layers.
+Custom names and all saved bindings remain intact; Save persists the displayed names.
 
 Holding a mapped button holds its key or mouse button. Layer changes release old
 outputs before applying held controls in the new layer. Menu, editor, text dialog,
@@ -70,5 +73,7 @@ editor and safe defaults remain available.
 
 Host tests cover layer/chord/hold transitions, invalid profile rejection, pointer
 bounds and shared controller/keyboard/touch RFB input/release ordering. Android
-build/lint checks API/resource integration. They cannot accept physical Thor
+33/35 tests cover decor initialization, packaged gear inflation, menu releases,
+pause/recreation and saved profile migration; build/lint checks API integration.
+They cannot accept physical Thor
 controller event routing or visible gameplay; those require the test above.

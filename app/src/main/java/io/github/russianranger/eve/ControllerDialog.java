@@ -25,7 +25,7 @@ final class ControllerDialog {
         try{draft=controller.state();}catch(JSONException e){dismissed.run();return null;}
         root=new LinearLayout(activity);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(20,8,20,12);
         if(!draft.optString("error").isEmpty())label(draft.optString("error")+". Thor defaults are active until a valid profile is saved.");
-        label("Thor defaults: LT cycles Main → Hotbar 2 → Spells → Inventory. Bind Next/Previous, Go to layer, or Hold layer to any button. Hold returns to the selected layer when released. Inherit uses Main. Changes apply only on Save.");
+        label("Thor defaults: LT cycles Main → Alt 1 → Alt 2 → Alt 3. Bind Next/Previous, Go to layer, or Hold layer to any button. Hold returns to the selected layer when released. Inherit uses Main. Changes apply only on Save.");
         button("Restore Thor defaults in editor",()->{try{draft=ControllerManager.preset("thor");editing=0;fill();}catch(JSONException ignored){}});
         label("Edit layer");layer=spinner(Collections.singletonList("Main"));
         layer.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onItemSelected(AdapterView<?> p,View v,int pos,long id){if(pos<layers().length()){editing=pos;render();}}public void onNothingSelected(AdapterView<?> p){}});

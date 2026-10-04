@@ -303,11 +303,32 @@ including independent wire-key release. Android build and physical Thor controls
 qualification are required before accepting this milestone. See [the controls
 test](CONTROLS.md). Preserve the accepted 0.1.9 visual/performance result.
 
+## 0.1.10 display crash and 0.1.11 update
+
+`eve-support-20261004-075810.zip` (SHA-256
+`a98e24e310eed61f232ed26a226d58828b57a0aab4762a065364b2565c012ce4`)
+records an Android API33 reason4 crash at 07:57:53.695 CDT on October 4.
+No exception stack is exported. EVE's owned window was responsive with progressing
+CPU and IMMEDIATE presentation 1.86 seconds earlier; there is no display-connected
+operation in this session. The exported display-performance file is stale from
+the accepted 0.1.9 session and cannot qualify 0.1.10 controls.
+
+An Android 13 Robolectric replay using the exact 0.1.10 APK resources reproduces
+`PhoneWindow.getInsetsController()` dereferencing its null decor during the first
+`fullscreen()` call in `onCreate`. 0.1.11 installs the decor before requesting
+its insets controller. Android construction/lifecycle tests now accompany the
+pure controller/RFB checks. Physical display reopening still requires confirmation.
+
+0.1.11 also names the default layers Main/Alt 1/Alt 2/Alt 3, safely migrates matching
+old default names on load, pins both Start buttons above the tabs and gives the
+app icon a dark starfield. Custom bindings/names and graphics/runtime pins remain
+intact. The gear icon is unchanged, following the user's clarification.
+
 ## Next milestones
 
 1. Preserve accepted server/world lifecycle, Wine/FEX probe, exact 125,116-resource
    import, private TLS, client startup/local login and 0.1.9 Adreno rendering/input.
-2. Qualify 0.1.10 TRASC-style controller layers/rebinding and fullscreen
+2. Qualify 0.1.11 TRASC-style controller layers/rebinding and fullscreen
    display with the space-themed gear menu, then cold/warm startup, display reopen
    and explicit clean shutdown using the current local test account.
 3. Qualify visible character/station/undock/warp/dock and persistent reopen, then

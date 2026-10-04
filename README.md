@@ -25,12 +25,14 @@ The 0.1.8 device test confirms focus succeeds while EVE's main thread stalls.
 wait through Xvnc, retaining GPU rendering and the 30 FPS cap. The October 4
 device test accepts responsive rendering/input in the teens and 20s FPS.
 0.1.10 brings TRASC's layered controller bindings and fullscreen orbital gear menu.
+0.1.11 fixes Android 13 display startup, renames the defaults to Main/Alt 1/Alt 2/Alt 3,
+pins both Start buttons above the tabs and gives the app icon a dark space background.
 
-## Fullscreen controls in 0.1.10
+## Fullscreen controls in 0.1.11
 
 The display fills the screen; a top-right space-themed gear opens the controls
 without shrinking the game. Text, Tab, Enter, Esc, right-click and Launcher now
-live in that menu. LT cycles **Main → Hotbar 2 → Spells → Inventory**, with a
+live in that menu. LT cycles **Main → Alt 1 → Alt 2 → Alt 3**, with a
 brief layer banner. Left stick sends WASD; right stick moves the cursor; RB/LB
 hold left/right mouse buttons. Other defaults match the TRASC launcher.
 

@@ -1,3 +1,19 @@
+# EVE Android Launcher 0.1.11 — display startup and launcher layout
+
+Opening the 0.1.10 display on Android 13 could crash before the RFB connection.
+The first fullscreen call requested the window's insets controller before its
+decor existed. 0.1.11 creates the decor first; an Android 13 regression replay
+reproduces the original null dereference with the actual APK resources.
+
+The four default layer names are now Main, Alt 1, Alt 2 and Alt 3. Loading an
+existing profile migrates matching old default names while preserving custom
+names and all bindings. Both Start buttons sit above the tabs. The app icon has
+a dark starfield background; the orbital gear retains its existing design.
+
+Update in place with client/server stopped. Open and reopen the display, confirm
+the four names and then continue the controller test. Runtime, renderer, cache
+and world settings are retained.
+
 # EVE Android Launcher 0.1.10 — fullscreen and layered controller controls
 
 The user accepts 0.1.9 Adreno rendering and usable input, reporting teens/20s FPS.

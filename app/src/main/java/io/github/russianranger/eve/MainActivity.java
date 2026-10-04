@@ -26,6 +26,7 @@ public final class MainActivity extends Activity {
     private CheckBox useAdreno;
     private boolean updatingRenderer;
     private final List<Button> controls = new ArrayList<>();
+    private final List<Button> launchControls = new ArrayList<>();
     private boolean resumed;
     private long logGeneration;
     private final Runnable refresh = new Runnable() {
@@ -51,6 +52,13 @@ public final class MainActivity extends Activity {
         root.setOnApplyWindowInsetsListener((view, insets) -> { root.setPadding(dp(18) + insets.getSystemWindowInsetLeft(), dp(12) + insets.getSystemWindowInsetTop(), dp(18) + insets.getSystemWindowInsetRight(), dp(12) + insets.getSystemWindowInsetBottom()); return insets; });
         TextView title = label("EVE  /  LOCAL COMMAND", 23, 0xffeef8fa); title.setTypeface(Typeface.DEFAULT, Typeface.BOLD); root.addView(title);
         root.addView(label("ANDROID LAUNCHER   ·   " + BuildConfig.VERSION_NAME + " PREVIEW", 11, 0xff82b7cb));
+        LinearLayout starts = new LinearLayout(this); starts.setPadding(0, dp(4), 0, dp(4));
+        Button startServer = actionButton("Start server", "start-server");
+        Button startClient = actionButton("Start EVE client", "start-client");
+        LinearLayout.LayoutParams serverStartParams = new LinearLayout.LayoutParams(0, -2, 1); serverStartParams.rightMargin = dp(4);
+        LinearLayout.LayoutParams clientStartParams = new LinearLayout.LayoutParams(0, -2, 1); clientStartParams.leftMargin = dp(4);
+        starts.addView(startServer, serverStartParams); starts.addView(startClient, clientStartParams);
+        launchControls.add(startServer); launchControls.add(startClient); root.addView(starts);
         LinearLayout tabs = new LinearLayout(this);
         for (String name : new String[]{"Server", "Client", "Logs"}) {
             Button button = new Button(this); button.setText(name); button.setTextColor(0xffd9eff4); button.setAllCaps(false); button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xff183247));
@@ -70,21 +78,26 @@ public final class MainActivity extends Activity {
         if (!description.isEmpty()) card.addView(label(description, 14, 0xffb2c9d5));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.bottomMargin = dp(14); body.addView(card, params); return card;
     }
-    private void action(LinearLayout parent, String title, String action) {
+    private Button actionButton(String title, String action) {
         Button button = new Button(this); button.setText(title); button.setAllCaps(false); button.setTextColor(0xffeef8fa); button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xff24516b));
+        button.setMinHeight(dp(48));
         button.setOnClickListener(v -> { if (action.equals("pick-client")) pickClient(); else if (action.equals("pick-export")) pickExport(); else if (action.equals("view-client")) startActivity(new Intent(this, ClientDisplayActivity.class)); else run(action, null); });
-        parent.addView(button, new LinearLayout.LayoutParams(-1, -2)); controls.add(button);
         button.setTag(action);
+        return button;
+    }
+    private void action(LinearLayout parent, String title, String action) {
+        Button button = actionButton(title, action);
+        parent.addView(button, new LinearLayout.LayoutParams(-1, -2)); controls.add(button);
     }
     private void render() {
-        logGeneration++; controls.clear(); body.removeAllViews(); stateText = null; logText = null;
+        logGeneration++; controls.clear(); controls.addAll(launchControls); body.removeAllViews(); stateText = null; logText = null;
         if (tab.equals("Server")) {
             LinearLayout state = card("Your local universe", "EVE.js 0.12.9 · client build 3396210\nSetup downloads the prepared ARM64 server package. World data stays on this device.");
             stateText = label("", 15, 0xff6ee4f0); state.addView(stateText);
             LinearLayout setup = card("Set up the server", "Install once, then prepare the universe and Jita market. Repeating preparation preserves existing world data.");
             action(setup, "1  Install server runtime", "install-server"); action(setup, "2  Prepare local world", "prepare-server");
             LinearLayout session = card("Server session", "Readiness checks the game connection, gateway and market. The notification keeps the session accessible while you switch apps.");
-            action(session, "Start server", "start-server"); action(session, "Save and stop server", "stop-server");
+            action(session, "Save and stop server", "stop-server");
         } else if (tab.equals("Client")) {
             LinearLayout state = card("Client performance", "Start the local server first. GPU rendering and responsive text entry are the focus of this preview.");
             stateText = label("", 14, 0xff6ee4f0); state.addView(stateText);
@@ -104,7 +117,7 @@ public final class MainActivity extends Activity {
                 }
             });
             session.addView(useAdreno);
-            action(session, "Start EVE client", "start-client"); action(session, "Open client display", "view-client"); action(session, "Stop EVE client", "stop-client");
+            action(session, "Open client display", "view-client"); action(session, "Stop EVE client", "stop-client");
         } else {
             LinearLayout tools = card("Diagnostics", "Export this support ZIP after the first server test, including failures. It contains bounded logs and status receipts.");
             action(tools, "Export support logs", "pick-export");

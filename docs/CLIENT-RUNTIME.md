@@ -1,6 +1,6 @@
 # Client runtime qualification
 
-The preview APK prepares a private client cache and installs the exact FEX / Wine ARM64EC runtime already used by the UO launcher. The Thor server lifecycle, Wine/FEX x64 execution probe, exact client import, private TLS, local login and character selection have passed. The 0.1.9 device test accepts Adreno rendering and usable input with IMMEDIATE presentation. The 0.1.10 preview adds TRASC's controller layers and fullscreen gear controls; audio and station/space gameplay remain separate device gates.
+The preview APK prepares a private client cache and installs the exact FEX / Wine ARM64EC runtime already used by the UO launcher. The Thor server lifecycle, Wine/FEX x64 execution probe, exact client import, private TLS, local login and character selection have passed. The 0.1.9 device test accepts Adreno rendering and usable input with IMMEDIATE presentation. The 0.1.11 preview adds TRASC's controller layers and fullscreen gear controls; audio and station/space gameplay remain separate device gates.
 
 The accepted 0.1.1 recovery imported build 3396210 with all 125,116 indexed
 resources in 6 minutes 14 seconds, peaking at 150.6 MiB preparation-worker RSS.
@@ -143,7 +143,7 @@ logged override and actual IMMEDIATE mode, plus all three visible frames, before
 starting EVE. The preflight receipt records this policy separately from EVE's
 performance gate. The October 4 device test confirms usable EVE rendering/input.
 
-## Fullscreen controller display in 0.1.10
+## Fullscreen controller display in 0.1.11
 
 The fullscreen framebuffer keeps its guest resolution and aspect-fit transform.
 An orbital gear menu overlays the display; no permanent toolbar consumes height.

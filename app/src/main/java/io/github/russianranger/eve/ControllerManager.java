@@ -12,6 +12,7 @@ import java.util.*;
 
 /** Android gamepad adapter. Captures only while the client surface has focus. */
 final class ControllerManager implements InputManager.InputDeviceListener {
+    private static final int LAYER_NAMES_VERSION=1;
     interface Events {void emit(JSONObject event);}
     private final File profile;
     private final Events events;
@@ -42,12 +43,12 @@ final class ControllerManager implements InputManager.InputDeviceListener {
         capture(false);layers=ControllerInput.defaultLayers();input.configure(layers,.20f,700);loadError="";
         if(profile.isFile())try {
             if(profile.length()>131072)throw new IOException("Controller profile exceeds limits");
-            configure(new JSONObject(new String(Files.readAllBytes(profile.toPath()),StandardCharsets.UTF_8)),false);
+            configure(new JSONObject(new String(Files.readAllBytes(profile.toPath()),StandardCharsets.UTF_8)),false,true);
         } catch(Exception e){loadError="Saved controller profile could not be loaded: "+e.getMessage();}
     }
     private static JSONObject serialize(List<ControllerInput.Layer> layers,float deadzone,float speed)throws JSONException {
         JSONArray array=new JSONArray();for(ControllerInput.Layer layer:layers)array.put(new JSONObject().put("name",layer.name).put("bindings",new JSONObject(layer.bindings)));
-        return new JSONObject().put("format",2).put("layers",array).put("deadzone",deadzone).put("sensitivity",speed);
+        return new JSONObject().put("format",2).put("layer_names_version",LAYER_NAMES_VERSION).put("layers",array).put("deadzone",deadzone).put("sensitivity",speed);
     }
     JSONObject state()throws JSONException {
         return serialize(layers,input.deadzone,input.sensitivity).put("sources",new JSONArray(ControllerInput.SOURCES))
@@ -65,7 +66,8 @@ final class ControllerManager implements InputManager.InputDeviceListener {
     private static Map<String,String> bindings(JSONObject raw)throws JSONException {
         Map<String,String> result=new LinkedHashMap<>();for(String key:ControllerInput.SOURCES)result.put(key,raw.getString(key));return result;
     }
-    void configure(JSONObject data,boolean save)throws Exception {
+    void configure(JSONObject data,boolean save)throws Exception {configure(data,save,false);}
+    private void configure(JSONObject data,boolean save,boolean migrateNames)throws Exception {
         List<ControllerInput.Layer> next=new ArrayList<>();
         if(data.has("layers")){
             if(data.optInt("format",2)!=2)throw new IOException("Unsupported controller profile version");
@@ -75,6 +77,8 @@ final class ControllerManager implements InputManager.InputDeviceListener {
             Map<String,String> alternate=data.has("shifted")?bindings(data.getJSONObject("shifted")):ControllerInput.inherited();
             next=ControllerInput.legacyLayers(bindings(data.getJSONObject("bindings")),alternate,data.optString("modifier","None"));
         }
+        // Profiles saved with current naming already record the user's explicit name choices.
+        if(migrateNames&&data.optInt("layer_names_version",0)<LAYER_NAMES_VERSION)next=ControllerInput.migrateDefaultLayerNames(next);
         float deadzone=(float)data.getDouble("deadzone"),speed=(float)data.getDouble("sensitivity");
         // Validate before changing disk or the active profile. Older saved maps migrate without replacing custom keys.
         ControllerInput check=new ControllerInput(new ControllerInput.Sink(){public void button(String a,boolean b){}public void pointer(float x,float y){}public void wheel(int v){}});

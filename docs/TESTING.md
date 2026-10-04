@@ -1,11 +1,16 @@
-# EVE Android Launcher 0.1.10: fullscreen controller qualification
+# EVE Android Launcher 0.1.11: fullscreen controller qualification
 
 The October 4 0.1.9 test accepts Adreno rendering and usable input, with user-reported
 teens/20s FPS. Preserve the renderer and current local account; do not repeat import,
 runtime, TLS or the prior black-screen investigation. Controller layers/fullscreen
 are the active milestone. Follow [the defaults and six-step controls test](CONTROLS.md).
-Update with `EVE-Android-Launcher-0.1.10.apk`, with client/server stopped, without
+Update with `EVE-Android-Launcher-0.1.11.apk`, with client/server stopped, without
 uninstalling or clearing data. Further graphics optimization is deferred.
+
+0.1.11 corrects the 0.1.10 crash before display connection on Android 13.
+Both Start buttons are pinned above the tabs. Confirm the display opens, the
+default layers show Main/Alt 1/Alt 2/Alt 3 and the app icon has its dark space
+background; reopen the display once before continuing the controls test.
 
 The previous graphics test and earlier recovery evidence remain below for reference.
 
@@ -166,7 +171,7 @@ previously active content must remain intact during a failed import.
 
 ## Install and server setup
 
-1. Install `EVE-Android-Launcher-0.1.10.apk`. Grant the notification permission when
+1. Install `EVE-Android-Launcher-0.1.11.apk`. Grant the notification permission when
    prompted so the running server has a visible foreground notification.
 2. Open the Server tab and install the server runtime. Keep the app open during
    the initial download and extraction. Use internal storage for the runtime.

@@ -192,6 +192,9 @@ public final class ClientDisplayActivity extends Activity {
         background.setCornerRadius(dp(12)); background.setStroke(dp(1), 0xff315d78); return background;
     }
     private void fullscreen() {
+        // PhoneWindow.getInsetsController() dereferences its decor on Android 13.
+        // Install it before the first fullscreen request, which precedes setContentView.
+        View decor = getWindow().getDecorView();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
         if (Build.VERSION.SDK_INT >= 28) {
             WindowManager.LayoutParams attributes = getWindow().getAttributes();
@@ -200,9 +203,9 @@ public final class ClientDisplayActivity extends Activity {
         }
         if (Build.VERSION.SDK_INT >= 30) {
             getWindow().setDecorFitsSystemWindows(false);
-            WindowInsetsController insets = getWindow().getInsetsController();
+            WindowInsetsController insets = decor.getWindowInsetsController();
             if (insets != null) { insets.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE); insets.hide(WindowInsets.Type.systemBars()); }
-        } else getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+        } else decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
             | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
     }
     private boolean gameInputActive() { return visible && connection != null && hasWindowFocus() && !menuOpen && !mappingsOpen && activeTextDialog == null; }

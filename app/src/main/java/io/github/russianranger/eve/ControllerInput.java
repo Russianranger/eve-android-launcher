@@ -51,7 +51,23 @@ final class ControllerInput {
         String[] keys={"X","Y","B","DpadUp","DpadRight","DpadDown","DpadLeft"};
         for(int i=0;i<keys.length;i++)spells.put(keys[i],"AltLeft+Digit"+(i+1));
         inventory.put("X","ShiftLeft+KeyB");inventory.put("Y","KeyI");inventory.put("B","Escape");inventory.put("DpadUp","WheelUp");inventory.put("DpadDown","WheelDown");
-        return Arrays.asList(new Layer("Main",defaults()),new Layer("Hotbar 2",hotbar),new Layer("Spells",spells),new Layer("Inventory",inventory));
+        return Arrays.asList(new Layer("Main",defaults()),new Layer("Alt 1",hotbar),new Layer("Alt 2",spells),new Layer("Alt 3",inventory));
+    }
+    /** Rename previously shipped defaults without changing custom names or any binding. */
+    static List<Layer> migrateDefaultLayerNames(List<Layer> saved){
+        String[] oldNames={"Main","Hotbar 2","Spells","Inventory"};
+        String[] newNames={"Main","Alt 1","Alt 2","Alt 3"};
+        Set<String> occupied=new HashSet<>();
+        for(Layer layer:saved)occupied.add(layer.name.toLowerCase(Locale.ROOT));
+        List<Layer> result=new ArrayList<>(saved);
+        for(int i=1;i<Math.min(saved.size(),oldNames.length);i++){
+            Layer layer=saved.get(i);String target=newNames[i];
+            // Positional and exact-name matching avoids relabeling custom layers.
+            if(layer.name.equals(oldNames[i])&&!occupied.contains(target.toLowerCase(Locale.ROOT))){
+                result.set(i,new Layer(target,layer.bindings));occupied.add(target.toLowerCase(Locale.ROOT));
+            }
+        }
+        return result;
     }
     static List<Layer> legacyLayers(Map<String,String> base,Map<String,String> alternate,String modifier){
         Map<String,String> normal=new LinkedHashMap<>(base),shifted=new LinkedHashMap<>(alternate);

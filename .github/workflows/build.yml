@@ -5,7 +5,7 @@ on:
   pull_request:
   workflow_dispatch:
 env:
-  EVE_APP_VERSION: '0.1.10'
+  EVE_APP_VERSION: '0.1.11'
 permissions:
   contents: read
 defaults:
@@ -282,8 +282,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64-posix
           bash scripts/build-client-gate.sh 2>&1 | tee out/client-gate-build.log
-      - name: Build and lint the Android APK
-        run: gradle --no-daemon :app:assembleDebug :app:lintDebug 2>&1 | tee out/android-build.log
+      - name: Build, test display lifecycle and lint the Android APK
+        run: gradle --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug 2>&1 | tee out/android-build.log
       - name: Verify the APK contents, identity and public certificate
         run: |
           python3 scripts/check-apk.py app/build/outputs/apk/debug/app-debug.apk
@@ -307,6 +307,7 @@ jobs:
           name: android-verification
           path: |
             app/build/reports/
+            app/build/test-results/
             out/*build.log
             out/apk-certificate.txt
             out/apk-badging.txt

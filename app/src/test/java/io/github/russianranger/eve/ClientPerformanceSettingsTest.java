@@ -173,7 +173,9 @@ public final class ClientPerformanceSettingsTest {
         int roundId = context.getResources().getIdentifier("ic_launcher_round", "mipmap", context.getPackageName());
         assertNotEquals(0, normalId); assertNotEquals(0, roundId);
         assertEquals(normalId, context.getApplicationInfo().icon);
-        assertTrue(context.getPackageManager().getApplicationIcon(context.getPackageName()) instanceof AdaptiveIconDrawable);
+        // Robolectric 4.14.1's PackageManager icon method only reads its explicit test map.
+        // Load the resource selected by the manifest to exercise the actual packaged artwork.
+        assertTrue(context.getDrawable(context.getApplicationInfo().icon) instanceof AdaptiveIconDrawable);
         for (int id : new int[]{normalId, roundId}) {
             Drawable icon = context.getDrawable(id);
             assertTrue("Android uses adaptive artwork for both launcher shapes", icon instanceof AdaptiveIconDrawable);

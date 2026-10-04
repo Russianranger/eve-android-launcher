@@ -85,10 +85,19 @@ final class RfbClient {
         if (message == 3) { bytes(3); bytes(in.readInt()); return; } // No clipboard integration.
         if (message != 0) throw new IOException("Unexpected display message: " + message);
         in.readUnsignedByte(); int count = in.readUnsignedShort();
+        // Keep one request ahead of decoding, as TigerVNC 1.14.1's viewer does
+        // in CConnection::framebufferUpdateStart(). The next update can be
+        // prepared while this one is received and published, without a timer
+        // generating requests faster than we can consume framebuffer headers.
+        request(true);
+        boolean resized = false;
         for (int i = 0; i < count; i++) {
             int x = in.readUnsignedShort(), y = in.readUnsignedShort();
             int w = in.readUnsignedShort(), h = in.readUnsignedShort(), encoding = in.readInt();
-            if (encoding == -223) { resize(w, h); continue; }
+            if (encoding == -223) {
+                resized |= width != w || height != h;
+                resize(w, h); continue;
+            }
             if (w < 1 || h < 1 || (long) x + w > width || (long) y + h > height) throw new IOException("Display rectangle is outside the framebuffer");
             if (encoding != 0) throw new IOException("Unsupported display encoding: " + encoding);
             int length = w * h;
@@ -107,12 +116,19 @@ final class RfbClient {
             performance.rectangles.incrementAndGet(); performance.pixels.addAndGet(length);
         }
         if (count > 0) { performance.updates.incrementAndGet(); screen.updated(); }
-        request(true);
+        // The pipelined request used the previous size. In particular, a
+        // growing desktop whose only damage is outside that region might not
+        // answer it. Request the entire new framebuffer once after this valid
+        // update, even if it contained several DesktopSize rectangles. RFB
+        // requests may be merged by the server, so do not skip a later header's
+        // normal request in an attempt to count responses to these requests.
+        if (resized) request(false);
     }
     private void request(boolean incremental) throws IOException {
         synchronized (out) {
             out.writeByte(3); out.writeByte(incremental ? 1 : 0);
             out.writeShort(0); out.writeShort(0); out.writeShort(width); out.writeShort(height); out.flush();
+            (incremental ? performance.incrementalRequests : performance.fullRequests).incrementAndGet();
         }
     }
     void key(int keysym, boolean down) throws IOException {

@@ -27,6 +27,10 @@ device test accepts responsive rendering/input in the teens and 20s FPS.
 0.1.10 brings TRASC's layered controller bindings and fullscreen orbital gear menu.
 0.1.11 fixes Android 13 display startup, renames the defaults to Main/Alt 1/Alt 2/Alt 3,
 pins both Start buttons above the tabs and gives the app icon a dark space background.
+The 0.1.11 Thor test accepts fullscreen/controls and reopening the saved character
+in station. 0.1.12 adds a default 60 FPS/two-frame performance profile, the previous
+30 FPS/one-frame option, earlier display requests and a dark adaptive app icon.
+Actual FPS gains require the [warm station comparison](docs/TESTING.md).
 
 ## Fullscreen controls in 0.1.11
 
@@ -76,7 +80,7 @@ The Thor recovery test has now passed: exact build 3396210, all 125,116 resource
 6 minutes 14 seconds, and 150.6 MiB peak worker RSS with no reported low-memory
 condition. See [the accepted physical evidence](docs/HANDOFF.md). Keep the
 prepared cache. The current preview uses that prepared cache. Startup/login passed; client
-rendering/input are accepted; layered controls are the current device gate.
+rendering/input and layered controls are accepted; 30+ FPS is the current device goal.
 
 ## Accepted client renderer from 0.1.9
 

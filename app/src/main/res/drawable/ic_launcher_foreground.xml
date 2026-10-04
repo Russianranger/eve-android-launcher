@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- Retain the ship and orbit, centered inside the 66 dp adaptive safe zone. -->
+    <group android:scaleX="1.5" android:scaleY="1.5" android:translateX="18" android:translateY="18">
+        <group android:pivotX="24" android:pivotY="24" android:rotation="-18">
+            <path android:strokeColor="#56CADB" android:strokeWidth="1.6" android:fillColor="#00000000" android:pathData="M5,24a19,10 0,1 0,38 0a19,10 0,1 0,-38 0" />
+            <path android:fillColor="#6EE4F0" android:pathData="M4,24a1.6,1.6 0,1 0,3.2 0a1.6,1.6 0,1 0,-3.2 0M37,16a1.2,1.2 0,1 0,2.4 0a1.2,1.2 0,1 0,-2.4 0" />
+        </group>
+        <path android:fillColor="#102F48" android:pathData="M24,8L33,37L24,32L15,37z" />
+        <path android:fillColor="#EEF8FA" android:pathData="M24,5L31,35L24,30L17,35z" />
+        <path android:fillColor="#6EE4F0" android:pathData="M24,14L25.7,28L24,26.7L22.3,28z" />
+    </group>
+</vector>

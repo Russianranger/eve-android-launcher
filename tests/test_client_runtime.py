@@ -39,6 +39,7 @@ mode, state, port, behavior = sys.argv[1:]
 state = pathlib.Path(state)
 port = int(port)
 (state / (mode + '.pid')).write_text(str(os.getpid()))
+(state / (mode + '.environment.json')).write_text(json.dumps({key: os.environ.get(key) for key in ('DXVK_HUD', 'DXVK_CONFIG_FILE')}))
 if mode in ('graphicsVulkan', 'graphicsD3d'):
     if behavior == mode + '-hangs':
         def finish_graphics(*args):
@@ -60,7 +61,12 @@ if mode in ('graphicsVulkan', 'graphicsD3d'):
         (state / 'run/graphics-display.json').write_text(json.dumps(display, indent=2) + '\n')
         (state / 'logs/client-graphicsD3d-helper.log').write_text(json.dumps(report) + '\n')
         mode_line = 'VK_PRESENT_MODE_FIFO_KHR' if behavior == 'graphicsD3d-policy-fifo' else 'VK_PRESENT_MODE_IMMEDIATE_KHR'
-        policy_log = 'info:  dxgi.syncInterval = 0\ninfo:  Present mode: ' + mode_line + '\n'
+        performance = json.loads((state / 'fixture-performance.json').read_text())
+        policy_log = ('info:  dxgi.maxFrameRate = ' + str(performance['targetFrameRate']) + '\n'
+                      + 'info:  dxgi.maxFrameLatency = ' + str(performance['maxFrameLatency']) + '\n'
+                      + 'info:  dxgi.syncInterval = 0\ninfo:  Present mode: ' + mode_line + '\n')
+        if behavior == 'graphicsD3d-profile-wrong': policy_log = policy_log.replace('maxFrameRate = 60', 'maxFrameRate = 30')
+        if behavior == 'graphicsD3d-profile-missing': policy_log = policy_log.replace('info:  dxgi.maxFrameLatency = 2\n', '')
         if behavior == 'graphicsD3d-policy-missing': policy_log = ''
         (state / 'logs/client-graphicsD3d-helper-errors.log').write_text(policy_log)
     print(json.dumps(report), flush=True)
@@ -146,7 +152,7 @@ class ClientRuntimeTests(unittest.TestCase):
             'dxvk-d3d11-arm64ec.dll': {'sha256': '1' * 64},
             'dxvk-dxgi-arm64ec.dll': {'sha256': '2' * 64}}}))
 
-    def settings(self, behavior="normal", graphics=False):
+    def settings(self, behavior="normal", graphics=False, performance_profile="throughput", diagnostic_hud=False):
         def command(role):
             return (sys.executable, str(self.fixture), role, str(self.state), str(self.port), behavior)
         return MODULE.Settings(content=self.content, state=self.state, server_state=self.server,
@@ -155,16 +161,19 @@ class ClientRuntimeTests(unittest.TestCase):
                                client_command=command("client"), tick=.025, startup_timeout=2,
                                gate_timeout=2, observe_seconds=.15, shutdown_timeout=.15,
                                graphics_mode="turnip-dxvk" if graphics else "software",
+                               performance_profile=performance_profile, diagnostic_hud=diagnostic_hud,
                                vulkan_command=command("graphicsVulkan") if graphics else None,
                                d3d_command=command("graphicsD3d") if graphics else None,
                                graphics_timeout=.5,
                                minimum_available_kib=0)
 
-    def launch(self, behavior="normal", clear_stop=True, graphics=False):
+    def launch(self, behavior="normal", clear_stop=True, graphics=False, performance_profile="throughput", diagnostic_hud=False):
         if clear_stop:
             (self.state / "run/stop").unlink(missing_ok=True)
-        values = {key: str(value) if isinstance(value, Path) else value
-                  for key, value in self.settings(behavior, graphics).__dict__.items()}
+        selected = self.settings(behavior, graphics, performance_profile, diagnostic_hud)
+        (self.state / 'fixture-performance.json').write_text(json.dumps(MODULE.client_graphics.performance_settings(
+            "turnip-dxvk", performance_profile)))
+        values = {key: str(value) if isinstance(value, Path) else value for key, value in selected.__dict__.items()}
         runner = self.root / "runner.py"
         runner.write_text(
             "import json,pathlib,signal,sys\n"
@@ -266,6 +275,8 @@ class ClientRuntimeTests(unittest.TestCase):
         process = self.launch(graphics=True)
         running = self.wait_status("running")
         self.assertEqual(running["graphicsMode"], "turnip-dxvk")
+        self.assertEqual(running["performance"], MODULE.client_graphics.performance_settings("turnip-dxvk"))
+        self.assertEqual(running["graphicsPreflight"]["performance"], running["performance"])
         self.assertTrue(running["graphicsPreflight"]["hardwarePreflightPassed"])
         self.assertTrue(running["graphicsPreflight"]["display"]["display_pixels_verified"])
         self.assertEqual(running["graphicsPreflight"]["presentation"]["requestedSyncInterval"], 1)
@@ -283,6 +294,8 @@ class ClientRuntimeTests(unittest.TestCase):
         fallback = self.launch()
         software = self.wait_status("running")
         self.assertEqual(software["graphicsMode"], "software")
+        self.assertEqual(software["performance"]["displayFrameRate"], 15)
+        self.assertEqual(software["performance"]["performanceProfile"], "software")
         self.assertFalse(software["graphicsPreflight"]["hardwarePreflightPassed"])
         self.assertNotIn("graphicsD3dIdentity", software)
         (self.state / "run/stop").write_text("stop")
@@ -291,7 +304,7 @@ class ClientRuntimeTests(unittest.TestCase):
     def test_graphics_negative_reports_and_nonzero_exits_prevent_eve(self):
         for behavior in ("graphicsVulkan-bad", "graphicsVulkan-exit", "graphicsD3d-bad",
                          "graphicsD3d-display-bad", "graphicsD3d-exit", "graphicsD3d-policy-fifo",
-                         "graphicsD3d-policy-missing"):
+                         "graphicsD3d-policy-missing", "graphicsD3d-profile-wrong", "graphicsD3d-profile-missing"):
             with self.subTest(behavior=behavior):
                 process = self.launch(behavior, graphics=True)
                 self.assertEqual(process.wait(timeout=5), 1)
@@ -377,12 +390,55 @@ class ClientRuntimeTests(unittest.TestCase):
 
     def test_retail_cli_cannot_substitute_graphics_commands_or_accept_fixture_mode(self):
         for flags in (("--graphics-mode", "fixture"), ("--vulkan-command", "/bin/true"),
-                      ("--d3d-command", "/bin/true"), ("--allow-software-qualification",)):
+                      ("--d3d-command", "/bin/true"), ("--allow-software-qualification",),
+                      ("--performance-profile", "unlimited"), ("--diagnostic-hud", "full")):
             with self.subTest(flags=flags), mock.patch.object(MODULE, "Runtime") as constructor, \
                     mock.patch("sys.stderr", new=io.StringIO()), self.assertRaises(SystemExit) as error:
                 MODULE.main(["start", *flags])
             self.assertEqual(error.exception.code, 2)
             constructor.assert_not_called()
+
+    def test_cli_routes_only_selected_profiles_and_boolean_hud(self):
+        for arguments, profile, hud in (([], "throughput", False),
+                                        (["--performance-profile", "responsive", "--diagnostic-hud"], "responsive", True)):
+            with self.subTest(arguments=arguments), mock.patch.object(MODULE, "Runtime") as constructor, \
+                    mock.patch.object(MODULE.signal, "signal"):
+                self.assertEqual(MODULE.main(["start", *arguments]), 0)
+                selected = constructor.call_args.args[0]
+                self.assertEqual(selected.performance_profile, profile)
+                self.assertEqual(selected.diagnostic_hud, hud)
+                constructor.return_value.start.assert_called_once_with()
+
+    def test_selected_profile_controls_display_rate_and_gpu_environment(self):
+        for mode, profile, rate in (("turnip-dxvk", "throughput", 60),
+                                    ("turnip-dxvk", "responsive", 30),
+                                    ("software", "throughput", 15), ("software", "responsive", 15)):
+            with self.subTest(mode=mode, profile=profile):
+                runtime = MODULE.Runtime(MODULE.Settings(state=self.state, graphics_mode=mode,
+                                                         performance_profile=profile, diagnostic_hud=True))
+                command = runtime.default_display_command()
+                self.assertEqual(command[command.index("-FrameRate") + 1], str(rate))
+                self.assertEqual(command[command.index("-geometry") + 1], "1280x720")
+                env = runtime.environment()
+                self.assertEqual(env["WINEESYNC"], "0")
+                self.assertEqual(env["WINEFSYNC"], "0")
+                if mode == "turnip-dxvk":
+                    self.assertEqual(env["DXVK_HUD"], "devinfo,fps,frametimes,gpuload,cs,compiler")
+                else:
+                    self.assertFalse(any(key.startswith(("DXVK_", "VK_", "MESA_")) for key in env))
+
+    def test_responsive_profile_round_trips_status_and_keeps_hud_out_of_pixel_qualification(self):
+        process = self.launch(graphics=True, performance_profile="responsive", diagnostic_hud=True)
+        running = self.wait_status("running")
+        expected = MODULE.client_graphics.performance_settings("turnip-dxvk", "responsive", True)
+        self.assertEqual(running["performance"], expected)
+        self.assertEqual(running["graphicsPreflight"]["performance"], expected)
+        helper = json.loads((self.state / "graphicsD3d.environment.json").read_text())
+        self.assertIsNone(helper["DXVK_HUD"])
+        client = json.loads((self.state / "client.environment.json").read_text())
+        self.assertEqual(client["DXVK_HUD"], "devinfo,fps,frametimes,gpuload,cs,compiler")
+        (self.state / "run/stop").write_text("stop")
+        self.assertEqual(process.wait(timeout=4), 0)
 
     def test_strict_tls_gate_failure_prevents_any_eve_process(self):
         for behavior in ("unsafe-tls", "wrong-ca", "unsafe-gateway", "gate-fails"):

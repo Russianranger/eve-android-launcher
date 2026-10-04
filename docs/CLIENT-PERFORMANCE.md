@@ -18,11 +18,66 @@ and the user's successful login/character-selection report.
 | Network extension requested exit stops for four entry-only socket checks | Keep entry checks/copies; remove only bind/connect/sendto/sendmsg exit flags | Actual native ARM syscall/IPC fixture is a required CI gate; sendmmsg exit copyback remains |
 | Slow startup could involve shader warmup and display presentation | Persistent versioned caches and separate aggregate metrics | Mesa 512 MiB cache cap; DXVK pruning to 256 MiB and 16 owned files between sessions |
 
-The GPU mode uses `dxgi.maxFrameRate=30` and `dxgi.maxFrameLatency=1` as an initial
-responsiveness tradeoff. Default compiler concurrency remains unchanged. No
+The initial GPU mode used `dxgi.maxFrameRate=30` and `dxgi.maxFrameLatency=1` as a
+responsiveness tradeoff; 0.1.12 adds the profiles described below. Default compiler concurrency remains unchanged. No
 unsupported async shader option, TSO change, guessed EVE API flag, broad Wine/FEX
 upgrade, resolution reduction or native display transport replacement is included.
 The previous software mode remains explicit recovery.
+
+## October 4: 0.1.11 accepted session and 0.1.12 optimization
+
+`eve-support-20261004-114813.zip` (343,025 bytes; SHA-256
+`3fbeeb66d3385ffb090ba381495f3fd69d78f870f79f6a6fa4308011b3003520`)
+and the user's screenshot/report accept fullscreen, controls, saved-character
+reopen, login and visible station entry. The station screenshot displays 23.9 FPS.
+The current Android exit records predate this session. Explicit server save/stop
+completes cleanly; existing unexpected-client-exit semantics remain unchanged.
+
+The display receives 13,286 updates over 785.367 seconds: 16.92 updates/s, not
+EVE FPS. Decode averages 2.64 ms/update and bitmap publication 1.19 ms/update.
+Raw loopback traffic averages 49.63 MB/s, with roughly 323 rectangles/update and
+79.5% of frame pixels changing. Socket read time includes blocked waits. Android
+GPU timing measures bitmap presentation rather than EVE rendering. All 1,765
+input operations complete with no rejections and at most 3.65 ms queue delay.
+
+The retained 53 live process samples cover approximately 270 seconds. Mean
+EVE/Wine client-group CPU is 200.30% of one core, with Xvnc separately at 29.32%
+and WineServer at 14.35%. The EVE main thread averages 44.13%; most remaining
+client work is outside named graphics roles. PRoot tracer/backend supervisor CPU
+is not exported. The completion worker waits in `adreno_drawctxt_wait` in 38/53
+samples, a frequent GPU-fence-wait hint without duration/utilization proof.
+Shader workers are effectively idle. These observations do not establish one
+dominant bottleneck, but both existing 30 FPS caps categorically prevent 30+.
+
+| Profile | DXVK FPS cap | DXVK latency cap | Xvnc FPS cap |
+|---|---:|---:|---:|
+| Performance (`throughput`, default) | 60 | 2 | 60 |
+| Previous settings (`responsive`) | 30 | 1 | 30 |
+| Software recovery | — | — | 15 |
+
+Both GPU profiles retain `dxgi.syncInterval=0`. The exact
+[DXVK 2.4.1 swapchain](https://github.com/doitsujin/dxvk/blob/0cf05780abd7250c2cd713b7749cf32180157cf5/src/dxgi/dxgi_swapchain.cpp)
+caps actual latency using application/backbuffer limits, so configured latency 2
+does not prove an actual two-frame EVE queue. Native qualification checks each
+profile's actual logged caps, original Present(1), effective interval 0, IMMEDIATE
+presentation, exact DLL identities and all three independently observed frames.
+
+The display sends one next incremental request at the framebuffer-update header,
+before decoding. This follows the pinned
+[TigerVNC 1.14.1 viewer](https://github.com/TigerVNC/tigervnc/blob/v1.14.1/common/rfb/CConnection.cxx#L500-L510).
+After a valid batch that changes desktop size, one full refresh uses the final
+dimensions so newly exposed pixels cannot stall. Bell/clipboard messages send
+no requests; an empty framebuffer update sends one. Real socket fixtures withhold
+pixels until the next request, test blocked-read input, resize damage and bounded
+request counts. Counters record the request policy without retaining pixels/input.
+
+The optional fixed HUD adds frame times, GPU load and command-stream statistics.
+Support status records selected/effective profiles. No driver/runtime upgrade,
+compiler concurrency, TSO, synchronization patches, guessed EVE flags, guest
+preferences, resolution or cache deletion is included. Actual FPS gain needs the
+[same-scene warm comparison](TESTING.md). If GPU load remains high, manual EVE
+graphics reduction and FSR 1 are supported DX11 options; see
+[CCP's FSR compatibility notes](https://www.eveonline.com/news/view/patch-notes-version-23-01).
 
 ## Native graphics proof
 

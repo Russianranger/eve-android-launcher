@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- Opaque edge-to-edge background; Android supplies the launcher mask. -->
+    <path android:fillColor="#03070F" android:pathData="M0,0h108v108h-108z" />
+    <group android:scaleX="2.25" android:scaleY="2.25">
+        <path android:fillColor="#081224" android:pathData="M0,36C12,31 18,12 33,6C39,3 44,3 48,4L48,18C35,17 27,34 13,42C8,45 4,47 0,48z" />
+        <path android:fillColor="#0D1B31" android:pathData="M0,44C13,37 24,18 36,14C41,12 45,12 48,13L48,17C33,17 23,37 8,44L0,48z" />
+    </group>
+    <path android:fillColor="#819EBB" android:pathData="M32,30h1v1h-1zM70,28h1v1h-1zM81,44h1v1h-1zM26,68h1v1h-1zM66,80h1v1h-1zM39,78h0.8v0.8h-0.8zM25,45h0.8v0.8h-0.8zM85,68h0.8v0.8h-0.8zM9,20h1v1h-1zM93,14h1v1h-1zM95,87h1v1h-1zM13,97h1v1h-1z" />
+    <path android:fillColor="#C0E2EC" android:pathData="M38,27L38.6,28.4L40,29L38.6,29.6L38,31L37.4,29.6L36,29L37.4,28.4zM77,70L77.5,71.5L79,72L77.5,72.5L77,74L76.5,72.5L75,72L76.5,71.5z" />
+</vector>

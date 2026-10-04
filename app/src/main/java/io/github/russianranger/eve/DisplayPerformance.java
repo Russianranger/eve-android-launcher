@@ -18,6 +18,7 @@ final class DisplayPerformance {
     final AtomicLong width = new AtomicLong(), height = new AtomicLong();
     final AtomicLong socketBytes = new AtomicLong(), socketReads = new AtomicLong(), socketNanos = new AtomicLong();
     final AtomicLong updates = new AtomicLong(), rectangles = new AtomicLong(), pixels = new AtomicLong();
+    final AtomicLong incrementalRequests = new AtomicLong(), fullRequests = new AtomicLong();
     final AtomicLong decodeNanos = new AtomicLong(), publishNanos = new AtomicLong(), drawNanos = new AtomicLong(), draws = new AtomicLong();
     final AtomicLong inputs = new AtomicLong(), completedInputs = new AtomicLong(), rejectedInputs = new AtomicLong();
     final AtomicLong queueNanos = new AtomicLong(), maxQueueNanos = new AtomicLong(), sendNanos = new AtomicLong(), maxSendNanos = new AtomicLong(), maxQueueDepth = new AtomicLong();
@@ -73,6 +74,8 @@ final class DisplayPerformance {
         number(out, "socket_bytes", socketBytes.get()); number(out, "socket_reads", socketReads.get());
         out.append(",\n  \"socket_read_ms\": ").append(socketTime() / 1000000.0); // Includes an unfinished native read waiting for server data.
         number(out, "framebuffer_updates", updates.get()); number(out, "raw_rectangles", rectangles.get()); number(out, "raw_pixels", pixels.get());
+        out.append(",\n  \"update_request_policy\": \"one-ahead-with-resize-refresh\"");
+        number(out, "incremental_update_requests", incrementalRequests.get()); number(out, "full_update_requests", fullRequests.get());
         millis(out, "decode_work_ms", decodeNanos); millis(out, "bitmap_publish_ms", publishNanos);
         number(out, "view_draws", draws.get()); millis(out, "view_draw_cpu_ms", drawNanos);
         number(out, "input_operations", inputs.get()); number(out, "completed_input_operations", completedInputs.get()); number(out, "rejected_input_operations", rejectedInputs.get());

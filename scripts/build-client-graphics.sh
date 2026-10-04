@@ -20,14 +20,16 @@ docker start -ai "$graphics_container" <<'QUALIFICATION' || qualification_status
 set -Eeuo pipefail
 export DISPLAY=:21
 display_pid=''
+responsive_display_pid=''
 cleanup_display() {
   timeout --kill-after=5 15 /opt/wine/bin/wineserver -k || true
   if [[ -n "$display_pid" ]]; then kill "$display_pid" || true; fi
+  if [[ -n "$responsive_display_pid" ]]; then kill "$responsive_display_pid" || true; fi
 }
 trap cleanup_display EXIT
 /usr/bin/Xtigervnc "$DISPLAY" -geometry 320x240 -depth 24 -rfbport 5991 \
   -localhost yes -SecurityTypes None -nolisten tcp -ac -AlwaysShared \
-  -FrameRate 30 -desktop 'EVE graphics fixture' > /graphics-out/xvnc.log 2>&1 &
+  -FrameRate 60 -desktop 'EVE graphics fixture' > /graphics-out/xvnc.log 2>&1 &
 display_pid=$!
 python3 - <<'PY'
 from pathlib import Path
@@ -68,9 +70,9 @@ export DXVK_STATE_CACHE_PATH='Z:\graphics-out\cache\dxvk-2.4.1-arm64ec'
 export MESA_SHADER_CACHE_DIR=/graphics-out/cache/mesa-26.0.0
 mkdir -p /graphics-out/cache/dxvk-2.4.1-arm64ec /graphics-out/cache/mesa-26.0.0
 cat > /graphics-out/dxvk.conf <<'CONFIG'
-# Private initial responsiveness settings.
-dxgi.maxFrameRate = 30
-dxgi.maxFrameLatency = 1
+# Private throughput settings.
+dxgi.maxFrameRate = 60
+dxgi.maxFrameLatency = 2
 dxgi.syncInterval = 0
 CONFIG
 test -f "$VK_DRIVER_FILES"
@@ -81,6 +83,37 @@ test -f "$VK_DRIVER_FILES"
 python3 /graphics-tests/graphics_present.py --port 5991 \
   --report /graphics-out/d3d11-rfb-presentation.json \
   --stdout /graphics-out/d3d11-fixture.json --stderr /graphics-out/d3d11-fixture.log \
+  -- /opt/wine/bin/wine /graphics-out/assets/eve-d3d11-probe.exe \
+  fixture 'C:\windows\system32\d3d11.dll' "$d3d11_digest" \
+  'C:\windows\system32\dxgi.dll' "$dxgi_digest"
+timeout --kill-after=5 15 /opt/wine/bin/wineserver -k
+timeout --kill-after=5 15 /opt/wine/bin/wineserver -w
+# Reuse the same built DLLs and original Present(1) helper to qualify the exact
+# responsive recovery profile on a separate 30Hz private Xvnc display.
+/usr/bin/Xtigervnc :22 -geometry 320x240 -depth 24 -rfbport 5992 \
+  -localhost yes -SecurityTypes None -nolisten tcp -ac -AlwaysShared \
+  -FrameRate 30 -desktop 'EVE responsive fixture' > /graphics-out/xvnc-responsive.log 2>&1 &
+responsive_display_pid=$!
+python3 - <<'PY'
+from pathlib import Path
+import time
+for _ in range(100):
+    if Path('/tmp/.X11-unix/X22').is_socket():
+        break
+    time.sleep(0.1)
+else:
+    raise SystemExit('Responsive Xvnc did not create its display socket')
+PY
+cat > /graphics-out/dxvk-responsive.conf <<'CONFIG'
+# Private initial responsiveness settings.
+dxgi.maxFrameRate = 30
+dxgi.maxFrameLatency = 1
+dxgi.syncInterval = 0
+CONFIG
+DISPLAY=:22 DXVK_CONFIG_FILE='Z:\graphics-out\dxvk-responsive.conf' \
+  python3 /graphics-tests/graphics_present.py --port 5992 \
+  --report /graphics-out/d3d11-responsive-rfb-presentation.json \
+  --stdout /graphics-out/d3d11-responsive-fixture.json --stderr /graphics-out/d3d11-responsive-fixture.log \
   -- /opt/wine/bin/wine /graphics-out/assets/eve-d3d11-probe.exe \
   fixture 'C:\windows\system32\d3d11.dll' "$d3d11_digest" \
   'C:\windows\system32\dxgi.dll' "$dxgi_digest"
@@ -171,6 +204,22 @@ report = {'passed': True, 'qualification': 'native-arm64-ec-lavapipe-ci-only',
           'observedPresentModes': present_modes,
           'baselineRuntimeIdentity': json.loads((folder / 'qualified-runtime-identity.json').read_text()),
           'cpuHardwareGateRejected': True, 'turnipWithoutKgslRejected': True}
+report['performance'] = {'requestedProfile': 'throughput', 'performanceProfile': 'throughput',
+                         'targetFrameRate': 60, 'maxFrameLatency': 2, 'displayFrameRate': 60,
+                         'diagnosticHud': False}
+responsive = one_json('d3d11-responsive-fixture.json')
+responsive_display = one_json('d3d11-responsive-rfb-presentation.json')
+assert responsive['mode'] == 'fixture' and responsive['passed'] is True
+assert responsive['pixels_verified'] is True and responsive['present_count'] == 3
+assert type(responsive.get('requested_sync_interval')) is int and responsive['requested_sync_interval'] == 1
+assert responsive_display['display_pixels_verified'] is True and responsive_display['matched_frames'] == [0, 1, 2]
+assert responsive_display['center_pixels_verified'] is True
+for name in ('d3d11', 'dxgi'):
+    assert responsive[name]['identity_verified'] is True and responsive[name]['sha256'] == d3d[name]['sha256']
+report['responsiveProfile'] = {'d3d11': responsive, 'rfbPresentation': responsive_display,
+                              'performance': {'requestedProfile': 'responsive', 'performanceProfile': 'responsive',
+                                              'targetFrameRate': 30, 'maxFrameLatency': 1, 'displayFrameRate': 30,
+                                              'diagnosticHud': False}}
 (folder / 'client-graphics-check.json').write_text(json.dumps(report, indent=2) + '\n')
 PY
 QUALIFICATION
@@ -200,6 +249,7 @@ assets = Path('out/assets')
 # Byte equality keeps the container's literal configuration synchronized with
 # the private configuration generated by the production backend.
 assert Path('out/dxvk.conf').read_bytes() == client_graphics.DXVK_CONFIG.encode('utf-8')
+assert Path('out/dxvk-responsive.conf').read_bytes() == client_graphics.dxvk_config('responsive').encode('utf-8')
 client_graphics.verify_bundle(assets)
 manifest = json.loads((assets / 'client-graphics-bundle.json').read_text())
 for name in (*manifest['files'], 'client-graphics-bundle.json'):
@@ -210,8 +260,16 @@ client_graphics.verify_bundle(Path('backend'))
 client_graphics.parse_display(Path('out/d3d11-rfb-presentation.json').read_text())
 report = json.loads(Path('out/client-graphics-check.json').read_text())
 assert report['passed'] is True and report['physicalThorQualified'] is False
-policy = client_graphics.parse_presentation_policy(Path('out/d3d11-fixture.log').read_text())
+policy = client_graphics.parse_performance_policy(Path('out/d3d11-fixture.log').read_text(), 'throughput')
 assert all(report.get(key) == value for key, value in policy.items())
+assert report['performance'] == client_graphics.performance_settings('turnip-dxvk', 'throughput')
+responsive = report['responsiveProfile']
+responsive['presentation'] = client_graphics.parse_performance_policy(
+    Path('out/d3d11-responsive-fixture.log').read_text(), 'responsive')
+assert responsive['performance'] == client_graphics.performance_settings('turnip-dxvk', 'responsive')
+assert responsive['rfbPresentation'] == client_graphics.parse_display(
+    Path('out/d3d11-responsive-rfb-presentation.json').read_text())
+Path('out/client-graphics-check.json').write_text(json.dumps(report, indent=2) + '\n')
 assert type(report['d3d11'].get('requested_sync_interval')) is int and report['d3d11']['requested_sync_interval'] == 1
 window = json.loads(Path('out/client-window-check.json').read_text())
 helper = assets / 'eve-client-window.exe'

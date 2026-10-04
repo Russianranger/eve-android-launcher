@@ -69,6 +69,8 @@ class Settings:
     tick: float = .25
     minimum_available_kib: int = 1024**2
     graphics_mode: str = "turnip-dxvk"
+    performance_profile: str = client_graphics.DEFAULT_PERFORMANCE_PROFILE
+    diagnostic_hud: bool = False
     graphics_folder: Path = Path("/opt/eve-android")
     graphics_timeout: float = 90
     window_start_timeout: float = 20
@@ -116,6 +118,8 @@ def memory_metrics() -> dict[str, int]:
 class Runtime:
     def __init__(self, settings: Settings | None = None):
         self.s = settings or Settings()
+        self.performance = client_graphics.performance_settings(
+            self.s.graphics_mode, self.s.performance_profile, self.s.diagnostic_hud)
         self.run = self.s.state / "run"
         self.logs = self.s.state / "logs"
         self.status_file = self.run / "status.json"
@@ -139,6 +143,12 @@ class Runtime:
 
     def request_stop(self, *_: Any) -> None:
         self.cancelled = True
+
+    def default_display_command(self) -> tuple[str, ...]:
+        return (self.s.display, ":" + str(self.s.display_number), "-geometry", "1280x720", "-depth", "24",
+                "-rfbport", str(self.s.display_port), "-localhost", "yes", "-SecurityTypes", "None",
+                "-nolisten", "tcp", "-ac", "-AlwaysShared", "-FrameRate",
+                str(self.performance["displayFrameRate"]), "-desktop", "EVE Local Preview")
 
     def stopping(self) -> bool:
         return self.cancelled or (self.run / "stop").exists()
@@ -213,6 +223,7 @@ class Runtime:
                   "networkPolicy": NETWORK_POLICY, "displayPort": self.s.display_port,
                   "resolution": "1280x720", "updatedAt": time.time(),
                   "graphicsMode": self.s.graphics_mode,
+                  "performance": self.performance,
                   "renderer": "DXVK / Turnip (Adreno)" if self.s.graphics_mode == "turnip-dxvk" else "WineD3D / llvmpipe",
                   "graphicsPreflight": self.graphics_reports, "processCpu": process_cpu,
                   "clientWindow": self.window_report,
@@ -238,7 +249,9 @@ class Runtime:
                     "EVE_CLIENT_SENTRY_DSN": "http://evejs@127.0.0.1:26002/1",
                     "NO_PROXY": "127.0.0.1,localhost,::1", "no_proxy": "127.0.0.1,localhost,::1",
                     "SSL_CERT_FILE": "Z:\\client-state\\trust\\evejs-ca.pem"})
-        return client_graphics.configure_environment(env, self.s.graphics_mode, self.s.graphics_folder, self.s.state)
+        return client_graphics.configure_environment(
+            env, self.s.graphics_mode, self.s.graphics_folder, self.s.state,
+            self.s.performance_profile, self.s.diagnostic_hud)
 
     def require_server(self) -> None:
         value = read_json(self.s.server_state / "run/status.json")
@@ -289,7 +302,9 @@ class Runtime:
         if not (self.s.state / "prefix/system.reg").is_file():
             raise RuntimeErrorDetail("The existing Wine prefix is missing; run the Wine/FEX probe first")
         try:
-            self.graphics_bundle = client_graphics.prepare(self.s.graphics_folder, self.s.state, self.s.content, self.s.graphics_mode)
+            self.graphics_bundle = client_graphics.prepare(
+                self.s.graphics_folder, self.s.state, self.s.content, self.s.graphics_mode,
+                self.s.performance_profile)
         except (OSError, ValueError, TypeError, KeyError) as error:
             raise RuntimeErrorDetail("Client graphics bundle could not be prepared: " + str(error)) from error
         if self.s.graphics_mode == "turnip-dxvk":
@@ -562,7 +577,7 @@ class Runtime:
 
     def run_graphics(self) -> dict[str, Any]:
         if self.s.graphics_mode == "software":
-            return {"mode": "software", "hardwarePreflightPassed": False}
+            return {"mode": "software", "performance": self.performance, "hardwarePreflightPassed": False}
         env = self.environment()
         # The initialized, accepted prefix is required before these session-only
         # file binds. Recheck after Wine bootstrap/TLS so a refresh cannot corrupt
@@ -589,12 +604,13 @@ class Runtime:
             "--report", str(display_report), "--stdout", str(helper_log), "--stderr", str(helper_errors), "--", *helper)
         self.wait_graphics("graphicsD3d", command, helper_env, self.s.graphics_timeout)
         d3d = client_graphics.parse_d3d(client_prepare.bounded_text(helper_log, limit=65536), self.graphics_bundle)
-        presentation = client_graphics.parse_presentation_policy(
-            client_prepare.bounded_text(helper_errors, limit=65536))
+        presentation = client_graphics.parse_performance_policy(
+            client_prepare.bounded_text(helper_errors, limit=65536), self.s.performance_profile)
         visible = client_graphics.parse_display(client_prepare.bounded_text(display_report, limit=65536))
         client_graphics.verify_mapped(self.s.graphics_folder, self.s.state)
         report = {"mode": "turnip-dxvk", "observedAt": time.time(), "supervisorIdentity": self.identities.get("supervisorIdentity"), "hardwarePreflightPassed": True,
                   "vulkan": vulkan, "d3d11": d3d, "presentation": presentation, "display": visible,
+                  "performance": self.performance,
                   "qualificationScope": "native hardware D3D11 helper and local display; EVE performance requires observation"}
         atomic_json(self.s.state / "graphics-preflight.json", report)
         return report
@@ -808,11 +824,7 @@ class Runtime:
                 qualification = self.preflight()
                 self.preflight_display()
                 self.cancellation_point()
-                display_command = self.s.display_command or (
-                    self.s.display, ":" + str(self.s.display_number), "-geometry", "1280x720", "-depth", "24",
-                    "-rfbport", str(self.s.display_port), "-localhost", "yes", "-SecurityTypes", "None",
-                    "-nolisten", "tcp", "-ac", "-AlwaysShared", "-FrameRate",
-                    "30" if self.s.graphics_mode == "turnip-dxvk" else "15", "-desktop", "EVE Local Preview")
+                display_command = self.s.display_command or self.default_display_command()
                 self.status("starting", "Starting the private client display")
                 self.spawn("display", display_command)
                 self.wait_display()
@@ -898,9 +910,13 @@ def main(argv=None) -> int:
     parser.add_argument("--state", type=Path, default=Path("/client-state"))
     parser.add_argument("--server-state", type=Path, default=Path("/server-state"))
     parser.add_argument("--graphics-mode", choices=client_graphics.MODES, default="turnip-dxvk")
+    parser.add_argument("--performance-profile", choices=client_graphics.PERFORMANCE_PROFILES,
+                        default=client_graphics.DEFAULT_PERFORMANCE_PROFILE)
+    parser.add_argument("--diagnostic-hud", action="store_true")
     options = parser.parse_args(argv)
     runtime = Runtime(Settings(content=options.content, state=options.state, server_state=options.server_state,
-                               graphics_mode=options.graphics_mode))
+                               graphics_mode=options.graphics_mode,
+                               performance_profile=options.performance_profile, diagnostic_hud=options.diagnostic_hud))
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, runtime.request_stop)
     try:

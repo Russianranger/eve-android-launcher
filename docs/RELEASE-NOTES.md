@@ -1,3 +1,24 @@
+# EVE Android Launcher 0.1.12 — performance profiles and adaptive app icon
+
+The October 4 Thor test accepts 0.1.11 fullscreen, controls, login, saved-character
+reopen and visible station entry. The station screenshot shows 23.9 FPS.
+
+The default Performance profile raises both DXVK and Xvnc limits to 60 FPS and
+allows a two-frame DXVK latency cap. Previous settings restores the exact
+30 FPS/one-frame configuration. Both retain the physically accepted immediate
+presentation workaround. The display requests its next update before decoding
+the current pixels, reducing avoidable delivery gaps. These changes permit 30+
+FPS; their actual gain requires the next same-scene Thor comparison.
+
+Client settings add an optional frame-time/GPU diagnostic HUD. Profiles can only
+change with the client stopped. The adaptive app icon fills launcher masks with
+an opaque dark starfield; the orbital gear is unchanged.
+
+Update in place with client/server stopped. Compare the same warm station scene
+using Performance and Previous settings, then export support logs. Preserve the
+existing account, world, prefix, shader caches and controller mappings. See
+[the focused comparison](TESTING.md).
+
 # EVE Android Launcher 0.1.11 — display startup and launcher layout
 
 Opening the 0.1.10 display on Android 13 could crash before the RFB connection.

@@ -28,12 +28,45 @@ MODES = ("turnip-dxvk", "software")
 LIMIT = 64 * 1024**2
 DXVK_CACHE_LIMIT = 256 * 1024**2
 DXVK_CACHE_FILES = 16
-# The private Xvnc presentation path needs immediate mode even when the game
-# requests vsync. Keep frame pacing and the one-frame queue separately bounded.
-DXVK_CONFIG = ("# Private initial responsiveness settings.\n"
-               "dxgi.maxFrameRate = 30\n"
-               "dxgi.maxFrameLatency = 1\n"
-               "dxgi.syncInterval = 0\n")
+# The private Xvnc path needs immediate mode even when the game requests vsync.
+# Two bounded profiles allow a throughput comparison without changing drivers,
+# guest settings or caches. DXGI may further clamp the queue to the game's own
+# maximum latency and backbuffer count; these values are caps, not measured FPS.
+PERFORMANCE_PROFILES = ("throughput", "responsive")
+DEFAULT_PERFORMANCE_PROFILE = "throughput"
+_PROFILE_VALUES = {"throughput": (60, 2, 60), "responsive": (30, 1, 30)}
+DEFAULT_HUD = "devinfo,fps,compiler"
+DIAGNOSTIC_HUD = "devinfo,fps,frametimes,gpuload,cs,compiler"
+
+
+def dxvk_config(performance_profile=DEFAULT_PERFORMANCE_PROFILE):
+    if not isinstance(performance_profile, str) or performance_profile not in PERFORMANCE_PROFILES:
+        raise ValueError("Unsupported client performance profile")
+    frame_rate, latency, _ = _PROFILE_VALUES[performance_profile]
+    comment = ("# Private initial responsiveness settings.\n" if performance_profile == "responsive"
+               else "# Private throughput settings.\n")
+    return (comment + "dxgi.maxFrameRate = " + str(frame_rate) + "\n"
+            + "dxgi.maxFrameLatency = " + str(latency) + "\n"
+            + "dxgi.syncInterval = 0\n")
+
+
+def performance_settings(mode, performance_profile=DEFAULT_PERFORMANCE_PROFILE, diagnostic_hud=False):
+    if mode not in MODES:
+        raise ValueError("Unsupported client renderer")
+    dxvk_config(performance_profile)
+    if type(diagnostic_hud) is not bool:
+        raise ValueError("Diagnostic HUD selection must be a boolean")
+    frame_rate, latency, display_rate = _PROFILE_VALUES[performance_profile]
+    software = mode == "software"
+    return {"requestedProfile": performance_profile,
+            "performanceProfile": "software" if software else performance_profile,
+            "targetFrameRate": None if software else frame_rate,
+            "maxFrameLatency": None if software else latency,
+            "displayFrameRate": 15 if software else display_rate,
+            "diagnosticHud": diagnostic_hud and not software}
+
+
+DXVK_CONFIG = dxvk_config()
 PRESENTATION_POLICY = "requested-vsync-forced-immediate-1"
 SOURCE_PINS = {
     "dxvkRepository": "https://github.com/doitsujin/dxvk",
@@ -130,9 +163,9 @@ def cache_directories(state: Path) -> tuple[Path, Path]:
             state / ("cache/mesa-" + MESA_VERSION))
 
 
-def prepare(folder: Path, state: Path, content: Path, mode: str) -> dict:
-    if mode not in MODES:
-        raise ValueError("Unsupported client renderer")
+def prepare(folder: Path, state: Path, content: Path, mode: str,
+            performance_profile=DEFAULT_PERFORMANCE_PROFILE) -> dict:
+    performance_settings(mode, performance_profile)
     if mode == "software":
         return {"mode": mode, "renderer": "WineD3D / llvmpipe"}
     for directory in (state, state / "run", state / "cache", state / "prefix",
@@ -156,7 +189,7 @@ def prepare(folder: Path, state: Path, content: Path, mode: str) -> dict:
         "library_path": str(folder / "turnip-26.0.0.so"), "api_version": "1.3.0"}})
     config = state / "run/dxvk.conf"
     temporary = config.with_name(".dxvk.conf.tmp")
-    temporary.write_text(DXVK_CONFIG)
+    temporary.write_text(dxvk_config(performance_profile), encoding="utf-8")
     os.replace(temporary, config)
     return manifest
 
@@ -184,10 +217,10 @@ def d3d_command(folder: Path, manifest: dict, wine: str = "/opt/wine/bin/wine") 
             "C:\\windows\\system32\\dxgi.dll", manifest["files"][DLLS["dxgi"]]["sha256"])
 
 
-def configure_environment(base, mode, folder, state):
+def configure_environment(base, mode, folder, state,
+                          performance_profile=DEFAULT_PERFORMANCE_PROFILE, diagnostic_hud=False):
     """Prove graphics options cannot leak between software/GPU sessions."""
-    if mode not in ("turnip-dxvk", "software"):
-        raise ValueError("Unsupported renderer")
+    performance = performance_settings(mode, performance_profile, diagnostic_hud)
     env = {k:v for k,v in base.items()
            if not k.startswith(("DXVK_", "VK_", "MESA_", "LIBGL_"))
            and k not in ("WINE_D3D_CONFIG", "GALLIUM_DRIVER", "LP_NUM_THREADS", "mesa_glthread")}
@@ -199,7 +232,8 @@ def configure_environment(base, mode, folder, state):
         dxvk_cache, mesa_cache = cache_directories(state)
         env.update(VK_DRIVER_FILES=icd, VK_ICD_FILENAMES=icd, MESA_VK_WSI_DEBUG="sw",
                    DXVK_LOG_LEVEL="info", DXVK_LOG_PATH="Z:" + str(state / "logs").replace("/", "\\"),
-                   DXVK_HUD="devinfo,fps,compiler", DXVK_CONFIG_FILE="Z:" + str(state / "run/dxvk.conf").replace("/", "\\"),
+                   DXVK_HUD=DIAGNOSTIC_HUD if performance["diagnosticHud"] else DEFAULT_HUD,
+                   DXVK_CONFIG_FILE="Z:" + str(state / "run/dxvk.conf").replace("/", "\\"),
                    DXVK_STATE_CACHE_PATH="Z:" + str(dxvk_cache).replace("/", "\\"),
                    MESA_SHADER_CACHE_DIR=str(mesa_cache),
                    MESA_SHADER_CACHE_MAX_SIZE="512M")
@@ -295,6 +329,17 @@ def parse_presentation_policy(text):
     return {"presentationPolicy": PRESENTATION_POLICY,
             "requestedSyncInterval": 1, "forcedSyncInterval": 0,
             "observedPresentModes": present_modes}
+
+
+def parse_performance_policy(text, performance_profile=DEFAULT_PERFORMANCE_PROFILE):
+    """Check the real helper configuration, retaining the immediate-mode gate."""
+    performance = performance_settings("turnip-dxvk", performance_profile)
+    for option, key in (("maxFrameRate", "targetFrameRate"), ("maxFrameLatency", "maxFrameLatency")):
+        values = re.findall(r"^info:[ \t]+dxgi\." + option + r"[ \t]*=[ \t]*(\S+)[ \t]*\r?$",
+                            text, re.MULTILINE)
+        if not values or any(value != str(performance[key]) for value in values):
+            raise ValueError("Native graphics qualification used a different performance profile")
+    return parse_presentation_policy(text)
 
 
 def parse_display(text):

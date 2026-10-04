@@ -47,6 +47,29 @@ final class ClientRuntime {
         context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).edit().putBoolean("use-adreno", enabled).apply();
     }
 
+    String performanceProfile() {
+        String value = context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE)
+                .getString("performance-profile", "throughput");
+        return "responsive".equals(value) ? "responsive" : "throughput";
+    }
+
+    void setPerformanceProfile(String profile) {
+        if (!"throughput".equals(profile) && !"responsive".equals(profile))
+            throw new IllegalArgumentException("Choose a supported performance profile");
+        if (alive() || RuntimeService.busy) throw new IllegalStateException("Stop the client before changing its performance settings");
+        context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).edit()
+                .putString("performance-profile", profile).apply();
+    }
+
+    boolean diagnosticHud() {
+        return context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).getBoolean("diagnostic-hud", false);
+    }
+
+    void setDiagnosticHud(boolean enabled) {
+        if (alive() || RuntimeService.busy) throw new IllegalStateException("Stop the client before changing its performance settings");
+        context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).edit().putBoolean("diagnostic-hud", enabled).apply();
+    }
+
     private JSONObject json(File file) throws Exception {
         return new JSONObject(RuntimeManager.read(file, 131072));
     }
@@ -61,6 +84,7 @@ final class ClientRuntime {
 
     JSONObject status() throws Exception {
         JSONObject out = new JSONObject().put("runtime", RUNTIME).put("installed", installed()).put("selectedGraphicsMode", renderer())
+                .put("selectedPerformanceProfile", performanceProfile()).put("diagnosticHud", diagnosticHud())
                 .put("supported_build", 3396210).put("client_launch_qualified", false)
                 .put("phase", "missing_client").put("message", "Import the complete EVE build 3396210 shared cache first");
         File status = new File(manager.clientState, "status.json");
@@ -263,13 +287,19 @@ final class ClientRuntime {
         manager.assets();
         RuntimeManager.mkdir(new File(manager.clientState, "run"));
         String graphicsMode = renderer();
+        String performanceProfile = performanceProfile();
+        boolean diagnosticHud = diagnosticHud();
         new File(manager.clientState, "run/stop").delete();
         JSONObject pending = new JSONObject().put("phase", "starting").put("ready", false).put("cleanShutdown", false)
                 .put("message", "Starting EVE with " + (graphicsMode.equals("turnip-dxvk") ? "Adreno GPU rendering…" : "software recovery rendering…")).put("graphicsMode", graphicsMode).put("client_launch_qualified", false)
+                .put("performanceProfile", performanceProfile).put("diagnosticHud", diagnosticHud)
                 .put("login_qualified", false).put("graphics_qualified", false);
         RuntimeManager.text(new File(manager.clientState, "run/status.json"), pending.toString());
-        session = manager.guest(manager.clientRoot, sessionBindings(graphicsMode), Arrays.asList("/usr/bin/python3.11", "/opt/eve-android/client_runtime.py", "start",
-                "--content", "/client", "--state", "/client-state", "--server-state", "/server-state", "--graphics-mode", graphicsMode),
+        List<String> launch = new ArrayList<>(Arrays.asList("/usr/bin/python3.11", "/opt/eve-android/client_runtime.py", "start",
+                "--content", "/client", "--state", "/client-state", "--server-state", "/server-state", "--graphics-mode", graphicsMode,
+                "--performance-profile", performanceProfile));
+        if (diagnosticHud) launch.add("--diagnostic-hud");
+        session = manager.guest(manager.clientRoot, sessionBindings(graphicsMode), launch,
                 new File(manager.clientState, "logs/client-supervisor.log"), true);
         long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(6);
         try {

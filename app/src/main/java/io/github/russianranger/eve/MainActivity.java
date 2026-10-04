@@ -24,7 +24,10 @@ public final class MainActivity extends Activity {
     private TextView stateText, workText, logText;
     private String tab = "Server";
     private CheckBox useAdreno;
+    private Spinner performanceProfile;
+    private CheckBox diagnosticHud;
     private boolean updatingRenderer;
+    private boolean updatingPerformance;
     private final List<Button> controls = new ArrayList<>();
     private final List<Button> launchControls = new ArrayList<>();
     private boolean resumed;
@@ -91,6 +94,7 @@ public final class MainActivity extends Activity {
     }
     private void render() {
         logGeneration++; controls.clear(); controls.addAll(launchControls); body.removeAllViews(); stateText = null; logText = null;
+        performanceProfile = null; diagnosticHud = null;
         if (tab.equals("Server")) {
             LinearLayout state = card("Your local universe", "EVE.js 0.12.9 · client build 3396210\nSetup downloads the prepared ARM64 server package. World data stays on this device.");
             stateText = label("", 15, 0xff6ee4f0); state.addView(stateText);
@@ -101,6 +105,40 @@ public final class MainActivity extends Activity {
         } else if (tab.equals("Client")) {
             LinearLayout state = card("Client performance", "Start the local server first. GPU rendering and responsive text entry are the focus of this preview.");
             stateText = label("", 14, 0xff6ee4f0); state.addView(stateText);
+            LinearLayout performance = card("Adreno performance", "Performance targets up to 60 FPS. Previous settings retain the 30 FPS target for comparison. Stop the client before changing these settings.");
+            performanceProfile = new Spinner(this);
+            performanceProfile.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
+                    new String[]{"Performance · 60 FPS target", "Previous settings · 30 FPS target"}));
+            performanceProfile.setContentDescription("Client performance profile");
+            performanceProfile.setSelection(new ClientRuntime(this).performanceProfile().equals("responsive") ? 1 : 0);
+            performance.addView(performanceProfile);
+            performanceProfile.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+                @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                    if (updatingPerformance) return;
+                    ClientRuntime runtime = new ClientRuntime(MainActivity.this);
+                    String profile = position == 1 ? "responsive" : "throughput";
+                    if (profile.equals(runtime.performanceProfile())) return;
+                    try { runtime.setPerformanceProfile(profile); }
+                    catch (IllegalStateException error) {
+                        updatingPerformance = true;
+                        ((Spinner) parent).setSelection(runtime.performanceProfile().equals("responsive") ? 1 : 0);
+                        updatingPerformance = false;
+                        Toast.makeText(MainActivity.this, error.getMessage(), Toast.LENGTH_SHORT).show();
+                    }
+                }
+                @Override public void onNothingSelected(AdapterView<?> parent) { }
+            });
+            diagnosticHud = new CheckBox(this); diagnosticHud.setText("Show frame-time and GPU diagnostics"); diagnosticHud.setTextColor(0xffeef8fa);
+            diagnosticHud.setChecked(new ClientRuntime(this).diagnosticHud()); performance.addView(diagnosticHud);
+            diagnosticHud.setOnCheckedChangeListener((button, checked) -> {
+                if (updatingPerformance) return;
+                ClientRuntime runtime = new ClientRuntime(this);
+                try { runtime.setDiagnosticHud(checked); }
+                catch (IllegalStateException error) {
+                    updatingPerformance = true; button.setChecked(runtime.diagnosticHud()); updatingPerformance = false;
+                    Toast.makeText(this, error.getMessage(), Toast.LENGTH_SHORT).show();
+                }
+            });
             LinearLayout client = card("Supported EVE client", "Requires EVE 24.01 build 3396210. Import a ZIP containing tq, ResFiles and index_tranquility.txt. Preserve the complete shared cache.");
             action(client, "Install Wine / FEX runtime", "install-client"); action(client, "Import complete client ZIP", "pick-client");
             action(client, "Resume interrupted client import", "resume-client");
@@ -110,7 +148,7 @@ public final class MainActivity extends Activity {
             useAdreno.setChecked(new ClientRuntime(this).renderer().equals("turnip-dxvk"));
             useAdreno.setOnCheckedChangeListener((button, checked) -> {
                 if (updatingRenderer) return;
-                try { new ClientRuntime(this).useAdreno(checked); }
+                try { new ClientRuntime(this).useAdreno(checked); updateState(); }
                 catch (IllegalStateException error) {
                     updatingRenderer = true; useAdreno.setChecked(new ClientRuntime(this).renderer().equals("turnip-dxvk")); updatingRenderer = false;
                     Toast.makeText(this, error.getMessage(), Toast.LENGTH_SHORT).show();
@@ -136,8 +174,13 @@ public final class MainActivity extends Activity {
                 String text = "Runtime: " + (server.optBoolean("installed") ? "installed" : "not installed") + "\nWorld: " + (server.optBoolean("prepared") ? "prepared" : "not prepared") + "\n" + (server.optBoolean("ready") ? "SERVER READY" : server.optString("message", "Server stopped")) + "\nFree storage: " + runtime.home.getUsableSpace() / 1073741824L + " GiB";
                 stateText.setText(text);
             } else if (stateText != null && tab.equals("Client")) {
-                if (useAdreno != null) useAdreno.setEnabled(!RuntimeService.busy && !new ClientRuntime(this).alive());
-                JSONObject state = new ClientRuntime(this).status(); stateText.setText(state.optString("message", state.toString(2)));
+                ClientRuntime client = new ClientRuntime(this);
+                boolean stopped = !RuntimeService.busy && !client.alive();
+                if (useAdreno != null) useAdreno.setEnabled(stopped);
+                boolean adrenoSettings = stopped && client.renderer().equals("turnip-dxvk");
+                if (performanceProfile != null) performanceProfile.setEnabled(adrenoSettings);
+                if (diagnosticHud != null) diagnosticHud.setEnabled(adrenoSettings);
+                JSONObject state = client.status(); stateText.setText(state.optString("message", state.toString(2)));
             }
         } catch (Exception e) { if (stateText != null) stateText.setText("Status unavailable: " + e.getMessage()); }
     }

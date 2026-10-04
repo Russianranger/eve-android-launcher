@@ -548,8 +548,8 @@ class GraphicsTests(unittest.TestCase):
         self.assertEqual(icd["ICD"]["library_path"], str(self.folder / "turnip-26.0.0.so"))
         config = (self.state / "run/dxvk.conf").read_text()
         self.assertEqual(config, graphics.DXVK_CONFIG)
-        self.assertIn("dxgi.maxFrameRate = 30", config)
-        self.assertIn("dxgi.maxFrameLatency = 1", config)
+        self.assertIn("dxgi.maxFrameRate = 60", config)
+        self.assertIn("dxgi.maxFrameLatency = 2", config)
         self.assertIn("dxgi.syncInterval = 0", config)
         self.assertNotIn("enableGraphicsPipelineLibrary", config)
         self.assertEqual(graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state)["DXVK_STATE_CACHE_PATH"],
@@ -562,6 +562,65 @@ class GraphicsTests(unittest.TestCase):
         result = graphics.prepare(self.root / "missing-bundle", self.state, self.content, "software")
         self.assertEqual(result["mode"], "software")
         self.assertEqual(before, {path: path.read_bytes() for path in self.state.rglob("*") if path.is_file()})
+
+    def test_profile_switch_restores_exact_responsive_policy_and_preserves_saved_state(self):
+        self.map_dlls()
+        protected = {
+            self.state / "prefix/system.reg": b"accepted prefix",
+            self.state / "controller.json": b"saved controls",
+            self.state / "prefix/drive_c/users/root/AppData/Local/CCP/EVE/settings/prefs.ini": b"saved game preferences",
+            self.state / "cache/mesa-26.0.0/retained-shader": b"warm cache",
+        }
+        for path, value in protected.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(value)
+        old_policy = ("# Private initial responsiveness settings.\n"
+                      "dxgi.maxFrameRate = 30\ndxgi.maxFrameLatency = 1\ndxgi.syncInterval = 0\n")
+        for profile in ("throughput", "responsive", "throughput"):
+            graphics.prepare(self.folder, self.state, self.content, "turnip-dxvk", profile)
+            self.assertEqual((self.state / "run/dxvk.conf").read_bytes(),
+                             (old_policy if profile == "responsive" else graphics.DXVK_CONFIG).encode("utf-8"))
+            self.assertEqual(protected, {path: path.read_bytes() for path in protected})
+
+    def test_profiles_and_hud_are_bounded_and_software_clears_all_dxvk_options(self):
+        for profile, frame_rate, latency in (("throughput", 60, 2), ("responsive", 30, 1)):
+            settings = graphics.performance_settings("turnip-dxvk", profile, True)
+            self.assertEqual(settings, {"requestedProfile": profile, "performanceProfile": profile,
+                                       "targetFrameRate": frame_rate, "maxFrameLatency": latency,
+                                       "displayFrameRate": frame_rate, "diagnosticHud": True})
+            gpu = graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state, profile, True)
+            self.assertEqual(gpu["DXVK_HUD"], "devinfo,fps,frametimes,gpuload,cs,compiler")
+            software = graphics.configure_environment(gpu, "software", self.folder, self.state, profile, True)
+            self.assertFalse(any(key.startswith(("DXVK_", "VK_", "MESA_")) for key in software))
+            effective = graphics.performance_settings("software", profile, True)
+            self.assertEqual(effective["performanceProfile"], "software")
+            self.assertIsNone(effective["targetFrameRate"])
+            self.assertIsNone(effective["maxFrameLatency"])
+            self.assertEqual(effective["displayFrameRate"], 15)
+            self.assertFalse(effective["diagnosticHud"])
+            restored = graphics.configure_environment(gpu, "turnip-dxvk", self.folder, self.state, profile)
+            self.assertEqual(restored["DXVK_HUD"], "devinfo,fps,compiler")
+        for profile in ("", "unlimited", "Throughput", "60", "throughput\ndxgi.syncInterval=1", None, True, []):
+            with self.subTest(profile=profile), self.assertRaises(ValueError):
+                graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state, profile)
+        for hud in ("full", "False", 1, None):
+            with self.subTest(hud=hud), self.assertRaises(ValueError):
+                graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state, diagnostic_hud=hud)
+
+    def test_profile_qualification_requires_actual_matching_dxvk_options(self):
+        for profile, rate, latency in (("throughput", 60, 2), ("responsive", 30, 1)):
+            log = (f"info:    dxgi.maxFrameRate = {rate}\ninfo:    dxgi.maxFrameLatency = {latency}\n"
+                   "info:    dxgi.syncInterval = 0\ninfo:    Present mode: VK_PRESENT_MODE_IMMEDIATE_KHR\n")
+            self.assertEqual(graphics.parse_performance_policy(log, profile), graphics.parse_presentation_policy(log))
+            self.assertEqual(graphics.parse_performance_policy(log.replace("\n", "\r\n"), profile),
+                             graphics.parse_presentation_policy(log))
+            for failed in (log.replace(f"dxgi.maxFrameRate = {rate}", "dxgi.maxFrameRate = 0"),
+                           log.replace(f"dxgi.maxFrameLatency = {latency}", "dxgi.maxFrameLatency = 8"),
+                           log.replace(f"info:    dxgi.maxFrameLatency = {latency}\n", ""),
+                           log + "info:    dxgi.maxFrameRate = 10\n",
+                           log.replace("VK_PRESENT_MODE_IMMEDIATE_KHR", "VK_PRESENT_MODE_FIFO_KHR")):
+                with self.subTest(profile=profile, failed=failed), self.assertRaises(ValueError):
+                    graphics.parse_performance_policy(failed, profile)
 
     def test_imported_shadow_dlls_in_both_search_directories_are_rejected(self):
         self.map_dlls()

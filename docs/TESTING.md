@@ -1,4 +1,38 @@
-# EVE Android Launcher 0.1.11: fullscreen controller qualification
+# EVE Android Launcher 0.1.12: warm station performance comparison
+
+The October 4 0.1.11 test accepts fullscreen/controls, saved-character reopen,
+login and visible station entry on Thor. The screenshot shows 23.9 FPS. Keep
+those accepted milestones; the active goal is smoother rendering at 30+ FPS.
+
+1. Stop the client and save/stop the server. Install
+   `EVE-Android-Launcher-0.1.12.apk` in place without clearing data.
+2. Start the server. In Client, keep Adreno enabled and select
+   **Performance · 60 FPS target**. Optionally enable
+   **Show frame-time and GPU diagnostics** for this comparison.
+3. Start the client and use the existing local account/character. Settle in the
+   same station with the same camera and graphics settings for 30–60 seconds.
+   Report the HUD FPS range and controller response; export support logs before
+   stopping the client so each profile has its own evidence.
+4. With the client stopped, select **Previous settings · 30 FPS target** and
+   repeat the same warm scene. Export a second ZIP. The server can stay running
+   between client runs; save/stop it after the comparison.
+5. Confirm the home-screen app icon has the dark space backdrop. If the launcher
+   retains its previous icon, refresh the home screen or restart the device;
+   preserve app data.
+
+60 is a cap, not a promised FPS. The two-frame latency setting is also a cap:
+EVE's own latency/backbuffer limits may reduce it. Both profiles use the accepted
+`dxgi.syncInterval=0` workaround and the same runtime, drivers, guest resolution
+and graphics preferences. The display pipeline optimization applies to both.
+Display-update counts and Android GPU timings are not EVE FPS/GPU measurements.
+
+If FPS remains below 30 and the diagnostic HUD shows sustained high GPU load,
+compare lower in-game shadows/ambient occlusion/anti-aliasing and DX11-compatible
+FSR 1 Quality, one change at a time. These are manual EVE settings; the launcher
+does not replace saved graphics preferences. Keep diagnostic screenshots and logs
+so later work can distinguish rendering cost from delivery or CPU work.
+
+## Earlier 0.1.11 fullscreen controller qualification
 
 The October 4 0.1.9 test accepts Adreno rendering and usable input, with user-reported
 teens/20s FPS. Preserve the renderer and current local account; do not repeat import,

@@ -28,7 +28,8 @@ native ARM64 runtime smoke qualifies the real server on Linux; it does not prove
 PRoot/Android behavior. The Thor server lifecycle, Wine/FEX execution probe and
 exact client import gates have now passed with the evidence below. EVE process
 startup/login and usable Adreno rendering/input have also been accepted on Thor.
-Audio, controllers and the later gameplay/persistence checks remain unqualified.
+Controllers, fullscreen, saved-character reopen and station entry are accepted by
+the October 4 0.1.11 test. Audio and undock/warp/dock remain unqualified.
 
 The client probe reports only successful x64 execution in Wine/FEX. Client TLS
 preparation does not pretend that Wine CryptoAPI trust or direct localhost:443
@@ -324,15 +325,28 @@ old default names on load, pins both Start buttons above the tabs and gives the
 app icon a dark starfield. Custom bindings/names and graphics/runtime pins remain
 intact. The gear icon is unchanged, following the user's clarification.
 
+## October 4 accepted 0.1.11 and 0.1.12 performance update
+
+`eve-support-20261004-114813.zip` (SHA-256
+`3fbeeb66d3385ffb090ba381495f3fd69d78f870f79f6a6fa4308011b3003520`)
+and the user's visible station screenshot accept login, existing-character reopen,
+fullscreen and usable controller controls. The screenshot shows 23.9 FPS.
+Preserve these accepted gates. See [measured limits](CLIENT-PERFORMANCE.md).
+
+0.1.12 adds selectable 60 FPS/latency-cap-2/Xvnc60 and prior 30/1/Xvnc30 profiles,
+earlier bounded RFB update requests and an optional diagnostic HUD. Both profiles
+retain the physically effective immediate presentation policy. The adaptive app
+icon uses an opaque full-bleed space backdrop; the gear design stays unchanged.
+Actual 30+ FPS must be measured on Thor, separately from helper/host results.
+
 ## Next milestones
 
 1. Preserve accepted server/world lifecycle, Wine/FEX probe, exact 125,116-resource
    import, private TLS, client startup/local login and 0.1.9 Adreno rendering/input.
-2. Qualify 0.1.11 TRASC-style controller layers/rebinding and fullscreen
-   display with the space-themed gear menu, then cold/warm startup, display reopen
-   and explicit clean shutdown using the current local test account.
-3. Qualify visible character/station/undock/warp/dock and persistent reopen, then
-   audio. Revisit graphical performance after the controls are usable.
+2. Preserve accepted 0.1.11 controls/fullscreen, saved-character reopen and station
+   entry. Compare 0.1.12 performance profiles in the same warm station scene, with
+   diagnostic HUD and separate support exports; the target is sustained 30+ FPS.
+3. Qualify undock/warp/dock and audio using the current local account/world.
 
 Runtime-v1 is immutable. Server package source/build input changes require a new
 runtime tag and matching app URL. APK backend scripts are bound independently

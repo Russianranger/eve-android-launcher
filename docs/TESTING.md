@@ -1,6 +1,29 @@
 # EVE Android Launcher 0.1.14: stability and A740 driver comparison
 
-## Current 0.1.14 test
+## Next 0.1.14 comparison: scene GPU workload
+
+Use the installed 0.1.14 APK. With the client stopped, turn the A740 experiment
+off and keep the baseline profile, original driver and other experiments off.
+Retain 1280×720 output, the same scene and Thor fan/power settings. In EVE's
+graphics menu, try **FSR 1 / Ultra Quality**, then **Quality** if the first option
+does not sustain 30 FPS and the image remains acceptable. Use the options actually
+offered by this client; report if FSR 1 is absent. Keep other quality settings
+unchanged so this isolates scene upscaling. After three minutes warm-up, observe
+HUD FPS and device temperature for another two minutes, distinguishing static
+camera from movement. A warm FPS range, temperatures and visible quality are
+enough for this comparison; a new support export is useful if behavior changes
+unexpectedly. This does not select DX12, replace runtime binaries or change UI
+controls. FSR can help FPS if GPU rendering is limiting; no gain is promised.
+
+## Completed 0.1.14 station comparison
+
+The two logged runs ended cleanly, and the later warmed A740 repeat had similar
+performance: typically 26 FPS, ranging 22–30, with reported device temperatures
+61–63°C initially and 66–70°C warm. That repeat supplied no additional logs.
+The driver change has no demonstrated station-performance benefit; the original
+driver remains preferred. The sequence below records the completed test.
+
+## 0.1.14 test sequence
 
 Install **EVE-Android-Launcher-0.1.14.apk** in place with client and server
 stopped. Preserve app data, the imported client, installed runtime, prefix,

@@ -1,5 +1,57 @@
 # Client optimization evidence and qualification
 
+## October 5: warmed driver result and remaining candidates
+
+The 0.1.14 A740 repeat produced no user-observed improvement: typically 26 FPS,
+range 22–30, device temperature 61–63°C initially and 66–70°C warm. No new logs
+were supplied. See [DEVICE-20261005.md](DEVICE-20261005.md) for the earlier logged
+comparison and qualification boundaries. The original driver remains preferred;
+the Adreno 740 station comparison is complete. Snapdragon 8 Elite videos with
+other system drivers do not establish a useful recipe for this exact runtime.
+
+The next small comparison is in-game **FSR 1**, retaining the 1280×720 output,
+baseline profile and original driver. CCP's [upscaling compatibility notes](https://www.eveonline.com/news/view/patch-notes-version-23-01)
+confirm FSR 1 works with DX11, whereas the newer Windows upscalers need DX12.
+Upscaling reduces scene rendering work and helps FPS only when GPU rendering
+is limiting. Compare Ultra Quality and then Quality, if offered, with all
+other game/launcher settings held constant. Record warm HUD FPS and device
+temperature; observe camera movement separately. This is an available game
+setting, not a runtime upgrade or automatic rewrite of player preferences.
+No prior completed FSR comparison or confirmed minimum graphics settings is
+recorded. A positive result would support scene-GPU load reduction; unchanged
+results would not alone identify a CPU or display bottleneck.
+
+Read-only code review of the remaining engineering candidates found:
+
+- Production sets `MESA_VK_WSI_DEBUG=sw` with the pinned glibc X11 driver. Exact
+  [Mesa 26 X11 WSI](https://github.com/chaotic-cx/mesa-mirror/blob/mesa-26.0.0/src/vulkan/wsi/wsi_common_x11.c)
+  selects CPU images and copies their pixels using `xcb_put_image`, before
+  Xvnc/Raw RFB/Android bitmap presentation. Scene rendering is still on Adreno.
+  Native Android presentation would need a new X-server/WSI/buffer/fence bridge,
+  then exact Vulkan/EC shader/pixel/IMMEDIATE/input/reopen/shutdown qualification.
+  Android decode/bitmap work around 3 ms/update and Xvnc around 30% of one core
+  do not prove this whole path is the dominant bottleneck. Obtain producer and
+  presentation timing plus actual clocks before choosing the larger replacement.
+- Disabling TigerVNC framebuffer comparison is a small optional experiment, but
+  can increase Raw transfer to a full-frame ceiling of 110.6 MB/s at 720p/30,
+  versus roughly 44 MB/s observed. It is not selected as the next performance
+  change because more unchanged-pixel traffic can add work and heat.
+- Pinned [DXVK cached-resource documentation](https://github.com/doitsujin/dxvk/blob/0cf05780abd7250c2cd713b7749cf32180157cf5/dxvk.conf)
+  describes `d3d11.cachedDynamicResources=c` as a workaround for CPU reads from
+  mapped buffers and warns of lower GPU-bound performance. There is no evidence
+  that EVE's mapped constant-buffer reads are limiting this run. The option
+  affects eligible DEFAULT and DYNAMIC constant buffers and may fall back to
+  uncached allocations. It remains deferred, not a promised 30-FPS fix.
+  Qualification must inspect actual selected-driver Vulkan allocation flags
+  through KGSL memory-info queries, require WRITEBACK/IOCOHERENT, exercise repeated
+  CPU-write/GPU-uniform-read coherence, and add translated D3D WRITE_DISCARD plus
+  DEFAULT UpdateSubresource coverage. Existing immutable-vertex/fixed-shader
+  fixtures do not establish this behavior. CI software fixtures cannot substitute
+  for Thor hardware allocation/coherence proof.
+
+No renderer/runtime version, player data, resolution or application code changes
+accompany this review. Current APK remains 0.1.14.
+
 The requested 60-minute investigation ran 2026-10-03 20:42:57–21:42:57 UTC.
 Production changes began afterward. The accepted evidence is
 `eve-support-20261003-154109.zip` (SHA-256

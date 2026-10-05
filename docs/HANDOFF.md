@@ -1,5 +1,22 @@
 # EVE Android Launcher handoff
 
+## Latest warmed A740 repeat
+
+The user repeated 0.1.14 with the A740 driver option enabled after its first
+cache warm-up. Performance was similar: typically 26 FPS, ranging 22–30, with
+device temperature about 61–63°C initially and 66–70°C after warm-up depending
+on camera movement. No new logs accompany this observation. This gives no
+observed improvement; prefer the original driver and consider the station
+driver comparison complete. The user also inspected the videos: Snapdragon
+8 Elite and different system-driver combinations do not supply useful settings
+for Thor/Adreno 740. The next pass must address an independent, qualified
+optimization while preserving the accepted runtime, client, world and controls.
+The immediate comparison is EVE's own DX11-compatible FSR 1, retaining 720p
+output and the original driver. No completed FSR/minimum-quality result is
+recorded. [CLIENT-PERFORMANCE.md](CLIENT-PERFORMANCE.md) captures the exact-source
+display and cached-buffer audit: neither is promoted as a proven bottleneck or
+an unqualified APK toggle. Current APK remains 0.1.14; only documentation changes.
+
 ## Latest October 5 device feedback and research
 
 The two 0.1.14 baseline/A740 exports show clean code-0 closure and no new Android
@@ -474,8 +491,9 @@ existed. The October 5 exports now supersede that pending comparison; see the
 1. Preserve accepted server/world lifecycle, Wine/FEX probe, exact 125,116-resource
    import, private TLS, client startup/local login and 0.1.9 Adreno rendering/input.
 2. Preserve accepted 0.1.11 controls/fullscreen, saved-character reopen and station
-   entry. Compare 0.1.14 baseline and the A740 driver in the same warm station scene,
-   with diagnostic HUD and separate support exports; the target is sustained 30+ FPS.
+   entry. The warmed 0.1.14 A740 repeat showed no observed improvement; its
+   station comparison is complete. Qualify the next independent optimization
+   against the exact Adreno 740/runtime; the target is sustained 30+ FPS.
 3. Qualify undock/warp/dock and audio using the current local account/world.
 
 Runtime-v1 is immutable. Server package source/build input changes require a new

@@ -374,6 +374,32 @@ through exact ARM64EC DLL identity, requested Present(1), observed IMMEDIATE mod
 shader pixels and three independent visible frames. This is a Lavapipe fixture,
 not an Adreno performance result. See current [test instructions](TESTING.md).
 
+### 0.1.13 build qualification
+
+Implementation: `16b09857058ca774f43e7b6be738f1958fd18da5` on
+`codex/wine-localhost-tls`. [Actions run 37257641115](https://github.com/Russianranger/eve-android-launcher/actions/runs/37257641115)
+passed verify, immutable server reuse, native Wine/PRoot/graphics, Android release
+build, lint, package checks and signing-anchor equality. Release publication was
+skipped for this development branch; the preview APK comes from its passing
+Actions artifact.
+
+- 164 backend tests, four server packaging tests, archive/RFB/controller and
+  ARM64EC parser checks passed; 26 Android release-unit tests passed on API33/35.
+- Baseline and throughput native shader/display fixtures passed, plus render60,
+  queue2, display60 and disablelrcpc2 trials. Each requires the pinned EC DLL
+  identities, Present(1) forced to IMMEDIATE and three independently visible
+  shader frames. CPU/no-KGSL hardware-gate negative controls passed.
+- Compiled package `io.github.russianranger.eve`, versionCode14/versionName0.1.13
+  is non-debuggable and shell-profileable. Signing certificate SHA-256 remains
+  `456c617128420fd315e1aa453d154e3d08f71a9b593d91966d21f75eed3a2c15`.
+- Delivered `EVE-Android-Launcher-0.1.13.apk`, 7,995,029 bytes, SHA-256
+  `14a30de2e2b739aae5d45a34519d802abb0c12432beafb728460635b14be1a36`.
+
+No new Thor performance or non-debuggable PRoot compatibility result exists yet.
+Continue the baseline → individual nocb/FEX/render60 → baseline comparison in
+TESTING.md. Keep accepted data/runtimes and record device results before claiming
+recovery or sustained 30+ FPS. Cached-buffer qualification remains deferred.
+
 ## Next milestones
 
 1. Preserve accepted server/world lifecycle, Wine/FEX probe, exact 125,116-resource

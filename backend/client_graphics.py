@@ -24,6 +24,23 @@ KNOWN_BINARY_HASHES = {
 }
 DLLS = {name: "dxvk-" + name + "-arm64ec.dll" for name in ("d3d11", "dxgi")}
 FILES = {*KNOWN_BINARY_HASHES, *DLLS.values(), "eve-d3d11-probe.exe"}
+A740_DRIVER = "turnip-26.0.0-a740-pc-mode.so"
+A740_PROBE = "a740-driver-probe"
+A740_FILES = {A740_DRIVER, A740_PROBE}
+A740_DEVICE_ID = 0x43050a01
+# Pin the exact checked recipe/source inputs used by the optional build.
+# No experimental binary replaces the immutable baseline driver.
+A740_EXPERIMENT = {
+    "format": 1, "name": "turnip-a740-pc-mode-1", "driver": A740_DRIVER,
+    "identityProbe": A740_PROBE,
+    "mesaSourceSha256": "2a44e98e64d5c36cec64633de2d0ec7eff64703ee25b35364ba8fcaa84f33f72",
+    "upstreamCommit": "23f94c692cb1d41a2193a80fa531922d386e8d5d",
+    "patchSha256": "1bb91daddcdbf264ee05337ef2fa4eebd544c9c3a1425810af73adf298e17b12",
+    "probeSourceSha256": "b79957f6b8f56f66877a397b7ba2d5084a44b84529da4166ae20bd7083ad5210",
+    "sourceFileSha256": "25206d1bae7e650e7266b50e107d6656e69cb640aadcb0c8e50e900241df3d09",
+    "patchedSourceFileSha256": "a59ac4f80c0109ebffa7cd766bf91661ced97bdae35771af084ce6e73831bfdc",
+    "deviceId": A740_DEVICE_ID, "registerOffset": 0x9804, "originalValue": 0x3f, "value": 0x1f1f,
+}
 MODES = ("turnip-dxvk", "software")
 LIMIT = 64 * 1024**2
 DXVK_CACHE_LIMIT = 256 * 1024**2
@@ -110,8 +127,17 @@ def verify_bundle(folder: Path) -> dict:
     if not isinstance(provenance, dict) or any(provenance.get(key) != item for key, item in SOURCE_PINS.items()):
         raise ValueError("Graphics source provenance differs from the selected immutable inputs")
     files = value.get("files")
-    if not isinstance(files, dict) or set(files) != FILES:
-        raise ValueError("Graphics bundle must contain exactly the five selected assets")
+    experiment = value.get("a740PcModeExperiment")
+    allowed = FILES
+    if "a740PcModeExperiment" in value:
+        if (not isinstance(experiment, dict)
+                or any(type(experiment.get(key)) is not int
+                       for key in ("format", "deviceId", "registerOffset", "originalValue", "value"))
+                or experiment != A740_EXPERIMENT):
+            raise ValueError("A740 driver experiment source provenance does not match its pinned inputs")
+        allowed = FILES | A740_FILES
+    if not isinstance(files, dict) or set(files) != allowed:
+        raise ValueError("Graphics bundle must contain exactly the selected assets")
     for name, info in files.items():
         asset = folder / name
         if not isinstance(info, dict) or type(info.get("sizeBytes")) is not int:
@@ -124,7 +150,7 @@ def verify_bundle(folder: Path) -> dict:
         if name in KNOWN_BINARY_HASHES and sha != KNOWN_BINARY_HASHES[name]:
             raise ValueError("Graphics asset differs from the immutable selected driver/probe")
         data = asset.read_bytes()
-        if name in KNOWN_BINARY_HASHES:
+        if name in KNOWN_BINARY_HASHES or name in A740_FILES:
             machine = struct.unpack_from("<H", data, 18)[0] if len(data) >= 64 else None
             if data[:6] != b"\x7fELF\x02\x01" or machine != 183 or info.get("machine") != 183:
                 raise ValueError("Graphics native component must be ARM64 glibc ELF")
@@ -158,9 +184,11 @@ def verify_mapped(folder: Path, state: Path) -> dict:
     return manifest
 
 
-def cache_directories(state: Path) -> tuple[Path, Path]:
+def cache_directories(state: Path, a740_pc_mode=False) -> tuple[Path, Path]:
+    if type(a740_pc_mode) is not bool:
+        raise ValueError("A740 driver selection must be a boolean")
     return (state / ("cache/dxvk-" + DXVK_VERSION + "-arm64ec"),
-            state / ("cache/mesa-" + MESA_VERSION))
+            state / ("cache/mesa-" + MESA_VERSION + ("-a740-pc-mode-1" if a740_pc_mode else "")))
 
 
 def prepare(folder: Path, state: Path, content: Path, mode: str,
@@ -211,23 +239,69 @@ def native_command(folder: Path) -> tuple[str, ...]:
     return (str(folder / "vulkan-probe"),)
 
 
+def a740_identity_command(folder: Path) -> tuple[str, ...]:
+    return (str(folder / A740_PROBE),)
+
+
+def select_driver(folder: Path, state: Path, enabled: bool,
+                  baseline_vulkan: dict | None = None, identity: dict | None = None) -> dict:
+    """Switch only this session's ICD after an explicit native A740 gate.
+
+    Both current-session baseline presentation and checked native identity are
+    required. Device names alone never authorize the experiment, and a saved
+    previous-session report is not used.
+    """
+    if type(enabled) is not bool:
+        raise ValueError("A740 driver selection must be a boolean")
+    manifest = verify_bundle(folder)
+    if enabled:
+        if manifest.get("a740PcModeExperiment") != A740_EXPERIMENT:
+            raise ValueError("This graphics bundle does not contain the pinned A740 driver experiment")
+        if not isinstance(baseline_vulkan, dict):
+            raise ValueError("The A740 experiment requires current-session native hardware identity")
+        parse_vulkan(json.dumps(baseline_vulkan))
+        if not isinstance(identity, dict):
+            raise ValueError("The A740 driver experiment requires an explicit native Adreno 740 identity")
+        observed = parse_a740_identity(json.dumps(identity))
+        if any(observed[key] != baseline_vulkan[key]
+               for key in ("vendor_id", "driver_id", "driver_version", "api_version", "software", "device")):
+            raise ValueError("The A740 native identity differs from the current Vulkan presentation device")
+    for directory in (state, state / "run", state / "cache"):
+        if not directory.is_dir() or directory.is_symlink():
+            raise ValueError("Missing or linked driver selection state directory")
+    driver = A740_DRIVER if enabled else "turnip-26.0.0.so"
+    _, mesa_cache = cache_directories(state, enabled)
+    if mesa_cache.is_symlink():
+        raise ValueError("Linked graphics cache directory is not supported")
+    mesa_cache.mkdir(parents=True, exist_ok=True)
+    atomic_json(state / "run/turnip-icd.json", {"file_format_version": "1.0.0", "ICD": {
+        "library_path": str(folder / driver), "api_version": "1.3.0"}})
+    return {"requestedA740PcMode": enabled, "a740PcMode": enabled,
+            "driver": driver, "driverSha256": manifest["files"][driver]["sha256"],
+            "mesaShaderCache": str(mesa_cache), "experimental": enabled,
+            "deviceGated": True, "hardwareGatePassed": enabled,
+            "binaryIdentityVerified": True, "nativeEffectVerified": False}
+
+
 def d3d_command(folder: Path, manifest: dict, wine: str = "/opt/wine/bin/wine") -> tuple[str, ...]:
     return (wine, str(folder / "eve-d3d11-probe.exe"), "hardware",
             "C:\\windows\\system32\\d3d11.dll", manifest["files"][DLLS["d3d11"]]["sha256"],
             "C:\\windows\\system32\\dxgi.dll", manifest["files"][DLLS["dxgi"]]["sha256"])
 
 
-def optimization_settings(mode, disable_concurrent_binning=False, disable_lrcpc2=False):
+def optimization_settings(mode, disable_concurrent_binning=False, disable_lrcpc2=False, a740_pc_mode=False):
     """Describe only fixed session assignments, not measured native effects."""
     if mode not in MODES:
         raise ValueError("Unsupported client renderer")
-    if type(disable_concurrent_binning) is not bool or type(disable_lrcpc2) is not bool:
+    if any(type(value) is not bool for value in (disable_concurrent_binning, disable_lrcpc2, a740_pc_mode)):
         raise ValueError("Client optimization selections must be booleans")
     gpu = mode == "turnip-dxvk"
     binning = disable_concurrent_binning and gpu
     lrcpc2 = disable_lrcpc2 and gpu
     return {"requestedDisableConcurrentBinning": disable_concurrent_binning,
             "requestedDisableLrcpc2": disable_lrcpc2,
+            "requestedA740PcMode": a740_pc_mode, "a740PcMode": a740_pc_mode and gpu,
+            "a740PcModeExperimental": True, "a740PcModeDeviceGated": True,
             "disableConcurrentBinning": binning, "disableLrcpc2": lrcpc2,
             "turnipDebug": "nocb" if binning else None,
             "fexHostFeatures": "disablelrcpc2" if lrcpc2 else None,
@@ -266,10 +340,10 @@ def cpu_topology(root=Path("/sys/devices/system/cpu")):
 
 def configure_environment(base, mode, folder, state,
                           performance_profile=DEFAULT_PERFORMANCE_PROFILE, diagnostic_hud=False,
-                          disable_concurrent_binning=False, disable_lrcpc2=False):
+                          disable_concurrent_binning=False, disable_lrcpc2=False, a740_pc_mode=False):
     """Prove graphics options cannot leak between software/GPU sessions."""
     performance = performance_settings(mode, performance_profile, diagnostic_hud)
-    optimizations = optimization_settings(mode, disable_concurrent_binning, disable_lrcpc2)
+    optimizations = optimization_settings(mode, disable_concurrent_binning, disable_lrcpc2, a740_pc_mode)
     env = {k:v for k,v in base.items()
            if not k.startswith(("DXVK_", "VK_", "MESA_", "LIBGL_", "TU_"))
            and k not in ("WINE_D3D_CONFIG", "GALLIUM_DRIVER", "LP_NUM_THREADS", "mesa_glthread",
@@ -279,7 +353,7 @@ def configure_environment(base, mode, folder, state,
         env.update(LIBGL_ALWAYS_SOFTWARE="1", GALLIUM_DRIVER="llvmpipe", LP_NUM_THREADS="4")
     else:
         icd = str(state / "run/turnip-icd.json")
-        dxvk_cache, mesa_cache = cache_directories(state)
+        dxvk_cache, mesa_cache = cache_directories(state, optimizations["a740PcMode"])
         env.update(VK_DRIVER_FILES=icd, VK_ICD_FILENAMES=icd, MESA_VK_WSI_DEBUG="sw",
                    DXVK_LOG_LEVEL="info", DXVK_LOG_PATH="Z:" + str(state / "logs").replace("/", "\\"),
                    DXVK_HUD=DIAGNOSTIC_HUD if performance["diagnosticHud"] else DEFAULT_HUD,
@@ -341,6 +415,23 @@ def parse_vulkan(text):
             or not isinstance(r.get("device"), str) or "adreno" not in r["device"].casefold()
             or not isinstance(r.get("driver"), str) or "turnip" not in r["driver"].casefold()):
         raise ValueError("Turnip 26 / Adreno hardware and Vulkan presentation were not verified")
+    return r
+
+
+def parse_a740_identity(text):
+    """Accept only the explicit native A740 identity, never a CPU CI fixture."""
+    r = last_report(text, "eve-a740-driver-probe-1")
+    if (r.get("mode") != "hardware" or r.get("passed") is not True
+            or not integer(r.get("device_id"), A740_DEVICE_ID, A740_DEVICE_ID)
+            or not integer(r.get("vendor_id"), 0x5143, 0x5143)
+            or not integer(r.get("driver_id"), 18, 18)
+            or not integer(r.get("driver_version"), 26 << 22, 26 << 22)
+            or not integer(r.get("api_version"), (1 << 22) | (3 << 12))
+            or r.get("software") is not False
+            or not isinstance(r.get("device"), str) or "adreno" not in r["device"].casefold()
+            or not isinstance(r.get("driver"), str) or "turnip" not in r["driver"].casefold()
+            or not isinstance(r.get("driver_info"), str) or not r["driver_info"].startswith("Mesa 26.0.0")):
+        raise ValueError("The driver experiment requires native Turnip 26 / Adreno 740 hardware identity")
     return r
 
 

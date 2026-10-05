@@ -83,13 +83,15 @@ final class RuntimeManager {
         for (String name : context.getAssets().list("")) {
             boolean graphicsDll = name.equals("dxvk-d3d11-arm64ec.dll") || name.equals("dxvk-dxgi-arm64ec.dll");
             if (name.endsWith(".py") || name.endsWith(".sh") || name.endsWith(".json") || name.endsWith(".exe") || name.startsWith("wine-crypt32-") && name.endsWith(".dll")
-                    || graphicsDll || name.equals("turnip-26.0.0.so") || name.equals("vulkan-probe")) {
+                    || graphicsDll || name.equals("turnip-26.0.0.so") || name.equals("turnip-26.0.0-a740-pc-mode.so")
+                    || name.equals("vulkan-probe") || name.equals("a740-driver-probe")) {
                 File target = new File(backend, name);
                 File staging = File.createTempFile("asset-", ".tmp", backend);
                 try {
                     try (InputStream in = context.getAssets().open(name)) { copy(in, staging); }
                     if (graphicsDll && !staging.setReadOnly()) throw new IOException("Could not protect private graphics asset");
-                    if (name.equals("vulkan-probe") && !staging.setExecutable(true, true)) throw new IOException("Could not enable native graphics probe");
+                    if ((name.equals("vulkan-probe") || name.equals("a740-driver-probe")) && !staging.setExecutable(true, true))
+                        throw new IOException("Could not enable native graphics probe");
                     java.nio.file.Files.move(staging.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING,
                             java.nio.file.StandardCopyOption.ATOMIC_MOVE);
                 } finally { staging.delete(); }

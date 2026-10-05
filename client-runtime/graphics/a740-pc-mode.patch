@@ -1,0 +1,16 @@
+# A740-table-only backport from Mesa commit
+# 23f94c692cb1d41a2193a80fa531922d386e8d5d (MR 41451).
+# The original driver remains the default. Keep the historic corruption note:
+# this optional variant needs physical Adreno 740 vertex-rendering tests.
+diff --git a/src/freedreno/common/freedreno_devices.py b/src/freedreno/common/freedreno_devices.py
+--- a/src/freedreno/common/freedreno_devices.py
++++ b/src/freedreno/common/freedreno_devices.py
+@@ -1117,7 +1117,7 @@ a740_raw_magic_regs = [
+         [A6XXRegs.REG_A6XX_SP_DBG_ECO_CNTL, 0x10000000],
+         # Blob uses 0x1f or 0x1f1f, however these values cause vertices
+         # corruption in some tests.
+-        [A6XXRegs.REG_A6XX_PC_MODE_CNTL,    0x0000003f],
++        [A6XXRegs.REG_A6XX_PC_MODE_CNTL,    0x1f1f],
+         [A6XXRegs.REG_A6XX_PC_DBG_ECO_CNTL, 0x00100000],
+         [A6XXRegs.REG_A7XX_PC_UNKNOWN_9E24, 0x21585600],
+         [A6XXRegs.REG_A7XX_VFD_DBG_ECO_CNTL, 0x00008000],

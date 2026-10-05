@@ -66,13 +66,15 @@ final class ClientRuntime {
     boolean earlyDisplayRequests() { return performanceOption("early-display-requests"); }
     boolean disableConcurrentBinning() { return performanceOption("disable-concurrent-binning"); }
     boolean disableLrcpc2() { return performanceOption("disable-lrcpc2"); }
+    boolean a740PcMode() { return renderer().equals("turnip-dxvk") && performanceOption("a740-pc-mode"); }
 
     boolean performanceOption(String key) {
-        return context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).getBoolean(key, false);
+        try { return context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).getBoolean(key, false); }
+        catch (ClassCastException ignored) { return false; }
     }
 
     void setPerformanceOption(String key, boolean enabled) {
-        if (!Arrays.asList("early-display-requests", "disable-concurrent-binning", "disable-lrcpc2").contains(key))
+        if (!Arrays.asList("early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode").contains(key))
             throw new IllegalArgumentException("Choose a supported performance option");
         if (alive() || RuntimeService.busy) throw new IllegalStateException("Stop the client before changing its performance settings");
         context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).edit().putBoolean(key, enabled).apply();
@@ -103,7 +105,7 @@ final class ClientRuntime {
         JSONObject out = new JSONObject().put("runtime", RUNTIME).put("installed", installed()).put("selectedGraphicsMode", renderer())
                 .put("selectedPerformanceProfile", performanceProfile()).put("diagnosticHud", diagnosticHud())
                 .put("earlyDisplayRequests", earlyDisplayRequests()).put("disableConcurrentBinning", disableConcurrentBinning())
-                .put("disableLrcpc2", disableLrcpc2())
+                .put("disableLrcpc2", disableLrcpc2()).put("a740PcMode", a740PcMode())
                 .put("supported_build", 3396210).put("client_launch_qualified", false)
                 .put("phase", "missing_client").put("message", "Import the complete EVE build 3396210 shared cache first");
         File status = new File(manager.clientState, "status.json");
@@ -313,15 +315,10 @@ final class ClientRuntime {
                 .put("message", "Starting EVE with " + (graphicsMode.equals("turnip-dxvk") ? "Adreno GPU rendering…" : "software recovery rendering…")).put("graphicsMode", graphicsMode).put("client_launch_qualified", false)
                 .put("performanceProfile", performanceProfile).put("diagnosticHud", diagnosticHud)
                 .put("earlyDisplayRequests", earlyDisplayRequests()).put("disableConcurrentBinning", disableConcurrentBinning())
-                .put("disableLrcpc2", disableLrcpc2())
+                .put("disableLrcpc2", disableLrcpc2()).put("a740PcMode", a740PcMode())
                 .put("login_qualified", false).put("graphics_qualified", false);
         RuntimeManager.text(new File(manager.clientState, "run/status.json"), pending.toString());
-        List<String> launch = new ArrayList<>(Arrays.asList("/usr/bin/python3.11", "/opt/eve-android/client_runtime.py", "start",
-                "--content", "/client", "--state", "/client-state", "--server-state", "/server-state", "--graphics-mode", graphicsMode,
-                "--performance-profile", performanceProfile));
-        if (diagnosticHud) launch.add("--diagnostic-hud");
-        if (disableConcurrentBinning()) launch.add("--disable-concurrent-binning");
-        if (disableLrcpc2()) launch.add("--disable-lrcpc2");
+        List<String> launch = launchCommand(graphicsMode, performanceProfile, diagnosticHud);
         session = manager.guest(manager.clientRoot, sessionBindings(graphicsMode), launch,
                 new File(manager.clientState, "logs/client-supervisor.log"), true);
         long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(6);
@@ -342,6 +339,17 @@ final class ClientRuntime {
             requestStop();
             throw error;
         }
+    }
+
+    List<String> launchCommand(String graphicsMode, String performanceProfile, boolean diagnosticHud) {
+        List<String> launch = new ArrayList<>(Arrays.asList("/usr/bin/python3.11", "/opt/eve-android/client_runtime.py", "start",
+                "--content", "/client", "--state", "/client-state", "--server-state", "/server-state", "--graphics-mode", graphicsMode,
+                "--performance-profile", performanceProfile));
+        if (diagnosticHud) launch.add("--diagnostic-hud");
+        if (disableConcurrentBinning()) launch.add("--disable-concurrent-binning");
+        if (disableLrcpc2()) launch.add("--disable-lrcpc2");
+        if (graphicsMode.equals("turnip-dxvk") && a740PcMode()) launch.add("--a740-pc-mode");
+        return launch;
     }
 
     void requestStop() throws IOException {
@@ -443,8 +451,7 @@ final class ClientRuntime {
                 || !manifest.optString("mesa").equals("26.0.0") || !manifest.optString("dxvk").equals("2.4.1"))
             throw new IOException("GPU assets do not match the pinned runtime");
         JSONObject files = manifest.getJSONObject("files");
-        String[] names = {"turnip-26.0.0.so", "vulkan-probe", "dxvk-d3d11-arm64ec.dll", "dxvk-dxgi-arm64ec.dll", "eve-d3d11-probe.exe"};
-        if (files.length() != names.length) throw new IOException("Incomplete GPU bundle");
+        String[] names = graphicsAssetNames(manifest, a740PcMode());
         for (String name : names) {
             File source = new File(manager.backend, name);
             JSONObject item = files.getJSONObject(name);
@@ -459,6 +466,26 @@ final class ClientRuntime {
             }
         }
         return result;
+    }
+
+    static String[] graphicsAssetNames(JSONObject manifest, boolean experimentEnabled) throws Exception {
+        List<String> names = new ArrayList<>(Arrays.asList("turnip-26.0.0.so", "vulkan-probe", "dxvk-d3d11-arm64ec.dll",
+                "dxvk-dxgi-arm64ec.dll", "eve-d3d11-probe.exe"));
+        if (manifest.has("a740PcModeExperiment")) {
+            JSONObject experiment = manifest.optJSONObject("a740PcModeExperiment");
+            if (experiment == null || !Integer.valueOf(1).equals(experiment.opt("format"))
+                    || !experiment.optString("name").equals("turnip-a740-pc-mode-1")
+                    || !experiment.optString("driver").equals("turnip-26.0.0-a740-pc-mode.so")
+                    || !experiment.optString("identityProbe").equals("a740-driver-probe")
+                    || !experiment.optString("upstreamCommit").equals("23f94c692cb1d41a2193a80fa531922d386e8d5d"))
+                throw new IOException("A740 driver experiment does not match the pinned change");
+            names.add("turnip-26.0.0-a740-pc-mode.so");
+            names.add("a740-driver-probe");
+        } else if (experimentEnabled) throw new IOException("GPU bundle does not contain the A740 driver experiment");
+        JSONObject files = manifest.getJSONObject("files");
+        if (files.length() != names.size()) throw new IOException("Incomplete GPU bundle");
+        for (String name : names) if (!files.has(name)) throw new IOException("Missing GPU asset: " + name);
+        return names.toArray(new String[0]);
     }
 
     private void runPreparation(String action, RuntimeManager.Progress progress) throws Exception {

@@ -5,7 +5,7 @@ on:
   pull_request:
   workflow_dispatch:
 env:
-  EVE_APP_VERSION: '0.1.13'
+  EVE_APP_VERSION: '0.1.14'
 permissions:
   contents: read
 defaults:
@@ -171,6 +171,10 @@ jobs:
           path: |
             out/client-graphics-build.log
             out/client-graphics-check.json
+            out/a740-identity*.json
+            out/a740-identity*.log
+            out/a740-link-compatibility.json
+            out/turnip-a740-no-kgsl.*
             out/dxvk.conf
             out/qualified-runtime-identity.json
             out/d3d11-*.json
@@ -198,6 +202,8 @@ jobs:
           path: |
             backend/client-graphics-bundle.json
             backend/turnip-26.0.0.so
+            backend/turnip-26.0.0-a740-pc-mode.so
+            backend/a740-driver-probe
             backend/vulkan-probe
             backend/dxvk-d3d11-arm64ec.dll
             backend/dxvk-dxgi-arm64ec.dll

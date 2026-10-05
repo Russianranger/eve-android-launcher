@@ -16,6 +16,11 @@ final class SupportExport {
         RuntimeManager runtime = RuntimeManager.get(context);
         LinkedHashMap<String, File> result = new LinkedHashMap<>();
         result.put("operations.log", new File(runtime.home, "operations.log"));
+        for (String name : new String[]{MemoryPressure.EVENTS, MemoryPressure.LIVE})
+            result.put("client/logs/" + name, MemoryPressure.file(context, name));
+        result.put("client/logs/client-graphicsIdentity.log", new File(runtime.clientState, "logs/client-graphicsIdentity.log"));
+        result.put("client/graphics-preflight.json", new File(runtime.clientState, "graphics-preflight.json"));
+        result.put("client/run/turnip-icd.json", new File(runtime.clientState, "run/turnip-icd.json"));
         for (String name : new String[]{"status.json", "readiness.json"}) result.put("server/run/" + name, new File(runtime.serverState, "run/" + name));
         for (String name : new String[]{"prepared.json"}) result.put("server/" + name, new File(runtime.serverState, name));
         gatherLogs(result, new File(runtime.serverState, "logs"), "server/logs/", 0);

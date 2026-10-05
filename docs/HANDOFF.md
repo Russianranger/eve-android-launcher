@@ -1,5 +1,22 @@
 # EVE Android Launcher handoff
 
+## Current 0.1.14 continuation
+
+The October 5 four-run evidence is recorded in [DEVICE-20261005.md](DEVICE-20261005.md).
+The baseline was an Android LOW_MEMORY kill. Other exports show code-0 EVE
+exits with completed cleanup; they do not prove three more crashes. Warm RSS
+plateaus near 3 GiB, with recurring Adreno completion waits and no warm compiler
+work. Heat was observed; throttling is not established by the old logs.
+
+0.1.14 adds best-effort Android 13 critical running-memory protection, bounded
+memory/thermal histories, correct observed code-0 exit reporting, and an optional
+Mesa 26.0.0 A740 register backport. The original driver stays default. Exact
+Thor chip ID 0x43050a01 is required under the baseline driver before selection,
+followed by the existing native Vulkan/D3D11/pixel/display checks under the new
+driver. Physical geometry and performance remain unqualified; related register
+values historically caused vertex corruption. Follow the two-run TESTING.md
+comparison. Preserve all accepted account/world/runtime/fullscreen/control gates.
+
 ## Initial request and scope
 
 Integrate the supplied EVE.js 0.12.9 server into the initially empty
@@ -395,17 +412,16 @@ Actions artifact.
 - Delivered `EVE-Android-Launcher-0.1.13.apk`, 7,995,029 bytes, SHA-256
   `14a30de2e2b739aae5d45a34519d802abb0c12432beafb728460635b14be1a36`.
 
-No new Thor performance or non-debuggable PRoot compatibility result exists yet.
-Continue the baseline → individual nocb/FEX/render60 → baseline comparison in
-TESTING.md. Keep accepted data/runtimes and record device results before claiming
-recovery or sustained 30+ FPS. Cached-buffer qualification remains deferred.
+At that build's delivery, no new Thor performance or non-debuggable PRoot result
+existed. The October 5 exports now supersede that pending comparison; see the
+0.1.14 continuation above. Cached-buffer qualification remains deferred.
 
 ## Next milestones
 
 1. Preserve accepted server/world lifecycle, Wine/FEX probe, exact 125,116-resource
    import, private TLS, client startup/local login and 0.1.9 Adreno rendering/input.
 2. Preserve accepted 0.1.11 controls/fullscreen, saved-character reopen and station
-   entry. Compare 0.1.13 baseline and isolated experiments in the same warm station scene,
+   entry. Compare 0.1.14 baseline and the A740 driver in the same warm station scene,
    with diagnostic HUD and separate support exports; the target is sustained 30+ FPS.
 3. Qualify undock/warp/dock and audio using the current local account/world.
 

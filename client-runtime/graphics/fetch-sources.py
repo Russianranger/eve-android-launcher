@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
@@ -38,6 +39,17 @@ BINARIES = {
 SOURCE_ARCHIVES = {
     "mesa-26.0.0.tar.xz": "2a44e98e64d5c36cec64633de2d0ec7eff64703ee25b35364ba8fcaa84f33f72",
     "glslang-15.1.0.tar.gz": "4bdcd8cdb330313f0d4deed7be527b0ac1c115ff272e492853a6e98add61b4bc",
+}
+A740_EXPERIMENT = {
+    "format": 1, "name": "turnip-a740-pc-mode-1",
+    "driver": "turnip-26.0.0-a740-pc-mode.so", "identityProbe": "a740-driver-probe",
+    "mesaSourceSha256": SOURCE_ARCHIVES["mesa-26.0.0.tar.xz"],
+    "upstreamCommit": "23f94c692cb1d41a2193a80fa531922d386e8d5d",
+    "patchSha256": "1bb91daddcdbf264ee05337ef2fa4eebd544c9c3a1425810af73adf298e17b12",
+    "probeSourceSha256": "b79957f6b8f56f66877a397b7ba2d5084a44b84529da4166ae20bd7083ad5210",
+    "sourceFileSha256": "25206d1bae7e650e7266b50e107d6656e69cb640aadcb0c8e50e900241df3d09",
+    "patchedSourceFileSha256": "a59ac4f80c0109ebffa7cd766bf91661ced97bdae35771af084ce6e73831bfdc",
+    "deviceId": 0x43050a01, "registerOffset": 0x9804, "originalValue": 0x3f, "value": 0x1f1f,
 }
 
 
@@ -72,6 +84,41 @@ def file_by_suffix(archive: tarfile.TarFile, suffix: str) -> bytes:
 
 def git(*arguments: str, cwd: Path | None = None) -> str:
     return subprocess.check_output(["git", *arguments], cwd=cwd, text=True).strip()
+
+
+def prepare_a740_sources(source: Path, recipe: Path) -> None:
+    """Apply one checksum-locked A740 table change to the exact baseline source."""
+    original = source / "turnip-original-source"
+    for name, checksum in SOURCE_ARCHIVES.items():
+        checked((original / name).read_bytes(), checksum, name)
+    patch = recipe / "a740-pc-mode.patch"
+    probe = recipe / "a740-driver-probe.c"
+    checked(patch.read_bytes(), A740_EXPERIMENT["patchSha256"], patch.name)
+    checked(probe.read_bytes(), A740_EXPERIMENT["probeSourceSha256"], probe.name)
+    mesa = source / "mesa-a740"
+    glslang = source / "glslang-a740"
+    mesa.mkdir()
+    glslang.mkdir()
+    # These are the immutable, verified upstream source archives, never user
+    # uploads. The applied file itself is checked both before and after patching.
+    subprocess.run(["tar", "--no-same-owner", "--no-same-permissions", "-xf",
+                    str(original / "mesa-26.0.0.tar.xz"), "-C", str(mesa)], check=True)
+    subprocess.run(["tar", "--no-same-owner", "--no-same-permissions", "-xf",
+                    str(original / "glslang-15.1.0.tar.gz"), "-C", str(glslang)], check=True)
+    checkout = mesa / "mesa-26.0.0"
+    changed = checkout / "src/freedreno/common/freedreno_devices.py"
+    before = checked(changed.read_bytes(), A740_EXPERIMENT["sourceFileSha256"], changed.name)
+    subprocess.run(["git", "apply", "--check", str(patch)], cwd=checkout, check=True)
+    subprocess.run(["git", "apply", str(patch)], cwd=checkout, check=True)
+    after = checked(changed.read_bytes(), A740_EXPERIMENT["patchedSourceFileSha256"], changed.name)
+    start = before.index(b"a740_raw_magic_regs = [")
+    end = before.index(b"\nadd_gpus(", start)
+    expected = before[:start] + before[start:end].replace(
+        b"[A6XXRegs.REG_A6XX_PC_MODE_CNTL,    0x0000003f]",
+        b"[A6XXRegs.REG_A6XX_PC_MODE_CNTL,    0x1f1f]", 1) + before[end:]
+    if before == after or after != expected:
+        raise ValueError("A740 backport differs from the single selected register change")
+    (source / "a740-pc-mode-experiment.json").write_text(json.dumps(A740_EXPERIMENT, indent=2) + "\n")
 
 
 def fetch_sources(source: Path, output: Path) -> None:
@@ -109,6 +156,7 @@ def fetch_sources(source: Path, output: Path) -> None:
         for name in ("vulkan/Dockerfile", "vulkan/Dockerfile.26", "vulkan/vulkan_probe.c", "build-vulkan.sh"):
             content = file_by_suffix(original, name)
             (turnip_sources / Path(name).name).write_bytes(content)
+    prepare_a740_sources(source, Path("/graphics-recipe"))
     checkout = source / "dxvk"
     git("init", str(checkout))
     git("remote", "add", "origin", "https://github.com/doitsujin/dxvk.git", cwd=checkout)
@@ -132,6 +180,7 @@ def fetch_sources(source: Path, output: Path) -> None:
         "turnipVersion": "26.0.0", "mesaSourceSha256": SOURCE_ARCHIVES["mesa-26.0.0.tar.xz"],
         "turnipOriginalBinaryRelease": RELEASE, "turnipOriginalBundleSha256": BUNDLE_HASH,
         "turnipOriginalCorrespondingSourcesSha256": SOURCES_HASH,
+        "a740PcModeExperiment": A740_EXPERIMENT,
         "licenses": {"dxvk": "Zlib", "mesa": "MIT and source component notices",
                      "vulkanProbe": "Original project probe source and accompanying notices retained"},
     }
@@ -203,12 +252,52 @@ def pe_diagnostics(data: bytes) -> dict:
         return {'diagnosticError': str(error)}
 
 
+def native_link_requirements(path: Path) -> dict:
+    """Read the actual ELF dynamic requirements, not its filename or ldd guess."""
+    dynamic = subprocess.check_output(["readelf", "--dynamic", str(path)], text=True)
+    versions = subprocess.check_output(["readelf", "--version-info", str(path)], text=True)
+    needed = sorted(set(re.findall(r"\(NEEDED\).*Shared library: \[([^]]+)\]", dynamic)))
+    requirements = {}
+    # These libraries carry the Debian/glibc runtime ABI. The graphics driver
+    # is rebuilt with the baseline's bookworm compiler/build flags.
+    for family in ("GLIBC", "GLIBCXX", "CXXABI"):
+        values = [tuple(map(int, value.split(".")))
+                  for value in re.findall(r"Name: " + family + r"_([0-9.]+)\b", versions)]
+        if values:
+            requirements[family] = max(values)
+    return {"needed": needed, "versionRequirements": requirements}
+
+
+def verify_a740_link_compatibility(assets: Path) -> dict:
+    """Reject new SONAME/ABI requirements beyond the accepted native components."""
+    pairs = (("turnip-26.0.0.so", A740_EXPERIMENT["driver"]),
+             ("vulkan-probe", A740_EXPERIMENT["identityProbe"]))
+    report = {}
+    for original, variant in pairs:
+        baseline = native_link_requirements(assets / original)
+        selected = native_link_requirements(assets / variant)
+        if not set(selected["needed"]).issubset(baseline["needed"]):
+            raise ValueError("Optional A740 native component adds a dynamic library requirement: " + variant)
+        for family, version in selected["versionRequirements"].items():
+            if version > baseline["versionRequirements"].get(family, (0,)):
+                raise ValueError("Optional A740 native component requires a newer runtime ABI: " + variant + " " + family)
+        linked = subprocess.check_output(["ldd", str(assets / variant)], text=True, stderr=subprocess.STDOUT)
+        if "not found" in linked:
+            raise ValueError("Optional A740 native component has unresolved runtime dependencies: " + variant)
+        report[variant] = {"baseline": original, "requirements": selected,
+                           "newDynamicDependencies": False, "newRuntimeAbiRequired": False}
+    return report
+
+
 def make_manifest(assets):
     names = {
         'turnip-26.0.0.so': 'elf', 'vulkan-probe': 'elf',
+        'turnip-26.0.0-a740-pc-mode.so': 'elf', 'a740-driver-probe': 'elf',
         'dxvk-d3d11-arm64ec.dll': 'ec', 'dxvk-dxgi-arm64ec.dll': 'ec',
         'eve-d3d11-probe.exe': 'x64',
     }
+    compatibility = verify_a740_link_compatibility(assets)
+    (assets.parent / 'a740-link-compatibility.json').write_text(json.dumps(compatibility, indent=2) + '\n')
     files = {}
     for name, kind in names.items():
         data = (assets / name).read_bytes()
@@ -235,6 +324,7 @@ def make_manifest(assets):
         'fex_commit': '320c5f18475b0c8a7e99c51a5fdc5b5e35b147ab',
         'mesa': '26.0.0', 'dxvk': '2.4.1', 'dxvk_commit': DXVK_COMMIT,
         'architecture': 'arm64ec-and-arm64-glibc', 'kmd': 'kgsl', 'files': files,
+        'a740PcModeExperiment': A740_EXPERIMENT,
         'baselineRuntimeSha256': 'f036c00a290abb953bec26be80c4d8fe492fd986e7a589c51008124432c8641e',
         'toolchain': {'name': 'llvm-mingw-20250920-ucrt-ubuntu-22.04-aarch64',
                       'sha256': 'bce5cc755c613515fd44e1ee9523123d854103abae147571adb645450036274d'},
@@ -247,7 +337,7 @@ def make_manifest(assets):
                              'reusedCorrespondingSourcesSha256': SOURCES_HASH},
     }
     (assets / 'client-graphics-bundle.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    print('Validated native EC code ranges and all five packaged graphics files.', flush=True)
+    print('Validated native EC code ranges, original graphics bytes and optional A740 driver/probe.', flush=True)
 
 
 def runtime_identity(output):
@@ -291,4 +381,3 @@ if __name__ == '__main__':
         runtime_identity(Path(sys.argv[2]))
     else:
         raise SystemExit('fetch-sources.py fetch SOURCE OUTPUT | manifest ASSETS | runtime-identity OUTPUT_JSON')
-

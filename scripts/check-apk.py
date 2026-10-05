@@ -60,6 +60,7 @@ def check(path: Path, manifest_tree: Path) -> None:
             "assets/client_diagnostics.py",
             "assets/eve-client-window.exe",
             "assets/client-graphics-bundle.json", "assets/turnip-26.0.0.so", "assets/vulkan-probe",
+            "assets/turnip-26.0.0-a740-pc-mode.so", "assets/a740-driver-probe",
             "assets/dxvk-d3d11-arm64ec.dll", "assets/dxvk-dxgi-arm64ec.dll", "assets/eve-d3d11-probe.exe",
         )
         for name in required:
@@ -92,6 +93,8 @@ def check(path: Path, manifest_tree: Path) -> None:
                 (assets / name).write_bytes(archive.read("assets/" + name))
             wine_trust_overlay.verify(assets / "wine-trust-overlay.json")
             for name in (*client_graphics.FILES, "client-graphics-bundle.json"):
+                (assets / name).write_bytes(archive.read("assets/" + name))
+            for name in (client_graphics.A740_DRIVER, client_graphics.A740_PROBE):
                 (assets / name).write_bytes(archive.read("assets/" + name))
             client_graphics.verify_bundle(assets)
     print(f"Verified non-debuggable profileable ARM64 APK and server/client backend assets: {path}")

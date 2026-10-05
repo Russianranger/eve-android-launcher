@@ -20,7 +20,7 @@ import threading
 import time
 import unittest
 from unittest import mock
-from test_client_graphics import d3d_success, display_success, vulkan_success
+from test_client_graphics import a740_identity, d3d_success, display_success, vulkan_success
 
 BACKEND = Path(__file__).resolve().parents[1] / "backend/client_runtime.py"
 sys.path.insert(0, str(BACKEND.parent))
@@ -325,6 +325,75 @@ class ClientRuntimeTests(unittest.TestCase):
         self.assertFalse((self.state / "graphicsD3d.pid").exists())
         self.assertFalse((self.state / "client.pid").exists())
 
+    def test_a740_session_requires_current_identity_and_selected_driver_presentation(self):
+        for fault in (None, "wrong-chip", "variant-device", "stop"):
+            with self.subTest(fault=fault):
+                selected = self.settings(graphics=True)
+                runtime = MODULE.Runtime(MODULE.Settings(**{**selected.__dict__, "a740_pc_mode": True}))
+                runtime.run.mkdir(exist_ok=True)
+                runtime.logs.mkdir(exist_ok=True)
+                runtime.graphics_bundle = json.loads((self.state / "fixture-graphics.json").read_text())
+                stages = []
+                switched = False
+
+                def driver_gate(folder, state, enabled, baseline, identity):
+                    nonlocal switched
+                    self.assertEqual(identity, a740_identity())
+                    self.assertEqual(baseline, vulkan_success())
+                    self.assertTrue(enabled)
+                    switched = True
+                    if fault == "stop": runtime.request_stop()
+                    return {"a740PcMode": True, "driver": MODULE.client_graphics.A740_DRIVER}
+
+                def qualification(role, command, env, timeout):
+                    stages.append(role)
+                    if role == "graphicsVulkan":
+                        result = vulkan_success()
+                        if switched and fault == "variant-device": result["device"] += " other device"
+                        (runtime.logs / "client-graphicsVulkan.log").write_text(json.dumps(result))
+                    elif role == "graphicsIdentity":
+                        result = a740_identity()
+                        if fault == "wrong-chip": result["device_id"] = 0x740
+                        (runtime.logs / "client-graphicsIdentity.log").write_text(json.dumps(result))
+                    elif role == "graphicsD3d":
+                        (runtime.logs / "client-graphicsD3d-helper.log").write_text(json.dumps(d3d_success()))
+                        (runtime.run / "graphics-display.json").write_text(json.dumps(display_success()))
+                        (runtime.logs / "client-graphicsD3d-helper-errors.log").write_text(
+                            "info: dxgi.maxFrameRate = 30\ninfo: dxgi.maxFrameLatency = 1\n"
+                            "info: dxgi.syncInterval = 0\ninfo: Present mode: VK_PRESENT_MODE_IMMEDIATE_KHR\n")
+
+                with mock.patch.object(runtime, "wait_graphics", side_effect=qualification), \
+                        mock.patch.object(runtime, "status"), \
+                        mock.patch.object(MODULE.client_graphics, "verify_mapped"), \
+                        mock.patch.object(MODULE.client_graphics, "select_driver", side_effect=driver_gate) as gate:
+                    if fault:
+                        with self.assertRaises((ValueError, MODULE.RuntimeErrorDetail, InterruptedError)):
+                            runtime.run_graphics()
+                        self.assertNotIn("graphicsD3d", stages)
+                        self.assertEqual(gate.call_count, 0 if fault == "wrong-chip" else 1)
+                    else:
+                        report = runtime.run_graphics()
+                        self.assertTrue(report["driverSelection"]["a740PcMode"])
+                        self.assertTrue(report["hardwarePreflightPassed"])
+                        self.assertTrue(report["display"]["display_pixels_verified"])
+                        self.assertEqual(stages, ["graphicsVulkan", "graphicsIdentity", "graphicsVulkan", "graphicsD3d"])
+
+    def test_a740_cli_boolean_is_independent_and_software_cannot_select_driver(self):
+        with mock.patch.object(MODULE, "Runtime") as constructor, mock.patch.object(MODULE.signal, "signal"):
+            self.assertEqual(MODULE.main(["start", "--a740-pc-mode"]), 0)
+            selected = constructor.call_args.args[0]
+            self.assertTrue(selected.a740_pc_mode)
+            self.assertFalse(selected.disable_concurrent_binning)
+            self.assertFalse(selected.disable_lrcpc2)
+        with mock.patch.object(MODULE, "Runtime") as constructor, \
+                mock.patch("sys.stderr", new=io.StringIO()), self.assertRaises(SystemExit):
+            MODULE.main(["start", "--a740-pc-mode", "0x1f1f"])
+        constructor.assert_not_called()
+        runtime = MODULE.Runtime(MODULE.Settings(graphics_mode="software", a740_pc_mode=True))
+        with mock.patch.object(MODULE.client_graphics, "select_driver") as gate:
+            self.assertFalse(runtime.run_graphics()["optimizations"]["a740PcMode"])
+            gate.assert_not_called()
+
     def test_server_loss_after_graphics_prevents_eve(self):
         process = self.launch("graphics-server-lost", graphics=True)
         self.assertEqual(process.wait(timeout=5), 1)
@@ -509,6 +578,21 @@ class ClientRuntimeTests(unittest.TestCase):
         failed = self.wait_status("failed")
         self.assertIn("client exited unexpectedly with code 0", failed["error"])
         self.assertFalse((self.state / "launch-observation.json").exists())
+
+    def test_observed_client_exit_zero_cleans_session_without_reporting_failure(self):
+        process = self.launch()
+        running = self.wait_status("running")
+        os.kill(running["clientIdentity"]["pid"], signal.SIGTERM)
+        self.assertEqual(process.wait(timeout=4), 0)
+        stopped = self.wait_status("stopped")
+        self.assertTrue(stopped["cleanShutdown"])
+        self.assertEqual(stopped["exitReason"], "client-exit")
+        self.assertEqual(stopped["clientExitCode"], 0)
+        self.assertNotIn("error", stopped)
+        for role in ("client", "display", "wineServer"):
+            self.assertFalse(MODULE.identity_alive(running[role + "Identity"]))
+        self.assertFalse((self.state / "run/processes.json").exists())
+        self.assertEqual((self.content / "keep-client-files").read_text(), "unchanged")
 
     def test_unexpected_client_exit_reaps_inherited_orphan_group(self):
         process = self.launch("crash-orphan")
@@ -757,6 +841,27 @@ class ClientRuntimeTests(unittest.TestCase):
         value.update(changes)
         runtime.window_receipt.write_text(json.dumps(value))
         return value
+
+    def test_normal_window_exit_requires_observed_session_bound_zero_receipt(self):
+        runtime = self.window_runtime()
+        self.write_window_receipt(runtime)
+        runtime.check_window_receipt()
+        self.write_window_receipt(runtime, phase="child_exited", childExitCode=0)
+        with self.assertRaises(MODULE.RuntimeErrorDetail):
+            runtime.check_window_receipt()
+        with self.assertRaises(MODULE.ClientClosed):
+            runtime.check_window_receipt(allow_normal_exit=True)
+        self.assertEqual(runtime.window_report["childExitCode"], 0)
+        for change in ({"childExitCode": 23}, {"childExitCode": None},
+                       {"session": "b" * 32}, {"childWindowsPid": 108}):
+            with self.subTest(change=change):
+                self.write_window_receipt(runtime, phase="child_exited", **{"childExitCode": 0, **change})
+                with self.assertRaises(MODULE.RuntimeErrorDetail):
+                    runtime.check_window_receipt(allow_normal_exit=True)
+        runtime.children["client"] = mock.Mock(poll=mock.Mock(return_value=0), returncode=0)
+        self.write_window_receipt(runtime)
+        with self.assertRaisesRegex(MODULE.RuntimeErrorDetail, "without EVE's final exit receipt"):
+            runtime.check_child("client", allow_normal_exit=True)
 
     def test_production_wrapper_launch_clears_stale_receipt_and_scopes_nonce(self):
         runtime = self.window_runtime()

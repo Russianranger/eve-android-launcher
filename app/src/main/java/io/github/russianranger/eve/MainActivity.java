@@ -134,6 +134,8 @@ public final class MainActivity extends Activity {
             performanceOption(performance, "Request next display frame early", "early-display-requests");
             performanceOption(performance, "Disable concurrent binning (Adreno experiment)", "disable-concurrent-binning");
             performanceOption(performance, "Use alternate CPU load instructions (FEX experiment)", "disable-lrcpc2");
+            performanceOption(performance, "Use A740 driver experiment", "a740-pc-mode");
+            performance.addView(label("Optional A740 driver change. If vertices or shapes become corrupted, stop the client and turn it off.", 13, 0xffb9ced1));
             diagnosticHud = new CheckBox(this); diagnosticHud.setText("Show frame-time and GPU diagnostics"); diagnosticHud.setTextColor(0xffeef8fa);
             diagnosticHud.setChecked(new ClientRuntime(this).diagnosticHud()); performance.addView(diagnosticHud);
             diagnosticHud.setOnCheckedChangeListener((button, checked) -> {

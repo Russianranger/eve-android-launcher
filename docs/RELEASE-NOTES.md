@@ -1,3 +1,30 @@
+# EVE Android Launcher 0.1.14 — memory-pressure handling and A740 experiment
+
+The October 5 baseline was killed by Android for low memory; the other exports
+show EVE returning code 0 and completed cleanup. Warm memory settles near 3 GiB,
+while graphics completion threads repeatedly wait on the GPU. Temperature rise
+was observed, but the old logs cannot establish throttling or an ongoing leak.
+
+This update handles Android 13 critical running-memory callbacks asynchronously
+through orderly client shutdown, keeps the server running, and retains bounded
+memory/thermal histories. Ordinary background/navigation does not stop a valid
+session. An abrupt Android kill can occur without delivering that callback.
+Observed EVE exits with code 0 now report stopped; early/nonzero exits still fail.
+
+An optional, off-by-default A740 driver uses the original Mesa 26.0.0 source with
+only the A740 primitive-processing register change from upstream commit
+23f94c692cb1d41a2193a80fa531922d386e8d5d. The original driver remains available.
+The experiment requires exact native device identity and then repeats Vulkan,
+D3D11 shader/readback and visible-display qualification. It has a separate Mesa
+shader cache and needs physical geometry/performance testing; related register
+values historically caused vertex corruption. No improvement is promised.
+
+Install in place and follow the two-run comparison in TESTING.md. Preserve the
+accepted runtime, prefix, imported cache, character, fullscreen and controls.
+Do not repeat the earlier four-option matrix. Raising the cap to 60 helped little
+in the supplied delivery measurements; binning delivered most updates but those
+lifetime counters do not establish an engine-FPS winner.
+
 # EVE Android Launcher 0.1.12 — performance profiles and adaptive app icon
 
 The October 4 Thor test accepts 0.1.11 fullscreen, controls, login, saved-character

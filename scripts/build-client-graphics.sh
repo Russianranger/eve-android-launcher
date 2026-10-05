@@ -80,6 +80,16 @@ test -f "$VK_DRIVER_FILES"
 # x64 -> native EC D3D11/DXGI -> Wine Vulkan -> Xvnc, not Thor GPU performance.
 /graphics-out/assets/vulkan-probe --allow-software \
   > /graphics-out/vulkan-fixture.json 2> /graphics-out/vulkan-fixture.log
+# This new helper only reads exact native adapter identity. A software fixture
+# must identify itself as such, and retail hardware mode must fail on this CI
+# host before any optional A740 driver can be selected.
+/graphics-out/assets/a740-driver-probe --fixture \
+  > /graphics-out/a740-identity-cpu-fixture.json 2> /graphics-out/a740-identity-cpu-fixture.log
+if /graphics-out/assets/a740-driver-probe \
+    > /graphics-out/a740-identity-hardware-rejection.json 2> /graphics-out/a740-identity-hardware-rejection.log; then
+  echo 'A740 identity gate incorrectly accepted the CI software adapter' >&2
+  exit 1
+fi
 python3 /graphics-tests/graphics_present.py --port 5991 \
   --report /graphics-out/d3d11-rfb-presentation.json \
   --stdout /graphics-out/d3d11-fixture.json --stderr /graphics-out/d3d11-fixture.log \
@@ -177,6 +187,26 @@ if /graphics-out/assets/vulkan-probe --allow-software > /graphics-out/turnip-no-
   echo 'Turnip unexpectedly passed without KGSL; inspect the forced ICD and hardware gate' >&2
   exit 1
 fi
+# Load the freshly built optional ICD on native ARM64 with the same loader.
+# Absence of KGSL must still fail; this is not a physical A740 qualification.
+python3 - <<'PY'
+import json
+from pathlib import Path
+Path('/graphics-out/turnip-a740-icd.json').write_text(json.dumps({
+  'file_format_version': '1.0.0', 'ICD': {
+    'library_path': '/graphics-out/assets/turnip-26.0.0-a740-pc-mode.so', 'api_version': '1.3.0'}}))
+PY
+export VK_DRIVER_FILES=/graphics-out/turnip-a740-icd.json VK_ICD_FILENAMES=/graphics-out/turnip-a740-icd.json
+if /graphics-out/assets/a740-driver-probe --fixture \
+    > /graphics-out/a740-identity-no-kgsl.json 2> /graphics-out/a740-identity-no-kgsl.log; then
+  echo 'Optional A740 driver incorrectly accepted a software fallback without KGSL' >&2
+  exit 1
+fi
+if /graphics-out/assets/vulkan-probe --allow-software \
+    > /graphics-out/turnip-a740-no-kgsl.json 2> /graphics-out/turnip-a740-no-kgsl.log; then
+  echo 'Optional A740 driver unexpectedly rendered without KGSL' >&2
+  exit 1
+fi
 python3 - <<'PY'
 import json
 import re
@@ -233,6 +263,16 @@ report = {'passed': True, 'qualification': 'native-arm64-ec-lavapipe-ci-only',
           'observedPresentModes': present_modes,
           'baselineRuntimeIdentity': json.loads((folder / 'qualified-runtime-identity.json').read_text()),
           'cpuHardwareGateRejected': True, 'turnipWithoutKgslRejected': True}
+identity_fixture = one_json('a740-identity-cpu-fixture.json')
+assert identity_fixture['helper'] == 'eve-a740-driver-probe-1'
+assert identity_fixture['mode'] == 'fixture' and identity_fixture['passed'] is True
+assert identity_fixture['software'] is True and type(identity_fixture['device_id']) is int
+report['a740PcModeExperiment'] = {
+    'identityFixture': identity_fixture, 'cpuHardwareGateRejected': True,
+    'driverWithoutKgslRejected': True, 'identityOnly': True, 'physicalThorQualified': False,
+    'sourceProvenance': json.loads((folder / 'assets/client-graphics-bundle.json').read_text())['a740PcModeExperiment'],
+    'linkCompatibility': json.loads((folder / 'a740-link-compatibility.json').read_text()),
+}
 report['performance'] = {'requestedProfile': 'throughput', 'performanceProfile': 'throughput',
                          'targetFrameRate': 60, 'maxFrameLatency': 2, 'displayFrameRate': 60,
                          'diagnosticHud': False}
@@ -289,6 +329,14 @@ client_graphics.verify_bundle(Path('backend'))
 client_graphics.parse_display(Path('out/d3d11-rfb-presentation.json').read_text())
 report = json.loads(Path('out/client-graphics-check.json').read_text())
 assert report['passed'] is True and report['physicalThorQualified'] is False
+assert report['a740PcModeExperiment']['sourceProvenance'] == client_graphics.A740_EXPERIMENT
+assert report['a740PcModeExperiment']['physicalThorQualified'] is False
+try:
+    client_graphics.parse_a740_identity(Path('out/a740-identity-cpu-fixture.json').read_text())
+except ValueError:
+    pass
+else:
+    raise SystemExit('Production A740 selection parser accepted the software fixture')
 policy = client_graphics.parse_performance_policy(Path('out/d3d11-fixture.log').read_text(), 'throughput')
 assert all(report.get(key) == value for key, value in policy.items())
 assert report['performance'] == client_graphics.performance_settings('turnip-dxvk', 'throughput')

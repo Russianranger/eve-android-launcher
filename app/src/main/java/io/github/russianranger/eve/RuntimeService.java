@@ -7,6 +7,10 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.*;
 import java.io.*;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** A single worker owns setup; the service remains foreground for both runtime sessions. */
 public final class RuntimeService extends Service {
@@ -19,6 +23,43 @@ public final class RuntimeService extends Service {
     private volatile String pendingStop;
     private PowerManager.WakeLock wake;
     private long lastNotice;
+    private final AtomicBoolean criticalStopPending = new AtomicBoolean();
+    private final ScheduledThreadPoolExecutor pressureWork = new ScheduledThreadPoolExecutor(1,
+            task -> new Thread(task, "eve-memory-pressure"));
+
+    @Override public void onCreate() {
+        super.onCreate();
+        pressureWork.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
+        pressureWork.setContinueExistingPeriodicTasksAfterShutdownPolicy(false);
+        pressureWork.scheduleWithFixedDelay(() -> {
+            if (destroyed || !active) return;
+            if (!new ClientRuntime(this).alive()) { criticalStopPending.set(false); return; }
+            try { MemoryPressure.saveLive(this); }
+            catch (Exception ignored) { } // Evidence must not interrupt runtime ownership.
+        }, 10, 10, TimeUnit.SECONDS);
+    }
+
+    @Override public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (destroyed || !MemoryPressure.criticalRunning(level) || !criticalStopPending.compareAndSet(false, true)) return;
+        final long observedAt = System.currentTimeMillis();
+        try {
+            pressureWork.execute(() -> {
+                if (destroyed || !new ClientRuntime(this).alive()) { criticalStopPending.set(false); return; }
+                try { MemoryPressure.recordCritical(this, level, observedAt); }
+                catch (Exception error) { append(this, "Android critical memory evidence: " + error.getMessage()); }
+                // Use the existing stop path, including its pending-operation
+                // handling. Only the client is stopped; the world server remains
+                // under its foreground owner. The trim callback performs no IO.
+                handler.post(() -> {
+                    if (!destroyed && new ClientRuntime(RuntimeService.this).alive()) {
+                        append(RuntimeService.this, "Android running-critical memory pressure; requesting orderly client stop");
+                        onStartCommand(new Intent(RuntimeService.this, RuntimeService.class).setAction("stop-client"), 0, 0);
+                    } else criticalStopPending.set(false);
+                });
+            });
+        } catch (RejectedExecutionException stopped) { criticalStopPending.set(false); }
+    }
     private final Runnable monitor = new Runnable() {
         @Override public void run() {
             if (destroyed) return;
@@ -73,6 +114,7 @@ public final class RuntimeService extends Service {
             }
             return START_NOT_STICKY;
         }
+        if (action.equals("start-client")) criticalStopPending.set(false);
         busy = true; operation = action; error = "";
         if (wake == null) wake = getSystemService(PowerManager.class).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "eve:runtime");
         // Renew while a user-started runtime session exists; never acquire without a foreground notice.
@@ -142,6 +184,7 @@ public final class RuntimeService extends Service {
     private void finish() { active = false; handler.removeCallbacks(monitor); if (wake != null && wake.isHeld()) wake.release(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(); }
     @Override public void onDestroy() {
         destroyed = true;
+        pressureWork.shutdownNow();
         active = false;
         handler.removeCallbacks(monitor);
         if (worker != null) worker.interrupt();

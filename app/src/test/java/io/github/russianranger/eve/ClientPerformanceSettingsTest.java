@@ -19,8 +19,11 @@ import android.widget.TextView;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.IOException;
 import java.io.OutputStream;
 import java.time.Duration;
+import java.util.Arrays;
+import org.json.JSONObject;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -96,11 +99,12 @@ public final class ClientPerformanceSettingsTest {
         assertFalse(runtime.earlyDisplayRequests());
         assertFalse(runtime.disableConcurrentBinning());
         assertFalse(runtime.disableLrcpc2());
+        assertFalse(runtime.a740PcMode());
         for (String profile : new String[]{"render60", "queue2", "display60", "throughput", "responsive"}) {
             runtime.setPerformanceProfile(profile);
             assertEquals(profile, new ClientRuntime(context).performanceProfile());
         }
-        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2"}) {
+        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode"}) {
             runtime.setPerformanceOption(option, true);
             assertTrue(new ClientRuntime(context).performanceOption(option));
             RuntimeService.busy = true;
@@ -115,13 +119,97 @@ public final class ClientPerformanceSettingsTest {
         catch (IllegalArgumentException expected) { }
     }
 
+    @Test public void a740DriverSelectionIsIndependentAndOnlyLaunchesWithGpuRendering() throws Exception {
+        ClientRuntime runtime = new ClientRuntime(context);
+        assertFalse(runtime.a740PcMode());
+        assertFalse(runtime.launchCommand("turnip-dxvk", "responsive", false).contains("--a740-pc-mode"));
+        runtime.setPerformanceOption("a740-pc-mode", true);
+        ClientRuntime restored = new ClientRuntime(context);
+        assertTrue(restored.a740PcMode());
+        assertTrue(restored.status().getBoolean("a740PcMode"));
+        assertTrue(restored.launchCommand("turnip-dxvk", "responsive", false).contains("--a740-pc-mode"));
+        assertFalse(restored.disableConcurrentBinning());
+        assertFalse(restored.disableLrcpc2());
+        restored.useAdreno(false);
+        assertTrue(restored.performanceOption("a740-pc-mode"));
+        assertFalse(restored.a740PcMode());
+        assertFalse(restored.status().getBoolean("a740PcMode"));
+        assertFalse(restored.launchCommand("software", "responsive", false).contains("--a740-pc-mode"));
+        restored.useAdreno(true);
+        assertTrue(new ClientRuntime(context).a740PcMode());
+        restored.setPerformanceOption("a740-pc-mode", false);
+        assertFalse(new ClientRuntime(context).a740PcMode());
+    }
+
+    @Test public void invalidA740PreferenceFallsBackToDisabledWithoutChangingOtherSelections() {
+        assertTrue(preferences.edit().putString("a740-pc-mode", "true")
+                .putBoolean("disable-concurrent-binning", true).commit());
+        ClientRuntime runtime = new ClientRuntime(context);
+        assertFalse(runtime.a740PcMode());
+        assertFalse(runtime.launchCommand("turnip-dxvk", "responsive", false).contains("--a740-pc-mode"));
+        assertTrue(runtime.disableConcurrentBinning());
+        runtime.setPerformanceOption("a740-pc-mode", true);
+        assertTrue(new ClientRuntime(context).a740PcMode());
+    }
+
+    @Test public void graphicsAssetSelectionKeepsBaselineAndRequiresBothPinnedExperimentAssets() throws Exception {
+        JSONObject manifest = baselineGraphicsManifest();
+        String[] baseline = {"turnip-26.0.0.so", "vulkan-probe", "dxvk-d3d11-arm64ec.dll", "dxvk-dxgi-arm64ec.dll", "eve-d3d11-probe.exe"};
+        assertArrayEquals(baseline, ClientRuntime.graphicsAssetNames(manifest, false));
+        expectInvalidGraphicsAssets(manifest, true);
+        JSONObject experiment = new JSONObject().put("format", 1).put("name", "turnip-a740-pc-mode-1")
+                .put("driver", "turnip-26.0.0-a740-pc-mode.so").put("identityProbe", "a740-driver-probe")
+                .put("upstreamCommit", "23f94c692cb1d41a2193a80fa531922d386e8d5d");
+        manifest.put("a740PcModeExperiment", experiment);
+        JSONObject files = manifest.getJSONObject("files");
+        files.put("turnip-26.0.0-a740-pc-mode.so", new JSONObject());
+        expectInvalidGraphicsAssets(manifest, true);
+        files.put("a740-driver-probe", new JSONObject());
+        String[] extended = ClientRuntime.graphicsAssetNames(manifest, true);
+        assertEquals(7, extended.length);
+        assertTrue(Arrays.asList(extended).containsAll(Arrays.asList(baseline)));
+        assertTrue(Arrays.asList(extended).contains("turnip-26.0.0-a740-pc-mode.so"));
+        assertTrue(Arrays.asList(extended).contains("a740-driver-probe"));
+        assertArrayEquals(extended, ClientRuntime.graphicsAssetNames(manifest, false));
+        experiment.put("upstreamCommit", "unqualified-driver-change");
+        expectInvalidGraphicsAssets(manifest, true);
+        experiment.put("upstreamCommit", "23f94c692cb1d41a2193a80fa531922d386e8d5d");
+        experiment.put("format", "1");
+        expectInvalidGraphicsAssets(manifest, true);
+    }
+
+    @Test public void unknownGraphicsAssetsCannotReplaceAnyBaselineAsset() throws Exception {
+        JSONObject manifest = baselineGraphicsManifest();
+        JSONObject files = manifest.getJSONObject("files");
+        files.remove("turnip-26.0.0.so");
+        files.put("turnip-unqualified.so", new JSONObject());
+        expectInvalidGraphicsAssets(manifest, false);
+        files.put("turnip-26.0.0.so", new JSONObject());
+        expectInvalidGraphicsAssets(manifest, false);
+    }
+
+    private static JSONObject baselineGraphicsManifest() throws Exception {
+        JSONObject files = new JSONObject();
+        for (String name : new String[]{"turnip-26.0.0.so", "vulkan-probe", "dxvk-d3d11-arm64ec.dll", "dxvk-dxgi-arm64ec.dll", "eve-d3d11-probe.exe"})
+            files.put(name, new JSONObject());
+        return new JSONObject().put("files", files);
+    }
+
+    private static void expectInvalidGraphicsAssets(JSONObject manifest, boolean experimentEnabled) throws Exception {
+        try { ClientRuntime.graphicsAssetNames(manifest, experimentEnabled); fail("Invalid graphics asset selection accepted"); }
+        catch (IOException expected) { }
+    }
+
     private static void expectSettingsBlocked(ClientRuntime runtime) {
         try { runtime.setPerformanceProfile("responsive"); fail("Active client settings changed"); }
         catch (IllegalStateException expected) { }
         try { runtime.setDiagnosticHud(true); fail("Active client diagnostics changed"); }
         catch (IllegalStateException expected) { }
+        try { runtime.setPerformanceOption("a740-pc-mode", true); fail("Active client driver changed"); }
+        catch (IllegalStateException expected) { }
         assertEquals("responsive", runtime.performanceProfile());
         assertFalse(runtime.diagnosticHud());
+        assertFalse(runtime.a740PcMode());
     }
 
     @Test public void busyAndLiveSessionsRejectChangesWithoutMutatingPreferences() {
@@ -156,11 +244,14 @@ public final class ClientPerformanceSettingsTest {
             assertTrue(new ClientRuntime(context).diagnosticHud());
             checkBox(root, "Disable concurrent binning (Adreno experiment)").performClick();
             assertTrue(new ClientRuntime(context).disableConcurrentBinning());
+            checkBox(root, "Use A740 driver experiment").performClick();
+            assertTrue(new ClientRuntime(context).a740PcMode());
             button(root, "Server").performClick(); idle();
             button(root, "Client").performClick(); idle();
             assertEquals(1, profile(root).getSelectedItemPosition());
             assertTrue(checkBox(root, "Show frame-time and GPU diagnostics").isChecked());
             assertTrue(checkBox(root, "Disable concurrent binning (Adreno experiment)").isChecked());
+            assertTrue(checkBox(root, "Use A740 driver experiment").isChecked());
             assertSame(startServer, root.findViewWithTag("start-server"));
             assertSame(startClient, root.findViewWithTag("start-client"));
             assertTopStart(startServer); assertTopStart(startClient);
@@ -180,19 +271,23 @@ public final class ClientPerformanceSettingsTest {
             assertFalse(checkBox(root, "Request next display frame early").isEnabled());
             assertFalse(checkBox(root, "Disable concurrent binning (Adreno experiment)").isEnabled());
             assertFalse(checkBox(root, "Use alternate CPU load instructions (FEX experiment)").isEnabled());
+            assertFalse(checkBox(root, "Use A740 driver experiment").isEnabled());
             RuntimeService.busy = false;
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", new LiveProcess());
             refresh();
             assertFalse(profile(root).isEnabled());
             assertFalse(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
+            assertFalse(checkBox(root, "Use A740 driver experiment").isEnabled());
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", null); refresh();
             checkBox(root, "Use Adreno GPU rendering").performClick();
             assertEquals("software", new ClientRuntime(context).renderer());
             assertFalse(profile(root).isEnabled());
             assertFalse(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
+            assertFalse(checkBox(root, "Use A740 driver experiment").isEnabled());
             checkBox(root, "Use Adreno GPU rendering").performClick();
             assertTrue(profile(root).isEnabled());
             assertTrue(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
+            assertTrue(checkBox(root, "Use A740 driver experiment").isEnabled());
         } finally {
             RuntimeService.busy = false;
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", null);

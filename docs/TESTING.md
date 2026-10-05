@@ -1,4 +1,47 @@
-# EVE Android Launcher 0.1.12: warm station performance comparison
+# EVE Android Launcher 0.1.14: stability and A740 driver comparison
+
+## Current 0.1.14 test
+
+Install **EVE-Android-Launcher-0.1.14.apk** in place with client and server
+stopped. Preserve app data, the imported client, installed runtime, prefix,
+shader caches, local account and saved character. No reimport, revalidation or
+Wine/FEX probe is needed. The preview signing identity remains unchanged.
+
+1. Keep **Use Adreno GPU rendering** enabled. Select **Baseline · 30 FPS
+   target**, enable the diagnostic HUD, and turn every experiment off,
+   including binning, alternate CPU instructions and early display requests.
+   Keep the same 1280×720 scene, camera, graphics settings and Thor fan/power mode.
+2. Start server → SERVER READY → Start EVE client → Open client display.
+   Enter the existing character's station. Check fullscreen and controls, then
+   warm up for three minutes and observe another two. Record the HUD FPS range,
+   stutter, visible faults and device temperature. Export **0.1.14-baseline**
+   while running, then quit EVE normally. A code-0 quit should report stopped,
+   and the server should stay running.
+3. Allow the device to return to a similar starting temperature. With the client
+   stopped, enable only **Use A740 driver experiment** and repeat the same
+   five-minute station run. Export **0.1.14-a740** while running. The first
+   experiment run uses its own shader cache, so initial warm-up may be slower.
+   If it improves warm FPS without faults, repeat once with that cache warmed.
+4. Check station geometry, ships, text and effects for distorted shapes or
+   flickering. If they appear, stop the client and switch the experiment off.
+   If driver qualification fails, export immediately and report the stage;
+   switching it off restores the existing driver. Save/stop the server afterward.
+
+Return the labeled ZIPs, warm HUD FPS ranges, approximate starting/ending
+temperatures and how each run ended. Do not repeat the earlier four-option
+matrix. Display update counts are not engine FPS. The A740 option changes one
+upstream primitive-processing register value; it is an experiment until this
+physical rendering test passes. It is off by default and refuses other GPUs.
+
+Android critical running-memory callbacks now request an orderly client stop
+while leaving the server running. Ordinary background/navigation callbacks do
+not stop it. An abrupt Android low-memory kill can occur without a callback;
+this is best-effort protection, not a guarantee. After any unexpected closure,
+reopen the launcher and export before restarting the client. Logs retain bounded
+memory/thermal samples and critical-pressure events. Battery temperature is
+labeled separately from the Thor's GPU/SoC temperature.
+
+Earlier tests remain below as historical evidence.
 
 ## Current 0.1.13 performance recovery test
 

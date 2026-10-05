@@ -42,9 +42,13 @@ from server_runtime import (BusyError, RuntimeErrorDetail, atomic_json, fetch_he
 NETWORK_POLICY = "loopback-v1"
 LOG_LIMIT = 8 * 1024**2
 LOG_HISTORY = 2
-OWNED_ROLES = ("client", "graphicsD3d", "graphicsVulkan", "gate", "wineServer", "display")
+OWNED_ROLES = ("client", "graphicsD3d", "graphicsIdentity", "graphicsVulkan", "gate", "wineServer", "display")
 WINDOW_HELPER_LIMIT = 8 * 1024**2
 WINDOW_RECEIPT_LIMIT = 4096
+
+
+class ClientClosed(Exception):
+    """The observed EVE process returned zero; clean up its private session."""
 
 
 @dataclass(frozen=True)
@@ -73,6 +77,7 @@ class Settings:
     diagnostic_hud: bool = False
     disable_concurrent_binning: bool = False
     disable_lrcpc2: bool = False
+    a740_pc_mode: bool = False
     graphics_folder: Path = Path("/opt/eve-android")
     graphics_timeout: float = 90
     window_start_timeout: float = 20
@@ -123,7 +128,7 @@ class Runtime:
         self.performance = client_graphics.performance_settings(
             self.s.graphics_mode, self.s.performance_profile, self.s.diagnostic_hud)
         self.optimizations = client_graphics.optimization_settings(
-            self.s.graphics_mode, self.s.disable_concurrent_binning, self.s.disable_lrcpc2)
+            self.s.graphics_mode, self.s.disable_concurrent_binning, self.s.disable_lrcpc2, self.s.a740_pc_mode)
         self.cpu_topology = client_graphics.cpu_topology()
         self.run = self.s.state / "run"
         self.logs = self.s.state / "logs"
@@ -144,7 +149,7 @@ class Runtime:
         self.graphics_reports: dict[str, Any] = {}
         self.previous_snapshot = None
         self.diagnostics = client_diagnostics.PerformanceHistory(
-            self.s.state, client_graphics.cache_directories(self.s.state))
+            self.s.state, client_graphics.cache_directories(self.s.state, self.optimizations["a740PcMode"]))
 
     def request_stop(self, *_: Any) -> None:
         self.cancelled = True
@@ -258,7 +263,7 @@ class Runtime:
         return client_graphics.configure_environment(
             env, self.s.graphics_mode, self.s.graphics_folder, self.s.state,
             self.s.performance_profile, self.s.diagnostic_hud,
-            self.s.disable_concurrent_binning, self.s.disable_lrcpc2)
+            self.s.disable_concurrent_binning, self.s.disable_lrcpc2, self.s.a740_pc_mode)
 
     def require_server(self) -> None:
         value = read_json(self.s.server_state / "run/status.json")
@@ -393,7 +398,7 @@ class Runtime:
         command = (self.s.wine, "Z:" + str(self.window_helper).replace("/", "\\"))
         self.spawn("client", command, env=environment, cwd=self.s.content / "tq")
 
-    def check_window_receipt(self) -> dict[str, Any] | None:
+    def check_window_receipt(self, allow_normal_exit: bool = False) -> dict[str, Any] | None:
         if self.window_session is None:
             return None
         try:
@@ -426,7 +431,12 @@ class Runtime:
             if self.window_child_ids is not None and pids != self.window_child_ids:
                 raise ValueError("Changed Windows process identities")
             if value["phase"] == "child_exited":
-                raise RuntimeErrorDetail("EVE exited while its owned client window helper was running")
+                if exit_code == 0 and allow_normal_exit:
+                    self.window_report = {key: value[key] for key in ("format", "helper", "session", "phase",
+                                          "wrapperWindowsPid", "childWindowsPid", "elapsedMs", "childExitCode")}
+                    raise ClientClosed()
+                raise RuntimeErrorDetail("EVE exited while its owned client window helper was running with code "
+                                         + str(exit_code))
             if exit_code is not None:
                 raise ValueError("Live child has an exit code")
             safe = {key: value[key] for key in ("format", "helper", "session", "phase", "wrapperWindowsPid",
@@ -587,14 +597,36 @@ class Runtime:
             return {"mode": "software", "performance": self.performance,
                     "optimizations": self.optimizations, "hardwarePreflightPassed": False}
         env = self.environment()
+        baseline_env = client_graphics.configure_environment(
+            env, self.s.graphics_mode, self.s.graphics_folder, self.s.state,
+            self.s.performance_profile, self.s.diagnostic_hud,
+            self.s.disable_concurrent_binning, self.s.disable_lrcpc2, False)
         # The initialized, accepted prefix is required before these session-only
         # file binds. Recheck after Wine bootstrap/TLS so a refresh cannot corrupt
         # an asset and then be mistaken for a working native renderer.
         client_graphics.verify_mapped(self.s.graphics_folder, self.s.state)
         self.status("starting", "Checking the Adreno GPU and Turnip Vulkan display", displayReady=True)
         native = self.s.vulkan_command or client_graphics.native_command(self.s.graphics_folder)
-        self.wait_graphics("graphicsVulkan", native, env, min(30, self.s.graphics_timeout))
+        self.wait_graphics("graphicsVulkan", native, baseline_env, min(30, self.s.graphics_timeout))
         vulkan = client_graphics.parse_vulkan(client_prepare.bounded_text(self.logs / "client-graphicsVulkan.log", limit=65536))
+        driver = {"a740PcMode": False, "driver": "turnip-26.0.0.so"}
+        if self.optimizations["a740PcMode"]:
+            self.status("starting", "Checking the A740 driver experiment's hardware identity", displayReady=True)
+            self.wait_graphics("graphicsIdentity", client_graphics.a740_identity_command(self.s.graphics_folder),
+                               baseline_env, min(30, self.s.graphics_timeout))
+            identity = client_graphics.parse_a740_identity(
+                client_prepare.bounded_text(self.logs / "client-graphicsIdentity.log", limit=65536))
+            baseline_vulkan = vulkan
+            driver = client_graphics.select_driver(self.s.graphics_folder, self.s.state, True, baseline_vulkan, identity)
+            self.cancellation_point()
+            self.status("starting", "Checking the experimental A740 driver's Vulkan display", displayReady=True)
+            self.wait_graphics("graphicsVulkan", native, env, min(30, self.s.graphics_timeout))
+            vulkan = client_graphics.parse_vulkan(
+                client_prepare.bounded_text(self.logs / "client-graphicsVulkan.log", limit=65536))
+            if any(vulkan[key] != baseline_vulkan[key]
+                   for key in ("vendor_id", "driver_id", "driver_version", "api_version", "software", "device")):
+                raise RuntimeErrorDetail("The experimental driver presented a different Vulkan device")
+            driver.update(identity=identity, baselineVulkan=baseline_vulkan)
         self.status("starting", "Checking native D3D11 shaders and their visible display frames", displayReady=True)
         display_report = self.run / "graphics-display.json"
         helper_log = self.logs / "client-graphicsD3d-helper.log"
@@ -618,6 +650,7 @@ class Runtime:
         client_graphics.verify_mapped(self.s.graphics_folder, self.s.state)
         report = {"mode": "turnip-dxvk", "observedAt": time.time(), "supervisorIdentity": self.identities.get("supervisorIdentity"), "hardwarePreflightPassed": True,
                   "vulkan": vulkan, "d3d11": d3d, "presentation": presentation, "display": visible,
+                  "driverSelection": driver,
                   "performance": self.performance,
                   "optimizations": self.optimizations, "cpuTopology": self.cpu_topology,
                   "qualificationScope": "native hardware D3D11 helper and local display; EVE performance requires observation"}
@@ -680,9 +713,16 @@ class Runtime:
         atomic_json(self.s.state / "client-gate.json", result)
         return result
 
-    def check_child(self, role: str) -> None:
+    def check_child(self, role: str, allow_normal_exit: bool = False) -> None:
         process = self.children.get(role)
         if process is not None and process.poll() is not None:
+            if role == "client" and process.returncode == 0 and allow_normal_exit:
+                if self.window_session is not None:
+                    # A wrapper exit cannot substitute for the owned child's
+                    # session-bound Windows exit receipt.
+                    self.check_window_receipt(allow_normal_exit=True)
+                    raise RuntimeErrorDetail("The client window helper exited without EVE's final exit receipt")
+                raise ClientClosed()
             raise RuntimeErrorDetail(role + " exited unexpectedly with code " + str(process.returncode))
 
     def wait_display(self) -> None:
@@ -827,6 +867,7 @@ class Runtime:
             self.identities = {"supervisorIdentity": process_identity(os.getpid())}
             failure = None
             clean = True
+            normal_exit = False
             try:
                 self.cancellation_point()
                 self.status("starting", "Checking the prepared client and local server")
@@ -878,16 +919,18 @@ class Runtime:
                 while not self.stopping():
                     self.check_child("display")
                     self.check_child("wineServer")
-                    self.check_child("client")
+                    self.check_child("client", allow_normal_exit=True)
                     self.memory_check()
                     if time.monotonic() - last_health >= 5:
                         self.require_server()
-                        self.check_window_receipt()
+                        self.check_window_receipt(allow_normal_exit=True)
                         self.status("running", "EVE process and display started; check the client login screen", True,
                                     displayReady=True, processStartupObserved=True,
                                     wineTrustQualified=True, localhostTlsQualified=True)
                         last_health = time.monotonic()
                     time.sleep(self.s.tick)
+            except ClientClosed:
+                normal_exit = True
             except InterruptedError:
                 pass
             except BaseException as error:
@@ -903,7 +946,9 @@ class Runtime:
                     self.status("failed", "EVE client stopped after a startup or session failure", cleanShutdown=clean,
                                 error=str(failure) if failure else "EVE processes required forced cleanup")
                 else:
-                    self.status("stopped", "EVE client and display stopped; imported content preserved", cleanShutdown=True)
+                    self.status("stopped", "EVE closed; its private display stopped" if normal_exit else
+                                "EVE client and display stopped; imported content preserved", cleanShutdown=True,
+                                exitReason="client-exit" if normal_exit else "stop-request", clientExitCode=0 if normal_exit else None)
                 if not any(group_members(process.pid) for process in self.children.values()):
                     self.journal.unlink(missing_ok=True)
             if failure:
@@ -924,12 +969,13 @@ def main(argv=None) -> int:
     parser.add_argument("--diagnostic-hud", action="store_true")
     parser.add_argument("--disable-concurrent-binning", action="store_true")
     parser.add_argument("--disable-lrcpc2", action="store_true")
+    parser.add_argument("--a740-pc-mode", action="store_true")
     options = parser.parse_args(argv)
     runtime = Runtime(Settings(content=options.content, state=options.state, server_state=options.server_state,
                                graphics_mode=options.graphics_mode,
                                performance_profile=options.performance_profile, diagnostic_hud=options.diagnostic_hud,
                                disable_concurrent_binning=options.disable_concurrent_binning,
-                               disable_lrcpc2=options.disable_lrcpc2))
+                               disable_lrcpc2=options.disable_lrcpc2, a740_pc_mode=options.a740_pc_mode))
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, runtime.request_stop)
     try:

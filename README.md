@@ -35,6 +35,12 @@ adds isolated cap/request comparisons and optional Adreno/FEX experiments, and
 uses a same-signed non-debuggable APK. Follow the [warm station comparison](docs/TESTING.md);
 actual speed and Android runtime compatibility still require the Thor test.
 
+The October 5 tests recorded an Android low-memory kill in the baseline and
+warm memory near 3 GiB. 0.1.14 adds critical-pressure handling, memory/thermal
+histories, accurate normal-exit reporting and an optional exact-device A740
+driver experiment. See [the measured evidence](docs/DEVICE-20261005.md) and
+[the two-run test](docs/TESTING.md); physical driver performance remains unqualified.
+
 ## Fullscreen controls in 0.1.11
 
 The display fills the screen; a top-right space-themed gear opens the controls

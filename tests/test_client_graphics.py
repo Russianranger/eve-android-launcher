@@ -130,6 +130,13 @@ def vulkan_success() -> dict:
             "presentation_frames": 3}
 
 
+def a740_identity() -> dict:
+    value = vulkan_success()
+    value.pop("presentation_frames")
+    value.update(helper="eve-a740-driver-probe-1", mode="hardware", passed=True, device_id=0x43050a01)
+    return value
+
+
 def module_info(name: str, digest: str) -> dict:
     return {"path": "C:\\windows\\system32\\" + name + ".dll",
             "sha256": digest, "disk_machine": 0x8664, "loaded_machine": 0x8664,
@@ -397,11 +404,105 @@ class GraphicsTests(unittest.TestCase):
             (system32 / (name + ".dll")).write_bytes((self.folder / asset).read_bytes())
         return system32
 
+    def add_a740_experiment(self):
+        self.manifest["a740PcModeExperiment"] = copy.deepcopy(graphics.A740_EXPERIMENT)
+        for name in graphics.A740_FILES:
+            image = elf_image() + name.encode("ascii")
+            (self.folder / name).write_bytes(image)
+            self.manifest["files"][name] = {"sha256": digest(image), "sizeBytes": len(image), "machine": 183}
+        self.write_manifest()
+
+    def prepare_driver_selection(self):
+        self.map_dlls()
+        graphics.prepare(self.folder, self.state, self.content, "turnip-dxvk")
+        return self.state / "run/turnip-icd.json"
+
     def test_bundle_verification_preserves_existing_assets(self):
         before = {path.name: path.read_bytes() for path in self.folder.iterdir()}
         result = graphics.verify_bundle(self.folder)
         self.assertEqual(result["files"], self.manifest["files"])
         self.assertEqual(before, {path.name: path.read_bytes() for path in self.folder.iterdir()})
+
+    def test_optional_a740_bundle_requires_complete_pinned_source_and_native_assets(self):
+        self.add_a740_experiment()
+        accepted = copy.deepcopy(self.manifest)
+        self.assertEqual(graphics.verify_bundle(self.folder)["a740PcModeExperiment"], graphics.A740_EXPERIMENT)
+        for field in graphics.A740_EXPERIMENT:
+            value = copy.deepcopy(accepted)
+            value["a740PcModeExperiment"][field] = "unverified"
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.write_manifest(value)
+                graphics.verify_bundle(self.folder)
+        for name in graphics.A740_FILES:
+            path = self.folder / name
+            original = path.read_bytes()
+            value = copy.deepcopy(accepted)
+            image = mutate(original, offset=18, format="<H", value=62)
+            path.write_bytes(image)
+            value["files"][name].update(sha256=digest(image), sizeBytes=len(image), machine=62)
+            with self.subTest(asset=name), self.assertRaises(ValueError):
+                self.write_manifest(value)
+                graphics.verify_bundle(self.folder)
+            path.write_bytes(original)
+            value = copy.deepcopy(accepted)
+            value["files"].pop(name)
+            with self.subTest(missing=name), self.assertRaises(ValueError):
+                self.write_manifest(value)
+                graphics.verify_bundle(self.folder)
+        value = copy.deepcopy(accepted)
+        value.pop("a740PcModeExperiment")
+        self.write_manifest(value)
+        with self.assertRaises(ValueError):
+            graphics.verify_bundle(self.folder)
+        self.write_manifest(accepted)
+
+    def test_a740_driver_selection_requires_current_matching_native_hardware_and_resets_each_session(self):
+        self.add_a740_experiment()
+        icd = self.prepare_driver_selection()
+        baseline = icd.read_bytes()
+        baseline_driver = (self.folder / "turnip-26.0.0.so").read_bytes()
+        selected = graphics.select_driver(self.folder, self.state, True, vulkan_success(), a740_identity())
+        self.assertEqual(json.loads(icd.read_text())["ICD"]["library_path"], str(self.folder / graphics.A740_DRIVER))
+        self.assertTrue(selected["a740PcMode"])
+        self.assertTrue(selected["hardwareGatePassed"])
+        self.assertTrue(selected["binaryIdentityVerified"])
+        self.assertTrue(selected["experimental"])
+        self.assertFalse(selected["nativeEffectVerified"])
+        self.assertEqual(selected["driverSha256"], self.manifest["files"][graphics.A740_DRIVER]["sha256"])
+        self.assertEqual(Path(selected["mesaShaderCache"]), self.state / "cache/mesa-26.0.0-a740-pc-mode-1")
+        baseline_receipt = graphics.select_driver(self.folder, self.state, False)
+        self.assertEqual(icd.read_bytes(), baseline)
+        self.assertFalse(baseline_receipt["a740PcMode"])
+        self.assertEqual((self.folder / "turnip-26.0.0.so").read_bytes(), baseline_driver)
+        self.assertTrue((self.state / "cache/mesa-26.0.0").is_dir())
+        for invalid in (None, {}, modified(a740_identity(), ("device_id",), 0x740),
+                        modified(a740_identity(), ("software",), True),
+                        modified(a740_identity(), ("device",), "Adreno (TM) 740 alternate device")):
+            with self.subTest(identity=invalid), self.assertRaises(ValueError):
+                graphics.select_driver(self.folder, self.state, True, vulkan_success(), invalid)
+            self.assertEqual(icd.read_bytes(), baseline)
+        for invalid in (None, {}, modified(vulkan_success(), ("presentation_frames",), 0)):
+            with self.subTest(vulkan=invalid), self.assertRaises(ValueError):
+                graphics.select_driver(self.folder, self.state, True, invalid, a740_identity())
+            self.assertEqual(icd.read_bytes(), baseline)
+
+    def test_a740_selection_refuses_old_bundle_and_linked_private_cache(self):
+        icd = self.prepare_driver_selection()
+        before = icd.read_bytes()
+        with self.assertRaises(ValueError):
+            graphics.select_driver(self.folder, self.state, True, vulkan_success(), a740_identity())
+        self.assertEqual(icd.read_bytes(), before)
+        self.add_a740_experiment()
+        cache = self.state / "cache/mesa-26.0.0-a740-pc-mode-1"
+        outside = self.root / "outside-cache"
+        outside.mkdir()
+        cache.symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            graphics.select_driver(self.folder, self.state, True, vulkan_success(), a740_identity())
+        self.assertEqual(icd.read_bytes(), before)
+        for invalid in (1, None, "true"):
+            with self.subTest(value=invalid), self.assertRaises(ValueError):
+                graphics.select_driver(self.folder, self.state, invalid)
 
     def test_damaged_missing_and_linked_components_fail(self):
         for name in self.manifest["files"]:
@@ -537,6 +638,26 @@ class GraphicsTests(unittest.TestCase):
             for name in ("disable_concurrent_binning", "disable_lrcpc2"):
                 with self.subTest(name=name, invalid=invalid), self.assertRaises(ValueError):
                     graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state, **{name: invalid})
+
+    def test_a740_environment_is_independent_namespaced_and_cleared_in_software(self):
+        baseline = graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state)
+        experimental = graphics.configure_environment(baseline, "turnip-dxvk", self.folder, self.state,
+                                                      a740_pc_mode=True)
+        self.assertEqual(experimental["MESA_SHADER_CACHE_DIR"], str(self.state / "cache/mesa-26.0.0-a740-pc-mode-1"))
+        self.assertEqual(experimental["VK_DRIVER_FILES"], baseline["VK_DRIVER_FILES"])
+        self.assertNotIn("TU_DEBUG", experimental)
+        self.assertNotIn("FEX_HOSTFEATURES", experimental)
+        restored = graphics.configure_environment(experimental, "turnip-dxvk", self.folder, self.state)
+        self.assertEqual(restored, baseline)
+        software = graphics.configure_environment(experimental, "software", self.folder, self.state,
+                                                  a740_pc_mode=True)
+        self.assertFalse(any(key.startswith(("MESA_", "VK_", "TU_")) for key in software))
+        receipt = graphics.optimization_settings("software", a740_pc_mode=True)
+        self.assertTrue(receipt["requestedA740PcMode"])
+        self.assertFalse(receipt["a740PcMode"])
+        for invalid in (1, "true", None):
+            with self.subTest(value=invalid), self.assertRaises(ValueError):
+                graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state, a740_pc_mode=invalid)
 
     def test_cpu_topology_is_bounded_numeric_evidence_and_allows_missing_permissions(self):
         topology = self.root / "sysfs"
@@ -741,6 +862,22 @@ class GraphicsTests(unittest.TestCase):
         for name, rejected in vulkan_failures().items():
             with self.subTest(name=name), self.assertRaises(ValueError):
                 graphics.parse_vulkan(noisy_log(rejected))
+
+    def test_a740_identity_requires_explicit_hardware_id_and_rejects_cpu_fixture(self):
+        accepted = a740_identity()
+        self.assertEqual(graphics.parse_a740_identity(noisy_log(accepted)), accepted)
+        changes = {"helper": "vulkan-probe", "mode": "fixture", "passed": 1,
+                   "device_id": 0x740, "vendor_id": "20803", "driver_id": 13,
+                   "driver_version": 25 << 22, "api_version": True,
+                   "software": 0, "device": "llvmpipe", "driver": "lavapipe",
+                   "driver_info": "Mesa 25.0.0"}
+        for field, replacement in changes.items():
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                graphics.parse_a740_identity(noisy_log(modified(accepted, (field,), replacement)))
+            missing = copy.deepcopy(accepted)
+            missing.pop(field)
+            with self.subTest(missing=field), self.assertRaises(ValueError):
+                graphics.parse_a740_identity(json.dumps(missing))
 
     def test_d3d_requires_native_bound_dlls_hardware_pixels_and_presentations(self):
         report = self.report()

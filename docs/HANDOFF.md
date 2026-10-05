@@ -1,5 +1,25 @@
 # EVE Android Launcher handoff
 
+## Latest October 5 device feedback and research
+
+The two 0.1.14 baseline/A740 exports show clean code-0 closure and no new Android
+kill; the user reports high60s/low70s Celsius and performance still below stable
+30 FPS. [DEVICE-20261005.md](DEVICE-20261005.md) records the selected A740 driver
+hash and passed hardware/helper identities, matched warm CPU/RSS measurements,
+and its separate first-run shader-cache caveat. Warm CPU is effectively equal,
+with no demonstrated warm performance gain. Memory timelines show no critical
+pressure; battery readings do not explain the reported high device temperatures,
+and actual clock/SoC traces are absent. Do not infer that the pressure
+handler prevented a kill or that the driver experiment has won.
+
+A firsthand Reddit commenter identifies Winlator 11 beta and reports getting
+EVE working. The thread links a February 1 Snapdragon 8 Elite demonstration;
+that creator also published a March 13 settings/game-test video. The commenter's
+version is not verified as either video's configuration. Retrieved evidence
+does not provide a complete Wine/translator/DXVK/Turnip/FPS recipe or an 8 Gen 2
+stable30 combination. Keep the accepted runtime intact while researching
+reproducible combinations; public-client reports do not qualify our exact build.
+
 ## Current 0.1.14 continuation
 
 The October 5 four-run evidence is recorded in [DEVICE-20261005.md](DEVICE-20261005.md).

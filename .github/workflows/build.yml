@@ -5,7 +5,7 @@ on:
   pull_request:
   workflow_dispatch:
 env:
-  EVE_APP_VERSION: '0.1.12'
+  EVE_APP_VERSION: '0.1.13'
 permissions:
   contents: read
 defaults:
@@ -283,12 +283,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64-posix
           bash scripts/build-client-gate.sh 2>&1 | tee out/client-gate-build.log
       - name: Build, test display lifecycle and lint the Android APK
-        run: gradle --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug 2>&1 | tee out/android-build.log
+        run: gradle --no-daemon :app:assembleRelease :app:testReleaseUnitTest :app:lintRelease 2>&1 | tee out/android-build.log
       - name: Verify the APK contents, identity and public certificate
         run: |
-          python3 scripts/check-apk.py app/build/outputs/apk/debug/app-debug.apk
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs app/build/outputs/apk/debug/app-debug.apk > out/apk-certificate.txt
-          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging app/build/outputs/apk/debug/app-debug.apk > out/apk-badging.txt
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump xmltree app/build/outputs/apk/release/app-release.apk AndroidManifest.xml > out/apk-manifest-tree.txt
+          python3 scripts/check-apk.py app/build/outputs/apk/release/app-release.apk --manifest-tree out/apk-manifest-tree.txt
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk > out/apk-certificate.txt
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging app/build/outputs/apk/release/app-release.apk > out/apk-badging.txt
           grep -q "package: name='io.github.russianranger.eve'" out/apk-badging.txt
           grep -q "versionName='$EVE_APP_VERSION'" out/apk-badging.txt
       - name: Preserve the first published signing certificate
@@ -311,11 +312,12 @@ jobs:
             out/*build.log
             out/apk-certificate.txt
             out/apk-badging.txt
+            out/apk-manifest-tree.txt
       - uses: actions/upload-artifact@v4
         with:
           name: android-apk
           if-no-files-found: error
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/release/app-release.apk
       - uses: actions/upload-artifact@v4
         with:
           name: proot-corresponding-source
@@ -359,7 +361,7 @@ jobs:
             echo "Release $tag already exists; refusing to replace its assets." >&2
             exit 1
           fi
-          mv dist/app-debug.apk "dist/EVE-Android-Launcher-$EVE_APP_VERSION.apk"
+          mv dist/app-release.apk "dist/EVE-Android-Launcher-$EVE_APP_VERSION.apk"
           git archive --format=zip --output="dist/EVE-Android-Launcher-$EVE_APP_VERSION-source.zip" HEAD
           cp docs/TESTING.md "dist/EVE-Android-Launcher-$EVE_APP_VERSION-Testing.md"
           (cd dist && sha256sum *.apk *.zip *.tar.gz *.json *.md) > dist/SHA256SUMS.txt

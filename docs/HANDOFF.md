@@ -339,13 +339,48 @@ retain the physically effective immediate presentation policy. The adaptive app
 icon uses an opaque full-bleed space backdrop; the gear design stays unchanged.
 Actual 30+ FPS must be measured on Thor, separately from helper/host results.
 
+## October 4 regression research and 0.1.13 continuation
+
+Recovered exact latest branch `codex/wine-localhost-tls` at
+`63b46b8ee20588d49268a62e0e3684c371699eb3`; main remains 0.1.3. The prior agent
+completed the 60-minute optimization report without changing repository/runtime
+settings. `eve-support-20261004-171239.zip` records 0.1.12 with 60/2/60 caps and
+one-ahead requests. The user reports worse performance. Neither delivery counts
+nor unequal startup/scene windows establish an engine-FPS regression cause.
+
+0.1.13 implements the first reversible experiments from that report:
+
+- Default restoration of accepted 0.1.11 DXVK30/latency1/Xvnc30 and requests after
+  each validated complete update. A versioned preference key restores baseline
+  once on upgrade, then preserves explicit new profile choices.
+- Separate render60, queue2 and display60 profiles plus the prior combined caps.
+  Early display requests are independent, default off; both policies retain
+  resize refresh, malformed-message rejection and duplex controller input.
+- Optional fixed `TU_DEBUG=nocb` and `FEX_HOSTFEATURES=disablelrcpc2`, both default
+  off and removed in software mode. Inherited TU/FEX feature values are stripped;
+  scalar TSO remains untouched. Receipts record assignments without claiming
+  native effect. Bounded readable native MIDR/topology is included separately.
+- Same-signed non-debuggable/profileable APK; compiled manifest and original
+  preview certificate checks gate distribution. Physical Thor PRoot startup and
+  its accepted TLS/server/controls still require device confirmation.
+
+Cached dynamic constant-buffer trials are deferred: advertised cached/coherent
+Vulkan types do not prove actual KGSL returned flags or CPU-write/GPU-read
+coherence. No driver/runtime upgrades, saved preference rewrite, resource import,
+cache reset or world change is part of this continuation.
+
+Native CI additionally tests all three isolated profiles and the FEX option
+through exact ARM64EC DLL identity, requested Present(1), observed IMMEDIATE mode,
+shader pixels and three independent visible frames. This is a Lavapipe fixture,
+not an Adreno performance result. See current [test instructions](TESTING.md).
+
 ## Next milestones
 
 1. Preserve accepted server/world lifecycle, Wine/FEX probe, exact 125,116-resource
    import, private TLS, client startup/local login and 0.1.9 Adreno rendering/input.
 2. Preserve accepted 0.1.11 controls/fullscreen, saved-character reopen and station
-   entry. Compare 0.1.12 performance profiles in the same warm station scene, with
-   diagnostic HUD and separate support exports; the target is sustained 30+ FPS.
+   entry. Compare 0.1.13 baseline and isolated experiments in the same warm station scene,
+   with diagnostic HUD and separate support exports; the target is sustained 30+ FPS.
 3. Qualify undock/warp/dock and audio using the current local account/world.
 
 Runtime-v1 is immutable. Server package source/build input changes require a new

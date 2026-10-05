@@ -15,6 +15,7 @@ final class DisplayPerformance {
     private final AtomicLong ended = new AtomicLong();
     private final Object receiveLock = new Object();
     private long readingStarted;
+    private volatile String updateRequestPolicy = "after-complete-with-resize-refresh";
     final AtomicLong width = new AtomicLong(), height = new AtomicLong();
     final AtomicLong socketBytes = new AtomicLong(), socketReads = new AtomicLong(), socketNanos = new AtomicLong();
     final AtomicLong updates = new AtomicLong(), rectangles = new AtomicLong(), pixels = new AtomicLong();
@@ -24,6 +25,9 @@ final class DisplayPerformance {
     final AtomicLong queueNanos = new AtomicLong(), maxQueueNanos = new AtomicLong(), sendNanos = new AtomicLong(), maxSendNanos = new AtomicLong(), maxQueueDepth = new AtomicLong();
     final AtomicLong androidFrames = new AtomicLong(), androidTotalNanos = new AtomicLong(), androidDrawNanos = new AtomicLong(), androidSyncNanos = new AtomicLong(), androidGpuNanos = new AtomicLong(), gpuSamples = new AtomicLong(), droppedFrameReports = new AtomicLong();
     static void maximum(AtomicLong value, long sample) { value.accumulateAndGet(sample, Math::max); }
+    void requestPolicy(boolean earlyDisplayRequests) {
+        updateRequestPolicy = earlyDisplayRequests ? "one-ahead-with-resize-refresh" : "after-complete-with-resize-refresh";
+    }
     InputStream measure(InputStream source) {
         return new FilterInputStream(source) {
             @Override public int read() throws IOException {
@@ -74,7 +78,7 @@ final class DisplayPerformance {
         number(out, "socket_bytes", socketBytes.get()); number(out, "socket_reads", socketReads.get());
         out.append(",\n  \"socket_read_ms\": ").append(socketTime() / 1000000.0); // Includes an unfinished native read waiting for server data.
         number(out, "framebuffer_updates", updates.get()); number(out, "raw_rectangles", rectangles.get()); number(out, "raw_pixels", pixels.get());
-        out.append(",\n  \"update_request_policy\": \"one-ahead-with-resize-refresh\"");
+        out.append(",\n  \"update_request_policy\": \"").append(updateRequestPolicy).append('"');
         number(out, "incremental_update_requests", incrementalRequests.get()); number(out, "full_update_requests", fullRequests.get());
         millis(out, "decode_work_ms", decodeNanos); millis(out, "bitmap_publish_ms", publishNanos);
         number(out, "view_draws", draws.get()); millis(out, "view_draw_cpu_ms", drawNanos);

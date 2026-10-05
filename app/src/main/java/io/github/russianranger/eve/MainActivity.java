@@ -26,6 +26,8 @@ public final class MainActivity extends Activity {
     private CheckBox useAdreno;
     private Spinner performanceProfile;
     private CheckBox diagnosticHud;
+    private static final List<String> PERFORMANCE_PROFILES = Arrays.asList("responsive", "render60", "queue2", "display60", "throughput");
+    private final Map<String, CheckBox> performanceOptions = new LinkedHashMap<>();
     private boolean updatingRenderer;
     private boolean updatingPerformance;
     private final List<Button> controls = new ArrayList<>();
@@ -94,7 +96,7 @@ public final class MainActivity extends Activity {
     }
     private void render() {
         logGeneration++; controls.clear(); controls.addAll(launchControls); body.removeAllViews(); stateText = null; logText = null;
-        performanceProfile = null; diagnosticHud = null;
+        performanceProfile = null; diagnosticHud = null; performanceOptions.clear();
         if (tab.equals("Server")) {
             LinearLayout state = card("Your local universe", "EVE.js 0.12.9 · client build 3396210\nSetup downloads the prepared ARM64 server package. World data stays on this device.");
             stateText = label("", 15, 0xff6ee4f0); state.addView(stateText);
@@ -105,29 +107,33 @@ public final class MainActivity extends Activity {
         } else if (tab.equals("Client")) {
             LinearLayout state = card("Client performance", "Start the local server first. GPU rendering and responsive text entry are the focus of this preview.");
             stateText = label("", 14, 0xff6ee4f0); state.addView(stateText);
-            LinearLayout performance = card("Adreno performance", "Performance targets up to 60 FPS. Previous settings retain the 30 FPS target for comparison. Stop the client before changing these settings.");
+            LinearLayout performance = card("Adreno performance", "Baseline restores the smoother 0.1.11 settings. Compare one experiment at a time in the same warmed scene. Stop the client before changing settings.");
             performanceProfile = new Spinner(this);
             performanceProfile.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
-                    new String[]{"Performance · 60 FPS target", "Previous settings · 30 FPS target"}));
+                    new String[]{"Baseline · 30 FPS target", "Render cap only · 60 FPS", "Frame queue only · 2 frames",
+                            "Display cap only · 60 FPS", "0.1.12 combined · 60 FPS / 2 frames"}));
             performanceProfile.setContentDescription("Client performance profile");
-            performanceProfile.setSelection(new ClientRuntime(this).performanceProfile().equals("responsive") ? 1 : 0);
+            performanceProfile.setSelection(PERFORMANCE_PROFILES.indexOf(new ClientRuntime(this).performanceProfile()));
             performance.addView(performanceProfile);
             performanceProfile.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
                 @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                     if (updatingPerformance) return;
                     ClientRuntime runtime = new ClientRuntime(MainActivity.this);
-                    String profile = position == 1 ? "responsive" : "throughput";
+                    String profile = PERFORMANCE_PROFILES.get(position);
                     if (profile.equals(runtime.performanceProfile())) return;
                     try { runtime.setPerformanceProfile(profile); }
                     catch (IllegalStateException error) {
                         updatingPerformance = true;
-                        ((Spinner) parent).setSelection(runtime.performanceProfile().equals("responsive") ? 1 : 0);
+                        ((Spinner) parent).setSelection(PERFORMANCE_PROFILES.indexOf(runtime.performanceProfile()));
                         updatingPerformance = false;
                         Toast.makeText(MainActivity.this, error.getMessage(), Toast.LENGTH_SHORT).show();
                     }
                 }
                 @Override public void onNothingSelected(AdapterView<?> parent) { }
             });
+            performanceOption(performance, "Request next display frame early", "early-display-requests");
+            performanceOption(performance, "Disable concurrent binning (Adreno experiment)", "disable-concurrent-binning");
+            performanceOption(performance, "Use alternate CPU load instructions (FEX experiment)", "disable-lrcpc2");
             diagnosticHud = new CheckBox(this); diagnosticHud.setText("Show frame-time and GPU diagnostics"); diagnosticHud.setTextColor(0xffeef8fa);
             diagnosticHud.setChecked(new ClientRuntime(this).diagnosticHud()); performance.addView(diagnosticHud);
             diagnosticHud.setOnCheckedChangeListener((button, checked) -> {
@@ -180,9 +186,23 @@ public final class MainActivity extends Activity {
                 boolean adrenoSettings = stopped && client.renderer().equals("turnip-dxvk");
                 if (performanceProfile != null) performanceProfile.setEnabled(adrenoSettings);
                 if (diagnosticHud != null) diagnosticHud.setEnabled(adrenoSettings);
+                for (CheckBox option : performanceOptions.values()) option.setEnabled(adrenoSettings);
                 JSONObject state = client.status(); stateText.setText(state.optString("message", state.toString(2)));
             }
         } catch (Exception e) { if (stateText != null) stateText.setText("Status unavailable: " + e.getMessage()); }
+    }
+    private void performanceOption(LinearLayout parent, String label, String key) {
+        CheckBox box = new CheckBox(this); box.setText(label); box.setTextColor(0xffeef8fa);
+        box.setChecked(new ClientRuntime(this).performanceOption(key)); parent.addView(box); performanceOptions.put(key, box);
+        box.setOnCheckedChangeListener((button, checked) -> {
+            if (updatingPerformance) return;
+            ClientRuntime runtime = new ClientRuntime(this);
+            try { runtime.setPerformanceOption(key, checked); }
+            catch (IllegalStateException error) {
+                updatingPerformance = true; button.setChecked(runtime.performanceOption(key)); updatingPerformance = false;
+                Toast.makeText(this, error.getMessage(), Toast.LENGTH_SHORT).show();
+            }
+        });
     }
     private void loadLogs() {
         final TextView target = logText; final long generation = logGeneration;

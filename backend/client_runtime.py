@@ -71,6 +71,8 @@ class Settings:
     graphics_mode: str = "turnip-dxvk"
     performance_profile: str = client_graphics.DEFAULT_PERFORMANCE_PROFILE
     diagnostic_hud: bool = False
+    disable_concurrent_binning: bool = False
+    disable_lrcpc2: bool = False
     graphics_folder: Path = Path("/opt/eve-android")
     graphics_timeout: float = 90
     window_start_timeout: float = 20
@@ -120,6 +122,9 @@ class Runtime:
         self.s = settings or Settings()
         self.performance = client_graphics.performance_settings(
             self.s.graphics_mode, self.s.performance_profile, self.s.diagnostic_hud)
+        self.optimizations = client_graphics.optimization_settings(
+            self.s.graphics_mode, self.s.disable_concurrent_binning, self.s.disable_lrcpc2)
+        self.cpu_topology = client_graphics.cpu_topology()
         self.run = self.s.state / "run"
         self.logs = self.s.state / "logs"
         self.status_file = self.run / "status.json"
@@ -224,6 +229,7 @@ class Runtime:
                   "resolution": "1280x720", "updatedAt": time.time(),
                   "graphicsMode": self.s.graphics_mode,
                   "performance": self.performance,
+                  "optimizations": self.optimizations, "cpuTopology": self.cpu_topology,
                   "renderer": "DXVK / Turnip (Adreno)" if self.s.graphics_mode == "turnip-dxvk" else "WineD3D / llvmpipe",
                   "graphicsPreflight": self.graphics_reports, "processCpu": process_cpu,
                   "clientWindow": self.window_report,
@@ -251,7 +257,8 @@ class Runtime:
                     "SSL_CERT_FILE": "Z:\\client-state\\trust\\evejs-ca.pem"})
         return client_graphics.configure_environment(
             env, self.s.graphics_mode, self.s.graphics_folder, self.s.state,
-            self.s.performance_profile, self.s.diagnostic_hud)
+            self.s.performance_profile, self.s.diagnostic_hud,
+            self.s.disable_concurrent_binning, self.s.disable_lrcpc2)
 
     def require_server(self) -> None:
         value = read_json(self.s.server_state / "run/status.json")
@@ -577,7 +584,8 @@ class Runtime:
 
     def run_graphics(self) -> dict[str, Any]:
         if self.s.graphics_mode == "software":
-            return {"mode": "software", "performance": self.performance, "hardwarePreflightPassed": False}
+            return {"mode": "software", "performance": self.performance,
+                    "optimizations": self.optimizations, "hardwarePreflightPassed": False}
         env = self.environment()
         # The initialized, accepted prefix is required before these session-only
         # file binds. Recheck after Wine bootstrap/TLS so a refresh cannot corrupt
@@ -611,6 +619,7 @@ class Runtime:
         report = {"mode": "turnip-dxvk", "observedAt": time.time(), "supervisorIdentity": self.identities.get("supervisorIdentity"), "hardwarePreflightPassed": True,
                   "vulkan": vulkan, "d3d11": d3d, "presentation": presentation, "display": visible,
                   "performance": self.performance,
+                  "optimizations": self.optimizations, "cpuTopology": self.cpu_topology,
                   "qualificationScope": "native hardware D3D11 helper and local display; EVE performance requires observation"}
         atomic_json(self.s.state / "graphics-preflight.json", report)
         return report
@@ -913,10 +922,14 @@ def main(argv=None) -> int:
     parser.add_argument("--performance-profile", choices=client_graphics.PERFORMANCE_PROFILES,
                         default=client_graphics.DEFAULT_PERFORMANCE_PROFILE)
     parser.add_argument("--diagnostic-hud", action="store_true")
+    parser.add_argument("--disable-concurrent-binning", action="store_true")
+    parser.add_argument("--disable-lrcpc2", action="store_true")
     options = parser.parse_args(argv)
     runtime = Runtime(Settings(content=options.content, state=options.state, server_state=options.server_state,
                                graphics_mode=options.graphics_mode,
-                               performance_profile=options.performance_profile, diagnostic_hud=options.diagnostic_hud))
+                               performance_profile=options.performance_profile, diagnostic_hud=options.diagnostic_hud,
+                               disable_concurrent_binning=options.disable_concurrent_binning,
+                               disable_lrcpc2=options.disable_lrcpc2))
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, runtime.request_stop)
     try:

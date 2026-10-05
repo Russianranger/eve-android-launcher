@@ -48,17 +48,34 @@ final class ClientRuntime {
     }
 
     String performanceProfile() {
+        // A new key restores the accepted baseline once when upgrading from
+        // the regressed 0.1.12 combined default. Later explicit trials persist.
         String value = context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE)
-                .getString("performance-profile", "throughput");
-        return "responsive".equals(value) ? "responsive" : "throughput";
+                .getString("performance-profile-v2", "responsive");
+        return Arrays.asList("responsive", "render60", "queue2", "display60", "throughput").contains(value) ? value : "responsive";
     }
 
     void setPerformanceProfile(String profile) {
-        if (!"throughput".equals(profile) && !"responsive".equals(profile))
+        if (!Arrays.asList("responsive", "render60", "queue2", "display60", "throughput").contains(profile))
             throw new IllegalArgumentException("Choose a supported performance profile");
         if (alive() || RuntimeService.busy) throw new IllegalStateException("Stop the client before changing its performance settings");
         context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).edit()
-                .putString("performance-profile", profile).apply();
+                .putString("performance-profile-v2", profile).apply();
+    }
+
+    boolean earlyDisplayRequests() { return performanceOption("early-display-requests"); }
+    boolean disableConcurrentBinning() { return performanceOption("disable-concurrent-binning"); }
+    boolean disableLrcpc2() { return performanceOption("disable-lrcpc2"); }
+
+    boolean performanceOption(String key) {
+        return context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).getBoolean(key, false);
+    }
+
+    void setPerformanceOption(String key, boolean enabled) {
+        if (!Arrays.asList("early-display-requests", "disable-concurrent-binning", "disable-lrcpc2").contains(key))
+            throw new IllegalArgumentException("Choose a supported performance option");
+        if (alive() || RuntimeService.busy) throw new IllegalStateException("Stop the client before changing its performance settings");
+        context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).edit().putBoolean(key, enabled).apply();
     }
 
     boolean diagnosticHud() {
@@ -85,6 +102,8 @@ final class ClientRuntime {
     JSONObject status() throws Exception {
         JSONObject out = new JSONObject().put("runtime", RUNTIME).put("installed", installed()).put("selectedGraphicsMode", renderer())
                 .put("selectedPerformanceProfile", performanceProfile()).put("diagnosticHud", diagnosticHud())
+                .put("earlyDisplayRequests", earlyDisplayRequests()).put("disableConcurrentBinning", disableConcurrentBinning())
+                .put("disableLrcpc2", disableLrcpc2())
                 .put("supported_build", 3396210).put("client_launch_qualified", false)
                 .put("phase", "missing_client").put("message", "Import the complete EVE build 3396210 shared cache first");
         File status = new File(manager.clientState, "status.json");
@@ -293,12 +312,16 @@ final class ClientRuntime {
         JSONObject pending = new JSONObject().put("phase", "starting").put("ready", false).put("cleanShutdown", false)
                 .put("message", "Starting EVE with " + (graphicsMode.equals("turnip-dxvk") ? "Adreno GPU rendering…" : "software recovery rendering…")).put("graphicsMode", graphicsMode).put("client_launch_qualified", false)
                 .put("performanceProfile", performanceProfile).put("diagnosticHud", diagnosticHud)
+                .put("earlyDisplayRequests", earlyDisplayRequests()).put("disableConcurrentBinning", disableConcurrentBinning())
+                .put("disableLrcpc2", disableLrcpc2())
                 .put("login_qualified", false).put("graphics_qualified", false);
         RuntimeManager.text(new File(manager.clientState, "run/status.json"), pending.toString());
         List<String> launch = new ArrayList<>(Arrays.asList("/usr/bin/python3.11", "/opt/eve-android/client_runtime.py", "start",
                 "--content", "/client", "--state", "/client-state", "--server-state", "/server-state", "--graphics-mode", graphicsMode,
                 "--performance-profile", performanceProfile));
         if (diagnosticHud) launch.add("--diagnostic-hud");
+        if (disableConcurrentBinning()) launch.add("--disable-concurrent-binning");
+        if (disableLrcpc2()) launch.add("--disable-lrcpc2");
         session = manager.guest(manager.clientRoot, sessionBindings(graphicsMode), launch,
                 new File(manager.clientState, "logs/client-supervisor.log"), true);
         long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(6);

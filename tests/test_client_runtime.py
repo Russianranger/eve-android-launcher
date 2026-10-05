@@ -39,7 +39,7 @@ mode, state, port, behavior = sys.argv[1:]
 state = pathlib.Path(state)
 port = int(port)
 (state / (mode + '.pid')).write_text(str(os.getpid()))
-(state / (mode + '.environment.json')).write_text(json.dumps({key: os.environ.get(key) for key in ('DXVK_HUD', 'DXVK_CONFIG_FILE')}))
+(state / (mode + '.environment.json')).write_text(json.dumps({key: os.environ.get(key) for key in ('DXVK_HUD', 'DXVK_CONFIG_FILE', 'TU_DEBUG', 'FEX_HOSTFEATURES', 'FEX_TSOENABLED')}))
 if mode in ('graphicsVulkan', 'graphicsD3d'):
     if behavior == mode + '-hangs':
         def finish_graphics(*args):
@@ -65,8 +65,8 @@ if mode in ('graphicsVulkan', 'graphicsD3d'):
         policy_log = ('info:  dxgi.maxFrameRate = ' + str(performance['targetFrameRate']) + '\n'
                       + 'info:  dxgi.maxFrameLatency = ' + str(performance['maxFrameLatency']) + '\n'
                       + 'info:  dxgi.syncInterval = 0\ninfo:  Present mode: ' + mode_line + '\n')
-        if behavior == 'graphicsD3d-profile-wrong': policy_log = policy_log.replace('maxFrameRate = 60', 'maxFrameRate = 30')
-        if behavior == 'graphicsD3d-profile-missing': policy_log = policy_log.replace('info:  dxgi.maxFrameLatency = 2\n', '')
+        if behavior == 'graphicsD3d-profile-wrong': policy_log = policy_log.replace('maxFrameRate = ' + str(performance['targetFrameRate']), 'maxFrameRate = 10')
+        if behavior == 'graphicsD3d-profile-missing': policy_log = policy_log.replace('info:  dxgi.maxFrameLatency = ' + str(performance['maxFrameLatency']) + '\n', '')
         if behavior == 'graphicsD3d-policy-missing': policy_log = ''
         (state / 'logs/client-graphicsD3d-helper-errors.log').write_text(policy_log)
     print(json.dumps(report), flush=True)
@@ -152,7 +152,8 @@ class ClientRuntimeTests(unittest.TestCase):
             'dxvk-d3d11-arm64ec.dll': {'sha256': '1' * 64},
             'dxvk-dxgi-arm64ec.dll': {'sha256': '2' * 64}}}))
 
-    def settings(self, behavior="normal", graphics=False, performance_profile="throughput", diagnostic_hud=False):
+    def settings(self, behavior="normal", graphics=False, performance_profile="responsive", diagnostic_hud=False,
+                 disable_concurrent_binning=False, disable_lrcpc2=False):
         def command(role):
             return (sys.executable, str(self.fixture), role, str(self.state), str(self.port), behavior)
         return MODULE.Settings(content=self.content, state=self.state, server_state=self.server,
@@ -162,15 +163,18 @@ class ClientRuntimeTests(unittest.TestCase):
                                gate_timeout=2, observe_seconds=.15, shutdown_timeout=.15,
                                graphics_mode="turnip-dxvk" if graphics else "software",
                                performance_profile=performance_profile, diagnostic_hud=diagnostic_hud,
+                               disable_concurrent_binning=disable_concurrent_binning, disable_lrcpc2=disable_lrcpc2,
                                vulkan_command=command("graphicsVulkan") if graphics else None,
                                d3d_command=command("graphicsD3d") if graphics else None,
                                graphics_timeout=.5,
                                minimum_available_kib=0)
 
-    def launch(self, behavior="normal", clear_stop=True, graphics=False, performance_profile="throughput", diagnostic_hud=False):
+    def launch(self, behavior="normal", clear_stop=True, graphics=False, performance_profile="responsive", diagnostic_hud=False,
+               disable_concurrent_binning=False, disable_lrcpc2=False):
         if clear_stop:
             (self.state / "run/stop").unlink(missing_ok=True)
-        selected = self.settings(behavior, graphics, performance_profile, diagnostic_hud)
+        selected = self.settings(behavior, graphics, performance_profile, diagnostic_hud,
+                                 disable_concurrent_binning, disable_lrcpc2)
         (self.state / 'fixture-performance.json').write_text(json.dumps(MODULE.client_graphics.performance_settings(
             "turnip-dxvk", performance_profile)))
         values = {key: str(value) if isinstance(value, Path) else value for key, value in selected.__dict__.items()}
@@ -399,7 +403,7 @@ class ClientRuntimeTests(unittest.TestCase):
             constructor.assert_not_called()
 
     def test_cli_routes_only_selected_profiles_and_boolean_hud(self):
-        for arguments, profile, hud in (([], "throughput", False),
+        for arguments, profile, hud in (([], "responsive", False),
                                         (["--performance-profile", "responsive", "--diagnostic-hud"], "responsive", True)):
             with self.subTest(arguments=arguments), mock.patch.object(MODULE, "Runtime") as constructor, \
                     mock.patch.object(MODULE.signal, "signal"):
@@ -409,9 +413,55 @@ class ClientRuntimeTests(unittest.TestCase):
                 self.assertEqual(selected.diagnostic_hud, hud)
                 constructor.return_value.start.assert_called_once_with()
 
+    def test_cli_routes_only_boolean_native_optimization_switches(self):
+        for arguments, binning, lrcpc2 in (([], False, False), (["--disable-concurrent-binning"], True, False),
+                                           (["--disable-lrcpc2"], False, True),
+                                           (["--disable-concurrent-binning", "--disable-lrcpc2"], True, True)):
+            with self.subTest(arguments=arguments), mock.patch.object(MODULE, "Runtime") as constructor, \
+                    mock.patch.object(MODULE.signal, "signal"):
+                self.assertEqual(MODULE.main(["start", *arguments]), 0)
+                selected = constructor.call_args.args[0]
+                self.assertEqual(selected.disable_concurrent_binning, binning)
+                self.assertEqual(selected.disable_lrcpc2, lrcpc2)
+        for arguments in (["--disable-lrcpc2", "enablelrcpc2"], ["--disable-concurrent-binning", "forcecb"]):
+            with self.subTest(arguments=arguments), mock.patch.object(MODULE, "Runtime") as constructor, \
+                    mock.patch("sys.stderr", new=io.StringIO()), self.assertRaises(SystemExit) as error:
+                MODULE.main(["start", *arguments])
+            self.assertEqual(error.exception.code, 2)
+            constructor.assert_not_called()
+
+    def test_native_optimization_switches_strip_inherited_fex_and_reach_helpers_and_game(self):
+        with mock.patch.dict(os.environ, FEX_TSOENABLED="0", FEX_HOSTFEATURES="enablelrcpc2", TU_DEBUG="forcecb"):
+            runtime = MODULE.Runtime(self.settings(graphics=True))
+            self.assertNotIn("FEX_TSOENABLED", runtime.environment())
+            self.assertNotIn("FEX_HOSTFEATURES", runtime.environment())
+            self.assertNotIn("TU_DEBUG", runtime.environment())
+            for binning, lrcpc2 in ((True, False), (False, True)):
+                process = self.launch(graphics=True, disable_concurrent_binning=binning, disable_lrcpc2=lrcpc2)
+                running = self.wait_status("running")
+                receipt = running["optimizations"]
+                self.assertEqual(receipt, MODULE.client_graphics.optimization_settings("turnip-dxvk", binning, lrcpc2))
+                self.assertEqual(running["graphicsPreflight"]["optimizations"], receipt)
+                self.assertFalse(running["cpuTopology"]["effectiveFexFeaturesObserved"])
+                for role in ("graphicsVulkan", "graphicsD3d", "client"):
+                    environment = json.loads((self.state / (role + ".environment.json")).read_text())
+                    self.assertEqual(environment["TU_DEBUG"], "nocb" if binning else None)
+                    self.assertEqual(environment["FEX_HOSTFEATURES"], "disablelrcpc2" if lrcpc2 else None)
+                    self.assertIsNone(environment["FEX_TSOENABLED"])
+                (self.state / "run/stop").write_text("stop")
+                self.assertEqual(process.wait(timeout=4), 0)
+                (self.state / "run/status.json").unlink()
+            software = MODULE.Runtime(self.settings(disable_concurrent_binning=True, disable_lrcpc2=True))
+            self.assertFalse(software.optimizations["disableConcurrentBinning"])
+            self.assertFalse(software.optimizations["disableLrcpc2"])
+            self.assertNotIn("TU_DEBUG", software.environment())
+            self.assertNotIn("FEX_HOSTFEATURES", software.environment())
+
     def test_selected_profile_controls_display_rate_and_gpu_environment(self):
         for mode, profile, rate in (("turnip-dxvk", "throughput", 60),
                                     ("turnip-dxvk", "responsive", 30),
+                                    ("turnip-dxvk", "render60", 30), ("turnip-dxvk", "queue2", 30),
+                                    ("turnip-dxvk", "display60", 60),
                                     ("software", "throughput", 15), ("software", "responsive", 15)):
             with self.subTest(mode=mode, profile=profile):
                 runtime = MODULE.Runtime(MODULE.Settings(state=self.state, graphics_mode=mode,

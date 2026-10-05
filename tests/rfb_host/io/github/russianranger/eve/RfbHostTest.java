@@ -62,13 +62,20 @@ public final class RfbHostTest {
         Screen screen = new Screen();
         rejects(() -> new RfbClient(new ByteArrayInputStream(hello(0, 720)), new ByteArrayOutputStream(), screen).handshake(), "zero width accepted");
         rejects(() -> new RfbClient(new ByteArrayInputStream(hello(4096, 2160)), new ByteArrayOutputStream(), screen).handshake(), "excess framebuffer allocation accepted");
-        RfbClient truncated = new RfbClient(new ByteArrayInputStream(together(hello(2, 1), update(2, 1, 0, new byte[7]))), new ByteArrayOutputStream(), screen);
-        truncated.handshake(); rejects(truncated::readUpdate, "truncated pixel bytes accepted");
-        RfbClient outside = new RfbClient(new ByteArrayInputStream(together(hello(2, 1), update(2, 1, 1, new byte[8]))), new ByteArrayOutputStream(), screen);
-        outside.handshake(); rejects(outside::readUpdate, "out-of-bounds rectangle accepted");
+        malformedFrameDoesNotRequest(update(2, 1, 0, new byte[7]), "truncated pixel bytes accepted");
+        malformedFrameDoesNotRequest(update(2, 1, 1, new byte[8]), "out-of-bounds rectangle accepted");
+        byte[] unsupported = update(2, 1, 0, new byte[8]); unsupported[15] = 5;
+        malformedFrameDoesNotRequest(unsupported, "unsupported rectangle encoding accepted");
         ByteArrayOutputStream clipboard = new ByteArrayOutputStream(); DataOutputStream peer = new DataOutputStream(clipboard); peer.writeByte(3); peer.write(new byte[3]); peer.writeInt(Integer.MAX_VALUE);
         RfbClient oversized = new RfbClient(new ByteArrayInputStream(together(hello(2, 1), clipboard.toByteArray())), new ByteArrayOutputStream(), screen);
         oversized.handshake(); rejects(oversized::readUpdate, "unbounded clipboard allocation accepted");
+    }
+    private static void malformedFrameDoesNotRequest(byte[] packet, String message) throws Exception {
+        CountingOutput output = new CountingOutput(); DisplayPerformance performance = new DisplayPerformance();
+        RfbClient client = new RfbClient(new ByteArrayInputStream(together(hello(2, 1), packet)), output, new Screen(), performance);
+        client.handshake(); output.clear(); rejects(client::readUpdate, message);
+        check(output.size() == 0 && performance.incrementalRequests.get() == 0 && performance.fullRequests.get() == 1,
+            "malformed baseline update sends no additional request");
     }
     private static final class CountingOutput extends ByteArrayOutputStream {
         int writes, flushes;
@@ -176,7 +183,7 @@ public final class RfbHostTest {
                     }
                 };
                 Screen screen = new Screen(); DisplayPerformance performance = new DisplayPerformance();
-                RfbClient client = new RfbClient(monitored, socket.getOutputStream(), screen, performance);
+                RfbClient client = new RfbClient(monitored, socket.getOutputStream(), screen, performance, true);
                 client.handshake(); watching.set(true); ready.countDown();
                 Future<?> receiving = threads.submit(() -> { client.readUpdate(); return null; });
                 check(waiting.await(2, TimeUnit.SECONDS), partialPixels ? "native socket waits for remaining raw pixels" : "native socket waits for message header");
@@ -230,7 +237,7 @@ public final class RfbHostTest {
             try (Socket socket = new Socket("127.0.0.1", listener.getLocalPort())) {
                 socket.setSoTimeout(5000); socket.setTcpNoDelay(true);
                 Screen screen = new Screen(); DisplayPerformance performance = new DisplayPerformance();
-                RfbClient client = new RfbClient(socket.getInputStream(), socket.getOutputStream(), screen, performance); client.handshake();
+                RfbClient client = new RfbClient(socket.getInputStream(), socket.getOutputStream(), screen, performance, true); client.handshake();
                 for (int i = 0; i < ahead.length; i++) {
                     Future<?> receiving = threads.submit(() -> { client.readUpdate(); return null; });
                     check(ahead[i].await(2, TimeUnit.SECONDS), "next request arrives while framebuffer payload is withheld");
@@ -258,6 +265,79 @@ public final class RfbHostTest {
             peer.writeShort(0); peer.writeShort(0); peer.writeShort(size[0]); peer.writeShort(size[1]); peer.writeInt(-223);
         }
         return bytes.toByteArray();
+    }
+    private static void baselineRequestsFollowCompleteUpdates() throws Exception {
+        byte[] rectangle = update(2, 1, 0, new byte[]{0x56, 0x34, 0x12, 0, (byte)0xef, (byte)0xcd, (byte)0xab, 0});
+        byte[] packet = together(rectangle, Arrays.copyOfRange(rectangle, 4, rectangle.length)); packet[3] = 2;
+        int prefix = packet.length - 1; // One rectangle and all but the last pixel byte of the second.
+        CountDownLatch ready = new CountDownLatch(1), waiting = new CountDownLatch(1);
+        CountDownLatch inputSeen = new CountDownLatch(1), pixelsAllowed = new CountDownLatch(1);
+        ExecutorService threads = Executors.newFixedThreadPool(3);
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
+            Future<?> peer = threads.submit(() -> {
+                try (Socket socket = listener.accept()) {
+                    socket.setSoTimeout(5000); socket.setTcpNoDelay(true);
+                    OutputStream output = socket.getOutputStream(); DataInputStream wire = new DataInputStream(socket.getInputStream());
+                    output.write(hello(2, 1)); output.flush(); wire.readFully(new byte[56]);
+                    check(ready.await(2, TimeUnit.SECONDS), "baseline fixture ready after handshake");
+                    output.write(packet, 0, prefix); output.flush();
+                    // Any header-ahead or per-rectangle request would precede
+                    // this input and fail, without relying on a timed absence.
+                    key(wire, 0xff09, true); key(wire, 0xff09, false); inputSeen.countDown();
+                    check(pixelsAllowed.await(2, TimeUnit.SECONDS), "baseline pixels released after input verification");
+                    output.write(packet, prefix, packet.length - prefix); output.flush();
+                    request(wire, true, 2, 1);
+                    output.write(resizedUpdate(new int[][]{{4, 3}, {5, 4}, {5, 4}})); output.flush();
+                    request(wire, false, 5, 4); // Only one request, at the final validated size.
+                    output.write(rectangle); output.flush(); request(wire, true, 5, 4);
+                    output.write(resizedUpdate(new int[][]{{2, 1}, {2, 1}})); output.flush(); request(wire, false, 2, 1);
+                    output.write(resizedUpdate(new int[][]{{2, 1}, {2, 1}})); output.flush(); request(wire, true, 2, 1);
+                    output.write(new byte[4]); output.flush(); request(wire, true, 2, 1); // An empty valid update.
+                    key(wire, 0xff1b, true); key(wire, 0xff1b, false); // Reject a second request at update end.
+                    // A valid resize followed by an invalid one must never
+                    // result in a partial-size full refresh or other request.
+                    output.write(resizedUpdate(new int[][]{{4, 3}, {0, 1}})); output.flush();
+                    check(wire.read() == -1, "baseline malformed update sends no request");
+                }
+                return null;
+            });
+            DisplayPerformance performance = new DisplayPerformance(); Screen screen = new Screen();
+            try (Socket socket = new Socket("127.0.0.1", listener.getLocalPort())) {
+                socket.setSoTimeout(5000); socket.setTcpNoDelay(true);
+                AtomicBoolean watching = new AtomicBoolean();
+                InputStream monitored = new FilterInputStream(socket.getInputStream()) {
+                    private long received;
+                    @Override public int read(byte[] bytes, int offset, int length) throws IOException {
+                        if (watching.get() && received >= prefix) waiting.countDown();
+                        int count = in.read(bytes, offset, length);
+                        if (watching.get() && count > 0) received += count;
+                        return count;
+                    }
+                };
+                // Four-argument constructor exercises the restored default.
+                RfbClient client = new RfbClient(monitored, socket.getOutputStream(), screen, performance);
+                client.handshake(); watching.set(true); ready.countDown();
+                Future<?> receiving = threads.submit(() -> { client.readUpdate(); return null; });
+                check(waiting.await(2, TimeUnit.SECONDS), "baseline waits for every pixel byte of every rectangle");
+                client.tap(0xff09);
+                check(inputSeen.await(2, TimeUnit.SECONDS), "baseline input reaches peer while raw pixels are withheld");
+                check(!receiving.isDone() && screen.updates == 0 && performance.rectangles.get() == 1
+                    && performance.incrementalRequests.get() == 0 && performance.fullRequests.get() == 1,
+                    "baseline neither requests nor publishes a complete update while its last rectangle is incomplete");
+                pixelsAllowed.countDown(); receiving.get(2, TimeUnit.SECONDS);
+                check(screen.updates == 1 && performance.rectangles.get() == 2, "baseline publishes a complete multi-rectangle update once");
+                for (int i = 0; i < 5; i++) client.readUpdate();
+                client.tap(0xff1b); rejects(client::readUpdate, "baseline accepted malformed resize");
+                check(performance.incrementalRequests.get() == 4 && performance.fullRequests.get() == 3,
+                    "baseline has one initial full refresh, one per size change, and one incremental per other valid update");
+                check(performance.json().contains("\"update_request_policy\": \"after-complete-with-resize-refresh\""),
+                    "support metrics identify the actual baseline policy for this connection");
+            }
+            peer.get(2, TimeUnit.SECONDS);
+        } finally {
+            ready.countDown(); pixelsAllowed.countDown(); threads.shutdownNow();
+            check(threads.awaitTermination(2, TimeUnit.SECONDS), "baseline fixture threads stopped");
+        }
     }
     private static void resizeRefreshesOnlyOnceAndFetchesNewArea() throws Exception {
         ExecutorService threads = Executors.newFixedThreadPool(2);
@@ -299,7 +379,7 @@ public final class RfbHostTest {
                             "full resize refresh reaches the newly grown area in both axes"); observed[2]++;
                     }
                     public void updated() { observed[3]++; }
-                }, performance);
+                }, performance, true);
                 client.handshake(); client.readUpdate(); client.readUpdate();
                 check(observed[0] == 5 && observed[1] == 4 && observed[2] == 1, "growing framebuffer does not stall with only new-region damage");
                 client.readUpdate(); client.readUpdate(); client.tap(0xff09);
@@ -397,7 +477,8 @@ public final class RfbHostTest {
     public static void main(String[] args) throws Exception {
         rawFrameAndInput(); malformedFrames(); compoundInput(); blockedReceiveDoesNotBlockInput();
         socketReceiveDoesNotBlockInput(false); socketReceiveDoesNotBlockInput(true); motionKeepsButtonEdges();
-        requestPipelinesBlockedPixelPayload(); resizeRefreshesOnlyOnceAndFetchesNewArea(); nonFramebufferMessagesDoNotRequestUpdates();
+        requestPipelinesBlockedPixelPayload(); baselineRequestsFollowCompleteUpdates();
+        resizeRefreshesOnlyOnceAndFetchesNewArea(); nonFramebufferMessagesDoNotRequestUpdates();
         controllerAndSharedInputReachWire();
         System.out.println("Client display RFB/controller/shared-hold/release/motion/performance host fixtures passed");
     }

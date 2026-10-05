@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check that the built ARM64 launcher includes its actual runtime entrypoints."""
 import argparse
+import re
 import struct
 import sys
 import tempfile
@@ -12,7 +13,42 @@ import wine_trust_overlay
 import client_graphics
 
 
-def check(path: Path) -> None:
+def check_manifest(tree: str) -> None:
+    """Require release performance flags in the APK's actual aapt XML tree."""
+    elements = []
+    current = None
+    for line in tree.splitlines():
+        element = re.match(r"^(\s*)E: ([\w.-]+)(?:\s|$)", line)
+        if element:
+            current = (len(element[1]), element[2], {})
+            elements.append(current)
+        elif current is not None:
+            attribute = re.match(r"^\s*A: android:([\w]+)\(0x[0-9a-fA-F]+\)=(.*)$", line)
+            relevant = {"application": {"debuggable"}, "profileable": {"shell", "enabled"}}
+            if attribute and attribute[1] in relevant.get(current[1], set()):
+                boolean = re.fullmatch(r"\(type 0x12\)(0x[0-9a-fA-F]+)", attribute[2])
+                if not boolean:
+                    raise ValueError(f"Unrecognized compiled {current[1]} {attribute[1]} boolean")
+                current[2][attribute[1]] = int(boolean[1], 16) != 0
+    applications = [(i, item) for i, item in enumerate(elements) if item[1] == "application"]
+    if len(applications) != 1:
+        raise ValueError("APK manifest must contain exactly one application")
+    index, application = applications[0]
+    # Android's default is false when this attribute is omitted.
+    if application[2].get("debuggable", False):
+        raise ValueError("Performance preview APK must not be debuggable")
+    children = []
+    for item in elements[index + 1:]:
+        if item[0] <= application[0]:
+            break
+        if item[0] == application[0] + 2 and item[1] == "profileable":
+            children.append(item)
+    if len(children) != 1 or children[0][2].get("shell") is not True or not children[0][2].get("enabled", True):
+        raise ValueError("Performance preview must enable shell profiling")
+
+
+def check(path: Path, manifest_tree: Path) -> None:
+    check_manifest(manifest_tree.read_text())
     with zipfile.ZipFile(path) as archive:
         required = (
             "lib/arm64-v8a/libproot.so", "lib/arm64-v8a/libproot-loader.so",
@@ -58,10 +94,13 @@ def check(path: Path) -> None:
             for name in (*client_graphics.FILES, "client-graphics-bundle.json"):
                 (assets / name).write_bytes(archive.read("assets/" + name))
             client_graphics.verify_bundle(assets)
-    print(f"Verified ARM64 runtime and server/client backend assets: {path}")
+    print(f"Verified non-debuggable profileable ARM64 APK and server/client backend assets: {path}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("apk", type=Path)
-    check(parser.parse_args().apk)
+    parser.add_argument("--manifest-tree", type=Path, required=True,
+                        help="aapt dump xmltree APK AndroidManifest.xml output from this APK")
+    args = parser.parse_args()
+    check(args.apk, args.manifest_tree)

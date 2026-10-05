@@ -16,6 +16,7 @@ final class RfbClient {
     private final DataOutputStream out;
     private final Screen screen;
     private final DisplayPerformance performance;
+    private final boolean earlyDisplayRequests;
     private volatile int width, height;
     private int[] pixelBuffer = new int[0];
     private byte[] rowBuffer = new byte[0];
@@ -26,7 +27,12 @@ final class RfbClient {
         this(input, output, screen, new DisplayPerformance());
     }
     RfbClient(InputStream input, OutputStream output, Screen screen, DisplayPerformance performance) {
+        this(input, output, screen, performance, false);
+    }
+    RfbClient(InputStream input, OutputStream output, Screen screen, DisplayPerformance performance, boolean earlyDisplayRequests) {
         this.performance = performance;
+        this.earlyDisplayRequests = earlyDisplayRequests;
+        performance.requestPolicy(earlyDisplayRequests);
         in = new DataInputStream(new BufferedInputStream(performance.measure(input), 65536));
         out = new DataOutputStream(new BufferedOutputStream(output, 8192));
         this.screen = screen;
@@ -85,11 +91,12 @@ final class RfbClient {
         if (message == 3) { bytes(3); bytes(in.readInt()); return; } // No clipboard integration.
         if (message != 0) throw new IOException("Unexpected display message: " + message);
         in.readUnsignedByte(); int count = in.readUnsignedShort();
-        // Keep one request ahead of decoding, as TigerVNC 1.14.1's viewer does
+        // The optional comparison mode keeps one request ahead of decoding,
+        // as TigerVNC 1.14.1's viewer does
         // in CConnection::framebufferUpdateStart(). The next update can be
         // prepared while this one is received and published, without a timer
         // generating requests faster than we can consume framebuffer headers.
-        request(true);
+        if (earlyDisplayRequests) request(true);
         boolean resized = false;
         for (int i = 0; i < count; i++) {
             int x = in.readUnsignedShort(), y = in.readUnsignedShort();
@@ -116,13 +123,17 @@ final class RfbClient {
             performance.rectangles.incrementAndGet(); performance.pixels.addAndGet(length);
         }
         if (count > 0) { performance.updates.incrementAndGet(); screen.updated(); }
-        // The pipelined request used the previous size. In particular, a
+        // An early request used the previous size. In particular, a
         // growing desktop whose only damage is outside that region might not
         // answer it. Request the entire new framebuffer once after this valid
         // update, even if it contained several DesktopSize rectangles. RFB
         // requests may be merged by the server, so do not skip a later header's
         // normal request in an attempt to count responses to these requests.
+        // Baseline mode requests only after every rectangle is validated,
+        // received and published. A resize replaces its incremental request
+        // with one full request using the final validated dimensions.
         if (resized) request(false);
+        else if (!earlyDisplayRequests) request(true);
     }
     private void request(boolean incremental) throws IOException {
         synchronized (out) {

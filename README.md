@@ -30,7 +30,10 @@ pins both Start buttons above the tabs and gives the app icon a dark space backg
 The 0.1.11 Thor test accepts fullscreen/controls and reopening the saved character
 in station. 0.1.12 adds a default 60 FPS/two-frame performance profile, the previous
 30 FPS/one-frame option, earlier display requests and a dark adaptive app icon.
-Actual FPS gains require the [warm station comparison](docs/TESTING.md).
+The user reports worse 0.1.12 performance. 0.1.13 restores the accepted baseline,
+adds isolated cap/request comparisons and optional Adreno/FEX experiments, and
+uses a same-signed non-debuggable APK. Follow the [warm station comparison](docs/TESTING.md);
+actual speed and Android runtime compatibility still require the Thor test.
 
 ## Fullscreen controls in 0.1.11
 

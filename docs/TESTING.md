@@ -1,5 +1,59 @@
 # EVE Android Launcher 0.1.12: warm station performance comparison
 
+## Current 0.1.13 performance recovery test
+
+Install **EVE-Android-Launcher-0.1.13.apk** over the existing app with the
+client and server stopped. Keep app data, imported client, runtime, prefix,
+shader caches, current local account and saved character. No import, validation
+or runtime probe is needed. This APK uses the same preview signing identity with
+Android debugging disabled and shell profiling enabled; physical Android PRoot
+startup must still be checked.
+
+1. In Client, leave **Use Adreno GPU rendering** enabled and select
+   **Baseline · 30 FPS target**. Leave all three experiment checkboxes off.
+   Enable **Show frame-time and GPU diagnostics** and keep it enabled for all
+   comparisons. This update initially selects the accepted 0.1.11 caps and
+   after-complete display requests, including when upgrading from 0.1.12.
+2. Start server → **SERVER READY** → Start EVE client → Open client display.
+   Log in with the existing local account and enter the same station/character.
+   Confirm fullscreen, LT layer switching, both sticks and gear actions work.
+   If startup fails, export immediately and report the exact stage; preserve data.
+3. Keep the same camera, windows, graphics settings and Thor fan/performance mode.
+   Allow at least three minutes in station for loading/shaders to settle, then
+   observe another two minutes. Record HUD FPS range, frame-time spikes, GPU load,
+   stutter/input delay, visible faults and device temperature if available.
+   Export support while running, then stop the client cleanly. Label this ZIP
+   **baseline**. Delivery counters are not EVE engine FPS.
+4. Repeat that scene with only **Disable concurrent binning (Adreno experiment)**
+   enabled. Export **nocb**. Stop the client, turn it off, then repeat with only
+   **Use alternate CPU load instructions (FEX experiment)** enabled and export
+   **FEX**. Each experiment starts a new client process; the server may remain on.
+   Keep a change only if repeated warm runs improve without visual/input faults.
+5. Return both checkboxes off. Compare **Render cap only · 60 FPS** using the same
+   scene and timing. This tests whether raising the render limit helps without
+   also raising the display cap or queue. Export **render60**. If an experiment
+   helped, repeat render60 with only that experiment and label the combination.
+6. Re-run Baseline after the trials to detect device warming/scene drift. Save and
+   stop server. Return the labeled ZIPs, FPS ranges and which setting felt best.
+
+The extra **Frame queue only · 2 frames**, **Display cap only · 60 FPS** and
+**Request next display frame early** options are available for later isolation.
+**0.1.12 combined · 60 FPS / 2 frames** recreates its caps; also enable early
+requests to reproduce its delivery policy. Each control is locked while the
+client is running or an operation is active. All options preserve the working
+immediate-presentation workaround; profiles do not modify game preferences.
+Baseline caps at 30 FPS. A 60 FPS cap allows higher engine FPS but cannot promise
+30+ FPS or a matching visible display rate.
+
+The support export records selected/effective caps, allowlisted driver/CPU
+assignments, actual per-connection request policy, and bounded readable CPU
+MIDR/topology. Assigned FEX/Turnip options are distinct from proof of native effect
+or measured speed. Non-debuggable Android packaging is verified in CI, while
+PRoot/TLS/server/controls compatibility still needs this Thor run.
+Cached dynamic buffers are deferred until actual KGSL allocation flags and
+CPU-write/GPU-read coherence are qualified. No cached-buffer switch is included.
+
+
 The October 4 0.1.11 test accepts fullscreen/controls, saved-character reopen,
 login and visible station entry on Thor. The screenshot shows 23.9 FPS. Keep
 those accepted milestones; the active goal is smoother rendering at 30+ FPS.

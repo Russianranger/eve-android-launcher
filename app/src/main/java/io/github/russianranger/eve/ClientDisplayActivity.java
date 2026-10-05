@@ -303,7 +303,7 @@ public final class ClientDisplayActivity extends Activity {
                         screen.updated();
                         if (!receivedFrame) { receivedFrame = true; displayStatus(token, "Local display connected · touch to click · use Text for login fields"); }
                     }
-                }, measured);
+                }, measured, new ClientRuntime(this).earlyDisplayRequests());
                 sessionClient = client;
                 client.handshake();
                 if (!visible || generation != token) break;

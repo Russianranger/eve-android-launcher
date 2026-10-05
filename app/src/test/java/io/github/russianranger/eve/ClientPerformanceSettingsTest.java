@@ -63,12 +63,12 @@ public final class ClientPerformanceSettingsTest {
 
     @Test public void defaultsAndExplicitChoicesSurviveNewRuntimeInstances() {
         ClientRuntime runtime = new ClientRuntime(context);
-        assertEquals("throughput", runtime.performanceProfile());
+        assertEquals("responsive", runtime.performanceProfile());
         assertFalse(runtime.diagnosticHud());
-        runtime.setPerformanceProfile("responsive");
+        runtime.setPerformanceProfile("render60");
         runtime.setDiagnosticHud(true);
         ClientRuntime restored = new ClientRuntime(context);
-        assertEquals("responsive", restored.performanceProfile());
+        assertEquals("render60", restored.performanceProfile());
         assertTrue(restored.diagnosticHud());
         restored.setPerformanceProfile("throughput");
         restored.setDiagnosticHud(false);
@@ -77,16 +77,42 @@ public final class ClientPerformanceSettingsTest {
     }
 
     @Test public void invalidStoredProfileFallsBackAndInvalidChoicesCannotOverwriteIt() {
-        assertTrue(preferences.edit().putString("performance-profile", "unsupported-profile").commit());
+        assertTrue(preferences.edit().putString("performance-profile-v2", "unsupported-profile").commit());
         ClientRuntime runtime = new ClientRuntime(context);
-        assertEquals("throughput", runtime.performanceProfile());
+        assertEquals("responsive", runtime.performanceProfile());
         for (String invalid : new String[]{"unsupported-profile", "", null}) {
             try { runtime.setPerformanceProfile(invalid); fail("Unsupported profile was accepted"); }
             catch (IllegalArgumentException expected) { }
         }
-        assertEquals("unsupported-profile", preferences.getString("performance-profile", ""));
+        assertEquals("unsupported-profile", preferences.getString("performance-profile-v2", ""));
         runtime.setPerformanceProfile("responsive");
         assertEquals("responsive", new ClientRuntime(context).performanceProfile());
+    }
+
+    @Test public void upgradeRestoresBaselineAndIndependentExperimentsPersist() {
+        assertTrue(preferences.edit().putString("performance-profile", "throughput").commit());
+        ClientRuntime runtime = new ClientRuntime(context);
+        assertEquals("responsive", runtime.performanceProfile());
+        assertFalse(runtime.earlyDisplayRequests());
+        assertFalse(runtime.disableConcurrentBinning());
+        assertFalse(runtime.disableLrcpc2());
+        for (String profile : new String[]{"render60", "queue2", "display60", "throughput", "responsive"}) {
+            runtime.setPerformanceProfile(profile);
+            assertEquals(profile, new ClientRuntime(context).performanceProfile());
+        }
+        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2"}) {
+            runtime.setPerformanceOption(option, true);
+            assertTrue(new ClientRuntime(context).performanceOption(option));
+            RuntimeService.busy = true;
+            try { runtime.setPerformanceOption(option, false); fail("Running option changed"); }
+            catch (IllegalStateException expected) { }
+            finally { RuntimeService.busy = false; }
+            assertTrue(runtime.performanceOption(option));
+            runtime.setPerformanceOption(option, false);
+            assertFalse(new ClientRuntime(context).performanceOption(option));
+        }
+        try { runtime.setPerformanceOption("FEX_UNSAFE", true); fail("Unsupported flag accepted"); }
+        catch (IllegalArgumentException expected) { }
     }
 
     private static void expectSettingsBlocked(ClientRuntime runtime) {
@@ -94,7 +120,7 @@ public final class ClientPerformanceSettingsTest {
         catch (IllegalStateException expected) { }
         try { runtime.setDiagnosticHud(true); fail("Active client diagnostics changed"); }
         catch (IllegalStateException expected) { }
-        assertEquals("throughput", runtime.performanceProfile());
+        assertEquals("responsive", runtime.performanceProfile());
         assertFalse(runtime.diagnosticHud());
     }
 
@@ -106,9 +132,9 @@ public final class ClientPerformanceSettingsTest {
         ReflectionHelpers.setStaticField(ClientRuntime.class, "session", new LiveProcess());
         try { assertTrue(runtime.alive()); expectSettingsBlocked(runtime); }
         finally { ReflectionHelpers.setStaticField(ClientRuntime.class, "session", null); }
-        runtime.setPerformanceProfile("responsive");
+        runtime.setPerformanceProfile("render60");
         runtime.setDiagnosticHud(true);
-        assertEquals("responsive", runtime.performanceProfile());
+        assertEquals("render60", runtime.performanceProfile());
         assertTrue(runtime.diagnosticHud());
     }
 
@@ -125,13 +151,16 @@ public final class ClientPerformanceSettingsTest {
             assertEquals(0, choice.getSelectedItemPosition());
             assertTrue(choice.isEnabled());
             choice.setSelection(1); idle();
-            assertEquals("responsive", new ClientRuntime(context).performanceProfile());
+            assertEquals("render60", new ClientRuntime(context).performanceProfile());
             checkBox(root, "Show frame-time and GPU diagnostics").performClick();
             assertTrue(new ClientRuntime(context).diagnosticHud());
+            checkBox(root, "Disable concurrent binning (Adreno experiment)").performClick();
+            assertTrue(new ClientRuntime(context).disableConcurrentBinning());
             button(root, "Server").performClick(); idle();
             button(root, "Client").performClick(); idle();
             assertEquals(1, profile(root).getSelectedItemPosition());
             assertTrue(checkBox(root, "Show frame-time and GPU diagnostics").isChecked());
+            assertTrue(checkBox(root, "Disable concurrent binning (Adreno experiment)").isChecked());
             assertSame(startServer, root.findViewWithTag("start-server"));
             assertSame(startClient, root.findViewWithTag("start-client"));
             assertTopStart(startServer); assertTopStart(startClient);
@@ -148,6 +177,9 @@ public final class ClientPerformanceSettingsTest {
             RuntimeService.busy = true; refresh();
             assertFalse(profile(root).isEnabled());
             assertFalse(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
+            assertFalse(checkBox(root, "Request next display frame early").isEnabled());
+            assertFalse(checkBox(root, "Disable concurrent binning (Adreno experiment)").isEnabled());
+            assertFalse(checkBox(root, "Use alternate CPU load instructions (FEX experiment)").isEnabled());
             RuntimeService.busy = false;
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", new LiveProcess());
             refresh();

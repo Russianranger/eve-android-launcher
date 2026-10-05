@@ -502,6 +502,61 @@ class GraphicsTests(unittest.TestCase):
             self.assertEqual(gpu[key], base[key])
             self.assertEqual(software[key], base[key])
 
+    def test_driver_and_fex_experiments_are_independent_and_session_only(self):
+        base = {"TU_DEBUG": "forcecb,sysmem", "TU_UNKNOWN": "1", "FEX_HOSTFEATURES": "enablelrcpc2",
+                "FEX_DISABLETELEMETRY": "1", "WINEESYNC": "0", "WINEFSYNC": "0"}
+        saved = dict(base)
+        for binning, lrcpc2 in ((False, False), (True, False), (False, True), (True, True)):
+            with self.subTest(binning=binning, lrcpc2=lrcpc2):
+                gpu = graphics.configure_environment(base, "turnip-dxvk", self.folder, self.state,
+                                                     disable_concurrent_binning=binning, disable_lrcpc2=lrcpc2)
+                receipt = graphics.optimization_settings("turnip-dxvk", binning, lrcpc2)
+                self.assertEqual(gpu.get("TU_DEBUG"), "nocb" if binning else None)
+                self.assertEqual(gpu.get("FEX_HOSTFEATURES"), "disablelrcpc2" if lrcpc2 else None)
+                self.assertEqual(receipt["turnipDebug"], gpu.get("TU_DEBUG"))
+                self.assertEqual(receipt["fexHostFeatures"], gpu.get("FEX_HOSTFEATURES"))
+                self.assertFalse(receipt["nativeEffectVerified"])
+                self.assertNotIn("TU_UNKNOWN", gpu)
+                self.assertEqual(gpu["FEX_DISABLETELEMETRY"], "1")
+                software = graphics.configure_environment(gpu, "software", self.folder, self.state,
+                                                          disable_concurrent_binning=binning, disable_lrcpc2=lrcpc2)
+                self.assertFalse(any(key.startswith("TU_") for key in software))
+                self.assertNotIn("FEX_HOSTFEATURES", software)
+                effective = graphics.optimization_settings("software", binning, lrcpc2)
+                self.assertEqual(effective["requestedDisableConcurrentBinning"], binning)
+                self.assertEqual(effective["requestedDisableLrcpc2"], lrcpc2)
+                self.assertFalse(effective["disableConcurrentBinning"])
+                self.assertFalse(effective["disableLrcpc2"])
+                restored = graphics.configure_environment(gpu, "turnip-dxvk", self.folder, self.state)
+                self.assertNotIn("TU_DEBUG", restored)
+                self.assertNotIn("FEX_HOSTFEATURES", restored)
+                for key in ("WINEESYNC", "WINEFSYNC"):
+                    self.assertEqual(gpu[key], "0")
+        self.assertEqual(base, saved)
+        for invalid in ("true", "nocb", "disablelrcpc2", 1, None, []):
+            for name in ("disable_concurrent_binning", "disable_lrcpc2"):
+                with self.subTest(name=name, invalid=invalid), self.assertRaises(ValueError):
+                    graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state, **{name: invalid})
+
+    def test_cpu_topology_is_bounded_numeric_evidence_and_allows_missing_permissions(self):
+        topology = self.root / "sysfs"
+        for index in (0, 1, 32):
+            directory = topology / ("cpu" + str(index))
+            (directory / "regs/identification").mkdir(parents=True)
+            (directory / "topology").mkdir()
+            (directory / "regs/identification/midr_el1").write_text("0x00000000410fd4e0\n" if index == 0 else "secret text")
+            (directory / "topology/core_id").write_text(str(index))
+            (directory / "cpu_capacity").write_text("1024\n")
+        value = graphics.cpu_topology(topology)
+        self.assertEqual([row["cpu"] for row in value["cpus"]], [0, 1])
+        self.assertEqual(value["cpus"][0]["midr"], "0x410fd4e0")
+        self.assertEqual(value["cpus"][0]["implementer"], 0x41)
+        self.assertEqual(value["cpus"][0]["partNumber"], 0xd4e)
+        self.assertNotIn("midr", value["cpus"][1])
+        self.assertTrue(value["midrAvailable"])
+        self.assertFalse(value["effectiveFexFeaturesObserved"])
+        self.assertEqual(graphics.cpu_topology(self.root / "absent")["cpus"], [])
+
     def test_unknown_mode_is_not_an_implicit_fallback(self):
         for mode in ("fixture", "lavapipe", "turnip", "", None):
             with self.subTest(mode=mode), self.assertRaises(ValueError):
@@ -548,8 +603,8 @@ class GraphicsTests(unittest.TestCase):
         self.assertEqual(icd["ICD"]["library_path"], str(self.folder / "turnip-26.0.0.so"))
         config = (self.state / "run/dxvk.conf").read_text()
         self.assertEqual(config, graphics.DXVK_CONFIG)
-        self.assertIn("dxgi.maxFrameRate = 60", config)
-        self.assertIn("dxgi.maxFrameLatency = 2", config)
+        self.assertIn("dxgi.maxFrameRate = 30", config)
+        self.assertIn("dxgi.maxFrameLatency = 1", config)
         self.assertIn("dxgi.syncInterval = 0", config)
         self.assertNotIn("enableGraphicsPipelineLibrary", config)
         self.assertEqual(graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state)["DXVK_STATE_CACHE_PATH"],
@@ -574,20 +629,23 @@ class GraphicsTests(unittest.TestCase):
         for path, value in protected.items():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(value)
-        old_policy = ("# Private initial responsiveness settings.\n"
+        old_policy = ("# Private performance profile: responsive.\n"
                       "dxgi.maxFrameRate = 30\ndxgi.maxFrameLatency = 1\ndxgi.syncInterval = 0\n")
         for profile in ("throughput", "responsive", "throughput"):
             graphics.prepare(self.folder, self.state, self.content, "turnip-dxvk", profile)
             self.assertEqual((self.state / "run/dxvk.conf").read_bytes(),
-                             (old_policy if profile == "responsive" else graphics.DXVK_CONFIG).encode("utf-8"))
+                             (old_policy if profile == "responsive" else graphics.dxvk_config("throughput")).encode("utf-8"))
             self.assertEqual(protected, {path: path.read_bytes() for path in protected})
 
     def test_profiles_and_hud_are_bounded_and_software_clears_all_dxvk_options(self):
-        for profile, frame_rate, latency in (("throughput", 60, 2), ("responsive", 30, 1)):
+        self.assertEqual(graphics.DEFAULT_PERFORMANCE_PROFILE, "responsive")
+        for profile, frame_rate, latency, display_rate in (("responsive", 30, 1, 30), ("render60", 60, 1, 30),
+                                                          ("queue2", 30, 2, 30), ("display60", 30, 1, 60),
+                                                          ("throughput", 60, 2, 60)):
             settings = graphics.performance_settings("turnip-dxvk", profile, True)
             self.assertEqual(settings, {"requestedProfile": profile, "performanceProfile": profile,
                                        "targetFrameRate": frame_rate, "maxFrameLatency": latency,
-                                       "displayFrameRate": frame_rate, "diagnosticHud": True})
+                                       "displayFrameRate": display_rate, "diagnosticHud": True})
             gpu = graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state, profile, True)
             self.assertEqual(gpu["DXVK_HUD"], "devinfo,fps,frametimes,gpuload,cs,compiler")
             software = graphics.configure_environment(gpu, "software", self.folder, self.state, profile, True)
@@ -608,7 +666,8 @@ class GraphicsTests(unittest.TestCase):
                 graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state, diagnostic_hud=hud)
 
     def test_profile_qualification_requires_actual_matching_dxvk_options(self):
-        for profile, rate, latency in (("throughput", 60, 2), ("responsive", 30, 1)):
+        for profile, rate, latency in (("throughput", 60, 2), ("responsive", 30, 1), ("render60", 60, 1),
+                                       ("queue2", 30, 2), ("display60", 30, 1)):
             log = (f"info:    dxgi.maxFrameRate = {rate}\ninfo:    dxgi.maxFrameLatency = {latency}\n"
                    "info:    dxgi.syncInterval = 0\ninfo:    Present mode: VK_PRESENT_MODE_IMMEDIATE_KHR\n")
             self.assertEqual(graphics.parse_performance_policy(log, profile), graphics.parse_presentation_policy(log))

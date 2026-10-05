@@ -289,3 +289,41 @@ exit. All owned groups are subsequently empty and `cleanShutdown=true`; the
 server remains ready at export. This does not revoke the user's accepted
 rendering result, but it does not qualify an explicit client/server shutdown,
 reopen persistence, visible station gameplay, undock/warp/dock or audio.
+
+## 0.1.13 isolated recovery and experiments
+
+The October 4 optimization report ranked regression isolation first. The current
+build restores the exact accepted caps and after-complete request policy; the
+previous 0.1.12 “Previous settings” profile kept the new early-request policy.
+Display protocol checks retain optimized buffers and resize/input safeguards.
+Single-factor cap profiles and a separate early-request option isolate changes.
+
+Two optional flags preserve the exact shipped binaries and game fidelity:
+
+- Mesa 26's [nocb option](https://github.com/chaotic-cx/mesa-mirror/blob/mesa-26.0.0/src/freedreno/vulkan/tu_util.cc)
+  disables concurrent binning through its existing A7xx command-buffer guards.
+  A [later upstream change](https://github.com/chaotic-cx/mesa-mirror/commit/5529f15f31b0cd9c13f611148fcf9b272efd6b56)
+  motivates this trial but provides no measured EVE gain.
+- Pinned FEX [host feature selection](https://github.com/FEX-Emu/FEX/blob/320c5f18475b0c8a7e99c51a5fdc5b5e35b147ab/Source/Common/HostFeatures.cpp)
+  supports disablelrcpc2 for the immediate-addressing TSO instruction form,
+  independently of ordinary RCPC/scalar TSO. Its ARM64EC module loads environment
+  configuration. A [later CPU-specific fix](https://github.com/FEX-Emu/FEX/commit/8cc967fa22c9cef173ec3fe94c0b6661de468cbb)
+  motivates testing on affected cores; no thread affinity is forced.
+
+Both options are fixed allowlisted session values, default off, sanitized on
+restart and removed in software mode. MIDR/topology reads may be unavailable on
+Android. Receipts distinguish requested/effective environment assignments from
+verified native effects. Native CI verifies the FEX option's shader/display path
+on its CPU, while the Adreno option needs the Thor's hardware preflight/run.
+
+The release APK disables debugging and enables shell profiling while retaining
+its preview signing key. Android's [profileable guidance](https://developer.android.com/guide/topics/manifest/profileable-element)
+explains the lower-overhead packaging, but device PRoot/ptrace and UI/controller
+qualification cannot be inferred from a Linux fixture.
+
+Cached dynamic resources are intentionally deferred until actual KGSL allocation
+flags and dynamic constant-buffer CPU-write/GPU-read coherence pass a fixture.
+The exact DXVK option would be d3d11.cachedDynamicResources=c; it is not enabled
+or exposed by this build. More invasive driver/native-presentation/PRoot changes
+remain conditional on the measured bottleneck. No FPS improvement is claimed
+before repeated warmed device runs.

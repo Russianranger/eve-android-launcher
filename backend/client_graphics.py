@@ -29,12 +29,13 @@ LIMIT = 64 * 1024**2
 DXVK_CACHE_LIMIT = 256 * 1024**2
 DXVK_CACHE_FILES = 16
 # The private Xvnc path needs immediate mode even when the game requests vsync.
-# Two bounded profiles allow a throughput comparison without changing drivers,
-# guest settings or caches. DXGI may further clamp the queue to the game's own
-# maximum latency and backbuffer count; these values are caps, not measured FPS.
-PERFORMANCE_PROFILES = ("throughput", "responsive")
-DEFAULT_PERFORMANCE_PROFILE = "throughput"
-_PROFILE_VALUES = {"throughput": (60, 2, 60), "responsive": (30, 1, 30)}
+# Preserve the accepted 0.1.11 baseline, with single-factor trials for the
+# changes combined in 0.1.12. DXGI may further clamp the game's queue.
+PERFORMANCE_PROFILES = ("responsive", "render60", "queue2", "display60", "throughput")
+DEFAULT_PERFORMANCE_PROFILE = "responsive"
+_PROFILE_VALUES = {"responsive": (30, 1, 30), "render60": (60, 1, 30),
+                   "queue2": (30, 2, 30), "display60": (30, 1, 60),
+                   "throughput": (60, 2, 60)}
 DEFAULT_HUD = "devinfo,fps,compiler"
 DIAGNOSTIC_HUD = "devinfo,fps,frametimes,gpuload,cs,compiler"
 
@@ -43,8 +44,7 @@ def dxvk_config(performance_profile=DEFAULT_PERFORMANCE_PROFILE):
     if not isinstance(performance_profile, str) or performance_profile not in PERFORMANCE_PROFILES:
         raise ValueError("Unsupported client performance profile")
     frame_rate, latency, _ = _PROFILE_VALUES[performance_profile]
-    comment = ("# Private initial responsiveness settings.\n" if performance_profile == "responsive"
-               else "# Private throughput settings.\n")
+    comment = "# Private performance profile: " + performance_profile + ".\n"
     return (comment + "dxgi.maxFrameRate = " + str(frame_rate) + "\n"
             + "dxgi.maxFrameLatency = " + str(latency) + "\n"
             + "dxgi.syncInterval = 0\n")
@@ -217,13 +217,63 @@ def d3d_command(folder: Path, manifest: dict, wine: str = "/opt/wine/bin/wine") 
             "C:\\windows\\system32\\dxgi.dll", manifest["files"][DLLS["dxgi"]]["sha256"])
 
 
+def optimization_settings(mode, disable_concurrent_binning=False, disable_lrcpc2=False):
+    """Describe only fixed session assignments, not measured native effects."""
+    if mode not in MODES:
+        raise ValueError("Unsupported client renderer")
+    if type(disable_concurrent_binning) is not bool or type(disable_lrcpc2) is not bool:
+        raise ValueError("Client optimization selections must be booleans")
+    gpu = mode == "turnip-dxvk"
+    binning = disable_concurrent_binning and gpu
+    lrcpc2 = disable_lrcpc2 and gpu
+    return {"requestedDisableConcurrentBinning": disable_concurrent_binning,
+            "requestedDisableLrcpc2": disable_lrcpc2,
+            "disableConcurrentBinning": binning, "disableLrcpc2": lrcpc2,
+            "turnipDebug": "nocb" if binning else None,
+            "fexHostFeatures": "disablelrcpc2" if lrcpc2 else None,
+            "nativeEffectVerified": False}
+
+
+def cpu_topology(root=Path("/sys/devices/system/cpu")):
+    """Read a bounded numeric CPU observation once per session, when permitted."""
+    rows = []
+    for index in range(32):
+        folder = root / ("cpu" + str(index))
+        if not folder.is_dir():
+            continue
+        row = {"cpu": index}
+        for label, relative in (("midr", "regs/identification/midr_el1"),
+                                ("coreId", "topology/core_id"),
+                                ("packageId", "topology/physical_package_id"),
+                                ("maximumFrequencyKHz", "cpufreq/cpuinfo_max_freq"),
+                                ("capacity", "cpu_capacity"), ("online", "online")):
+            try:
+                with (folder / relative).open("r", encoding="ascii") as source:
+                    value = source.read(128).strip()
+                if label == "midr" and re.fullmatch(r"0x[0-9a-fA-F]{1,16}", value):
+                    midr = int(value, 16)
+                    row.update(midr=hex(midr), implementer=(midr >> 24) & 255,
+                               partNumber=(midr >> 4) & 4095)
+                elif label != "midr" and re.fullmatch(r"-?[0-9]{1,16}", value):
+                    row[label] = int(value)
+            except (OSError, UnicodeError, ValueError):
+                pass
+        rows.append(row)
+    return {"source": "native sysfs", "maximumCpus": 32, "cpus": rows,
+            "midrAvailable": any("midr" in row for row in rows),
+            "effectiveFexFeaturesObserved": False}
+
+
 def configure_environment(base, mode, folder, state,
-                          performance_profile=DEFAULT_PERFORMANCE_PROFILE, diagnostic_hud=False):
+                          performance_profile=DEFAULT_PERFORMANCE_PROFILE, diagnostic_hud=False,
+                          disable_concurrent_binning=False, disable_lrcpc2=False):
     """Prove graphics options cannot leak between software/GPU sessions."""
     performance = performance_settings(mode, performance_profile, diagnostic_hud)
+    optimizations = optimization_settings(mode, disable_concurrent_binning, disable_lrcpc2)
     env = {k:v for k,v in base.items()
-           if not k.startswith(("DXVK_", "VK_", "MESA_", "LIBGL_"))
-           and k not in ("WINE_D3D_CONFIG", "GALLIUM_DRIVER", "LP_NUM_THREADS", "mesa_glthread")}
+           if not k.startswith(("DXVK_", "VK_", "MESA_", "LIBGL_", "TU_"))
+           and k not in ("WINE_D3D_CONFIG", "GALLIUM_DRIVER", "LP_NUM_THREADS", "mesa_glthread",
+                         "FEX_HOSTFEATURES")}
     env["WINEDLLOVERRIDES"] = "winemenubuilder,mshtml,mscoree=;crypt32=b;d3d11,dxgi=" + ("n" if mode == "turnip-dxvk" else "b")
     if mode == "software":
         env.update(LIBGL_ALWAYS_SOFTWARE="1", GALLIUM_DRIVER="llvmpipe", LP_NUM_THREADS="4")
@@ -237,6 +287,10 @@ def configure_environment(base, mode, folder, state,
                    DXVK_STATE_CACHE_PATH="Z:" + str(dxvk_cache).replace("/", "\\"),
                    MESA_SHADER_CACHE_DIR=str(mesa_cache),
                    MESA_SHADER_CACHE_MAX_SIZE="512M")
+        if optimizations["disableConcurrentBinning"]:
+            env["TU_DEBUG"] = "nocb"
+        if optimizations["disableLrcpc2"]:
+            env["FEX_HOSTFEATURES"] = "disablelrcpc2"
     return env
 
 

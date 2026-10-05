@@ -17,6 +17,39 @@ driver. Physical geometry and performance remain unqualified; related register
 values historically caused vertex corruption. Follow the two-run TESTING.md
 comparison. Preserve all accepted account/world/runtime/fullscreen/control gates.
 
+### 0.1.14 build and delivery qualification
+
+Implementation `56c332a7645ab10b8a3c5b65f1a234f983fd284e` on
+`codex/wine-localhost-tls`. [Actions run 37300719277](https://github.com/Russianranger/eve-android-launcher/actions/runs/37300719277)
+passed verify, immutable server reuse, native Wine trust/PRoot/graphics, Android
+release tests/build/lint, package checks and preview signing-anchor equality.
+Development-branch release publication was skipped; main remains unchanged.
+
+- 173 backend tests, four server packaging tests, archive/RFB/controller and
+  ARM64EC parser checks passed. 48 Android release-unit cases passed on API33/35,
+  including 14 pressure cases and 24 performance/UI cases.
+- All six native shader/RFB fixtures passed with three independently visible
+  frames and forced IMMEDIATE presentation. A740 software-identity and both
+  no-KGSL driver negative controls passed. The identity helper creates no device
+  or queue. Original driver bytes remain pinned and unchanged.
+- Rebuilt A740 driver SHA-256
+  `0d16491675a04da2266be778124b94eccec690a004e8a2e589dc4cc9bd742620`,
+  13,841,568 bytes. Native ABI comparison against the baseline passed: no new
+  SONAMEs, GLIBC no newer than 2.34, CXXABI no newer than 1.3. Exact source,
+  single-register patch and native probe inputs matched provenance.
+- Delivered `EVE-Android-Launcher-0.1.14.apk`, 10,755,969 bytes, SHA-256
+  `19d2613e0985d1ba18a46e1b2062bc2ec909507bf674b36bf9c302d506a91037`.
+  Package `io.github.russianranger.eve`, versionCode15/versionName0.1.14,
+  non-debuggable and shell-profileable. Certificate SHA-256 remains
+  `456c617128420fd315e1aa453d154e3d08f71a9b593d91966d21f75eed3a2c15`.
+  Downloaded APK assets/hashes, package identity and manifest were checked again.
+
+The pressure stop is best effort for Thor Android13; abrupt LMKD kills may lack
+a callback. Android34+ no longer dispatches RUNNING_CRITICAL. API35 fixtures
+verify handler logic, not a platform notification guarantee; timeline sampling
+works separately. This build does not accept physical A740 performance or
+geometry correctness and does not promise 30+ FPS. Cached buffers remain deferred.
+
 ## Initial request and scope
 
 Integrate the supplied EVE.js 0.12.9 server into the initially empty

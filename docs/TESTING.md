@@ -32,6 +32,10 @@ temperatures and how each run ended. Do not repeat the earlier four-option
 matrix. Display update counts are not engine FPS. The A740 option changes one
 upstream primitive-processing register value; it is an experiment until this
 physical rendering test passes. It is off by default and refuses other GPUs.
+After a fault-free comparison, if the HUD holds at 30 FPS, optionally try
+**Render cap only · 60 FPS** with A740 enabled to check 30+ FPS. Keep the other
+experiments off and export **0.1.14-a740-render60**. The display cap remains 30;
+use the engine HUD for this measurement.
 
 Android critical running-memory callbacks now request an orderly client stop
 while leaving the server running. Ordinary background/navigation callbacks do

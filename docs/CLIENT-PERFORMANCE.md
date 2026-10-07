@@ -40,7 +40,7 @@ comparison and qualification boundaries. The original driver remains preferred;
 the Adreno 740 station comparison is complete. Snapdragon 8 Elite videos with
 other system drivers do not establish a useful recipe for this exact runtime.
 
-The FSR1 comparison is now complete: modest improvement, but black lines were
+The FSR 1 comparison is now complete: modest improvement, but black lines were
 introduced. The user requests client optimization outside game settings; no
 further quality/upscaling trial is the current task. See the October 7 section.
 

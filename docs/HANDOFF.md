@@ -7,7 +7,7 @@ explicitly requests optimization outside game settings. The original driver
 remains preferred after the neutral warmed A740 comparison. Do not repeat those
 experiments or promote Snapdragon 8 Elite recipes as qualified Thor settings.
 
-The supplied screenshot shows Adreno740/Mesa 26, 24.7 FPS and HUD GPU 98%.
+The supplied screenshot shows Adreno 740/Mesa 26, 24.7 FPS and HUD GPU 98%.
 [DEVICE-20261007.md](DEVICE-20261007.md) records the fresh clean-exit log evidence.
 Warm shader workers are effectively idle, RSS is about 3 GiB and graphics threads
 repeatedly wait for Adreno completion. DXVK GPU% is derived from completion-queue
@@ -35,11 +35,47 @@ performance logs before server history. The prior shared 100-entry budget let 94
 server files crowd current client diagnostics out of the October 7 ZIP. Global
 limits, log tails and symlink/privacy checks remain bounded.
 
-Implementation and physical EVE performance qualification are pending below.
+Build qualification is recorded below; physical EVE performance needs the Thor test.
 Follow [the focused test](TESTING.md); update in place without data reset.
 
 
-## Latest warmed A740 repeat
+### 0.1.15 build and delivery qualification
+
+Implementation `77a8eaef6142b81a58056141777817a422493828` on
+`codex/wine-localhost-tls`. [Actions run 37617363750](https://github.com/Russianranger/eve-android-launcher/actions/runs/37617363750)
+passed verify, immutable server reuse, native Wine trust/PRoot/graphics,
+Android release tests/build/lint, APK content checks and signing-anchor equality.
+Development release publication is skipped; main remains unchanged.
+
+- 179 backend tests, four server package tests, archive/RFB/controller fixtures
+  and ARM64EC parser checks passed. All 58 Android release-unit cases passed on
+  API 33/35: display 10, performance/UI 28, memory-pressure 14, support-export 6.
+- All seven EC shader/readback/RFB fixtures passed, including the new isolated
+  linear environment with responsive 30/latency 1/display 30. The linear test
+  independently observed frames [0,1,2] in five RFB updates, verified both queried
+  formats, native EC DLL hashes and IMMEDIATE swapchains despite Present(1).
+  The fixture uses Mesa 22.3.6 Lavapipe/LLVM 15, not physical Turnip 26. Reports retain
+  physicalThorQualified=false and nativeEffectVerified=false.
+- Production rejected the software capability receipt. CPU hardware mode failed
+  adapter selection with zero presents; original and optional Turnip each failed
+  Vulkan enumeration without KGSL. Existing native gates remain enforced.
+- Original Turnip SHA-256 remains
+  `51b968eed13c933d114cdc2956135758917e48451129f647ecb5ebbea5a527eb`.
+  Updated identity/capability source SHA-256 is
+  `8bd8d2faf2e959baad024be4d0e185942a92584d5f04b91de287d4f1527e4371`.
+- Delivered `EVE-Android-Launcher-0.1.15.apk`, 10,758,025 bytes, SHA-256
+  `f8096cdb2c2f15e8b4934a26798cee164adafe878de290efdb9207f16b193971`.
+  Package `io.github.russianranger.eve`, versionCode16/versionName0.1.15,
+  non-debuggable and shell-profileable. Signing certificate SHA-256 remains
+  `456c617128420fd315e1aa453d154e3d08f71a9b593d91966d21f75eed3a2c15`.
+  Root rechecked downloaded archive digests, compiled certificate, APK contents,
+  runtime manifests and exact backend/native-source identities before delivery.
+
+Physical startup, linear allocation/presentation, station geometry, sustained FPS,
+controls/reopen and clean exit still need the focused Thor test in TESTING.md.
+No further game-quality comparison is the next task.
+
+## Historical warmed A740 repeat
 
 The user repeated 0.1.14 with the A740 driver option enabled after its first
 cache warm-up. Performance was similar: typically 26 FPS, ranging 22–30, with
@@ -51,9 +87,9 @@ driver comparison complete. The user also inspected the videos: Snapdragon
 for Thor/Adreno 740. The next pass must address an independent, qualified
 optimization while preserving the accepted runtime, client, world and controls.
 This historical comparison proposed EVE's DX11-compatible FSR1; it is now
-complete with modest improvement and black-line artifacts. [CLIENT-PERFORMANCE.md](CLIENT-PERFORMANCE.md) captures the exact-source
-display and cached-buffer audit: neither is promoted as a proven bottleneck or
-an unqualified APK toggle. This section describes the pre-0.1.15 documentation-only state.
+complete with modest improvement and black-line artifacts. The exact-source
+[display and cached-buffer audit](CLIENT-PERFORMANCE.md) preceded the optional
+0.1.15 linear presentation implementation.
 
 ## Latest October 5 device feedback and research
 
@@ -101,7 +137,7 @@ release tests/build/lint, package checks and preview signing-anchor equality.
 Development-branch release publication was skipped; main remains unchanged.
 
 - 173 backend tests, four server packaging tests, archive/RFB/controller and
-  ARM64EC parser checks passed. 48 Android release-unit cases passed on API33/35,
+  ARM64EC parser checks passed. 48 Android release-unit cases passed on API 33/35,
   including 14 pressure cases and 24 performance/UI cases.
 - All six native shader/RFB fixtures passed with three independently visible
   frames and forced IMMEDIATE presentation. A740 software-identity and both
@@ -509,7 +545,7 @@ skipped for this development branch; the preview APK comes from its passing
 Actions artifact.
 
 - 164 backend tests, four server packaging tests, archive/RFB/controller and
-  ARM64EC parser checks passed; 26 Android release-unit tests passed on API33/35.
+  ARM64EC parser checks passed; 26 Android release-unit tests passed on API 33/35.
 - Baseline and throughput native shader/display fixtures passed, plus render60,
   queue2, display60 and disablelrcpc2 trials. Each requires the pinned EC DLL
   identities, Present(1) forced to IMMEDIATE and three independently visible

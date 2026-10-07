@@ -80,9 +80,9 @@ test -f "$VK_DRIVER_FILES"
 # x64 -> native EC D3D11/DXGI -> Wine Vulkan -> Xvnc, not Thor GPU performance.
 /graphics-out/assets/vulkan-probe --allow-software \
   > /graphics-out/vulkan-fixture.json 2> /graphics-out/vulkan-fixture.log
-# This new helper only reads exact native adapter identity. A software fixture
-# must identify itself as such, and retail hardware mode must fail on this CI
-# host before any optional A740 driver can be selected.
+# This helper reads exact native adapter identity and linear image capability.
+# A software fixture must identify itself as such, and retail hardware mode
+# must fail on this CI host before either experiment can be selected.
 /graphics-out/assets/a740-driver-probe --fixture \
   > /graphics-out/a740-identity-cpu-fixture.json 2> /graphics-out/a740-identity-cpu-fixture.log
 if /graphics-out/assets/a740-driver-probe \
@@ -124,6 +124,32 @@ DISPLAY=:22 DXVK_CONFIG_FILE='Z:\graphics-out\dxvk-responsive.conf' \
   python3 /graphics-tests/graphics_present.py --port 5992 \
   --report /graphics-out/d3d11-responsive-rfb-presentation.json \
   --stdout /graphics-out/d3d11-responsive-fixture.json --stderr /graphics-out/d3d11-responsive-fixture.log \
+  -- /opt/wine/bin/wine /graphics-out/assets/eve-d3d11-probe.exe \
+  fixture 'C:\windows\system32\d3d11.dll' "$d3d11_digest" \
+  'C:\windows\system32\dxgi.dll' "$dxgi_digest"
+timeout --kill-after=5 15 /opt/wine/bin/wineserver -k
+timeout --kill-after=5 15 /opt/wine/bin/wineserver -w
+# Qualify the isolated linear software-WSI path at the unchanged responsive
+# 30 FPS / latency 1 / display 30 policy. The metadata query is a prerequisite;
+# the EC shaders, staging pixels and independently observed frames must also
+# pass. Lavapipe success is a software CI fixture, never A740 qualification.
+linear_environment=(env -u TU_DEBUG -u FEX_HOSTFEATURES
+  MESA_VK_WSI_DEBUG=sw,linear DISPLAY=:22
+  DXVK_CONFIG_FILE='Z:\graphics-out\dxvk-responsive.conf')
+"${linear_environment[@]}" /graphics-out/assets/a740-driver-probe --fixture \
+  > /graphics-out/linear-identity-cpu-fixture.json 2> /graphics-out/linear-identity-cpu-fixture.log
+"${linear_environment[@]}" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+keys = ('MESA_VK_WSI_DEBUG', 'VK_DRIVER_FILES', 'VK_ICD_FILENAMES', 'DISPLAY',
+        'DXVK_CONFIG_FILE', 'TU_DEBUG', 'FEX_HOSTFEATURES')
+Path('/graphics-out/linear-presentation-environment.json').write_text(json.dumps(
+    {key: os.environ.get(key) for key in keys}, indent=2) + '\n')
+PY
+"${linear_environment[@]}" python3 /graphics-tests/graphics_present.py --port 5992 \
+  --report /graphics-out/d3d11-linear-rfb-presentation.json \
+  --stdout /graphics-out/d3d11-linear-fixture.json --stderr /graphics-out/d3d11-linear-fixture.log \
   -- /opt/wine/bin/wine /graphics-out/assets/eve-d3d11-probe.exe \
   fixture 'C:\windows\system32\d3d11.dll' "$d3d11_digest" \
   'C:\windows\system32\dxgi.dll' "$dxgi_digest"
@@ -289,6 +315,46 @@ report['responsiveProfile'] = {'d3d11': responsive, 'rfbPresentation': responsiv
                               'performance': {'requestedProfile': 'responsive', 'performanceProfile': 'responsive',
                                               'targetFrameRate': 30, 'maxFrameLatency': 1, 'displayFrameRate': 30,
                                               'diagnosticHud': False}}
+linear_identity = one_json('linear-identity-cpu-fixture.json')
+assert linear_identity['helper'] == 'eve-a740-driver-probe-1'
+assert linear_identity['mode'] == 'fixture' and linear_identity['passed'] is True
+assert linear_identity['software'] is True
+assert linear_identity['linear_presentation'] == {
+    'supported': True, 'bgra8_unorm': True, 'rgba8_unorm': True}
+linear_environment = one_json('linear-presentation-environment.json')
+assert linear_environment['MESA_VK_WSI_DEBUG'] == 'sw,linear'
+assert linear_environment['DISPLAY'] == ':22'
+assert linear_environment['DXVK_CONFIG_FILE'] == 'Z:\\graphics-out\\dxvk-responsive.conf'
+assert linear_environment['VK_DRIVER_FILES'] == '/usr/share/vulkan/icd.d/lvp_icd.aarch64.json'
+assert linear_environment['VK_ICD_FILENAMES'] == linear_environment['VK_DRIVER_FILES']
+assert linear_environment['TU_DEBUG'] is None and linear_environment['FEX_HOSTFEATURES'] is None
+linear = one_json('d3d11-linear-fixture.json')
+linear_display = one_json('d3d11-linear-rfb-presentation.json')
+assert linear['mode'] == 'fixture' and linear['passed'] is True
+assert linear['pixels_verified'] is True and linear['present_count'] == 3
+assert type(linear.get('requested_sync_interval')) is int and linear['requested_sync_interval'] == 1
+assert linear_display['display_pixels_verified'] is True
+assert linear_display['matched_frames'] == [0, 1, 2] and linear_display['center_pixels_verified'] is True
+for name in ('d3d11', 'dxgi'):
+    assert linear[name]['identity_verified'] is True and linear[name]['sha256'] == d3d[name]['sha256']
+linear_log = (folder / 'd3d11-linear-fixture.log').read_text()
+linear_sync = re.findall(r'^info:[ \t]+dxgi\.syncInterval[ \t]*=[ \t]*(\S+)[ \t]*\r?$', linear_log, re.MULTILINE)
+linear_modes = re.findall(r'^info:[ \t]+Present mode:[ \t]*(VK_PRESENT_MODE_[A-Z_]+)\b', linear_log, re.MULTILINE)
+assert linear_sync and all(value == '0' for value in linear_sync)
+assert linear_modes and all(value == 'VK_PRESENT_MODE_IMMEDIATE_KHR' for value in linear_modes)
+manifest = json.loads((folder / 'assets/client-graphics-bundle.json').read_text())
+report['linearPresentationExperiment'] = {
+    'qualification': 'native-arm64-ec-lavapipe-ci-only',
+    'd3d11': linear, 'rfbPresentation': linear_display, 'identityFixture': linear_identity,
+    'effectiveEnvironment': linear_environment,
+    'performance': report['responsiveProfile']['performance'],
+    'requestedSyncInterval': 1, 'forcedSyncInterval': 0, 'observedPresentModes': linear_modes,
+    'clientDriver': 'turnip-26.0.0.so',
+    'clientDriverSha256': manifest['files']['turnip-26.0.0.so']['sha256'],
+    'mesaSourceSha256': manifest['a740PcModeExperiment']['mesaSourceSha256'],
+    'probeSourceSha256': manifest['a740PcModeExperiment']['probeSourceSha256'],
+    'nativeEffectVerified': False, 'physicalThorQualified': False,
+}
 (folder / 'client-graphics-check.json').write_text(json.dumps(report, indent=2) + '\n')
 PY
 QUALIFICATION
@@ -306,7 +372,7 @@ PY
   exit "$qualification_status"
 fi
 
-# Copy only the five exact graphics components and their manifest into APK assets.
+# Copy only the manifest-listed graphics components into APK assets.
 python3 - <<'PYVALIDATE'
 import json
 from pathlib import Path
@@ -346,6 +412,26 @@ responsive['presentation'] = client_graphics.parse_performance_policy(
 assert responsive['performance'] == client_graphics.performance_settings('turnip-dxvk', 'responsive')
 assert responsive['rfbPresentation'] == client_graphics.parse_display(
     Path('out/d3d11-responsive-rfb-presentation.json').read_text())
+linear = report['linearPresentationExperiment']
+assert linear['physicalThorQualified'] is False and linear['nativeEffectVerified'] is False
+assert linear['clientDriverSha256'] == manifest['files']['turnip-26.0.0.so']['sha256']
+assert linear['probeSourceSha256'] == client_graphics.A740_EXPERIMENT['probeSourceSha256']
+linear['presentation'] = client_graphics.parse_performance_policy(
+    Path('out/d3d11-linear-fixture.log').read_text(), 'responsive')
+assert linear['performance'] == client_graphics.performance_settings('turnip-dxvk', 'responsive')
+assert linear['rfbPresentation'] == client_graphics.parse_display(
+    Path('out/d3d11-linear-rfb-presentation.json').read_text())
+production_linear_env = client_graphics.configure_environment(
+    {}, 'turnip-dxvk', assets, Path('out'), linear_presentation=True)
+for key in ('MESA_VK_WSI_DEBUG', 'TU_DEBUG', 'FEX_HOSTFEATURES'):
+    assert linear['effectiveEnvironment'][key] == production_linear_env.get(key)
+try:
+    client_graphics.parse_linear_presentation(
+        Path('out/linear-identity-cpu-fixture.json').read_text(), report['vulkan'])
+except ValueError:
+    pass
+else:
+    raise SystemExit('Production hardware parser accepted the linear software fixture')
 report['isolatedTrials'] = {}
 for trial in ('render60', 'queue2', 'display60', 'fex-load'):
     profile = 'responsive' if trial == 'fex-load' else trial

@@ -1,19 +1,54 @@
-# EVE Android Launcher 0.1.14: stability and A740 driver comparison
+# EVE Android Launcher 0.1.15: client presentation experiment
 
-## Next 0.1.14 comparison: scene GPU workload
+## Current 0.1.15 test
 
-Use the installed 0.1.14 APK. With the client stopped, turn the A740 experiment
-off and keep the baseline profile, original driver and other experiments off.
-Retain 1280×720 output, the same scene and Thor fan/power settings. In EVE's
-graphics menu, try **FSR 1 / Ultra Quality**, then **Quality** if the first option
-does not sustain 30 FPS and the image remains acceptable. Use the options actually
-offered by this client; report if FSR 1 is absent. Keep other quality settings
-unchanged so this isolates scene upscaling. After three minutes warm-up, observe
-HUD FPS and device temperature for another two minutes, distinguishing static
-camera from movement. A warm FPS range, temperatures and visible quality are
-enough for this comparison; a new support export is useful if behavior changes
-unexpectedly. This does not select DX12, replace runtime binaries or change UI
-controls. FSR can help FPS if GPU rendering is limiting; no gain is promised.
+Install **EVE-Android-Launcher-0.1.15.apk** over the existing app with client and
+server stopped. Keep app data, imported client, runtime, prefix, shader caches,
+account, character and controller mappings. No reimport, validation or runtime
+probe is required. The APK retains the preview signing identity.
+
+The A740 driver repeat did not improve warm station performance. FSR helped a
+little but introduced black lines. This test changes the client presentation
+path rather than game quality. Disable FSR for a clean comparison, keep the
+other game settings unchanged, and retain the same station, 1280×720 output and
+Thor fan/power mode.
+
+1. With the client stopped, keep **Use Adreno GPU rendering** enabled, select
+   **Baseline · 30 FPS target**, enable the diagnostic HUD and turn all existing
+   experiments off, including **Use A740 driver experiment**. This uses the
+   original driver, 30 FPS render/display caps and one-frame latency.
+2. Enable only **Reduce GPU frame copies (experiment)**. Start server →
+   **SERVER READY** → Start EVE client → Open client display. The launcher first
+   checks exact A740 hardware and linear-image capabilities, then runs the native
+   Vulkan, D3D11 shader/readback and visible-frame checks. If a check fails,
+   export immediately, report the stage and switch the experiment off; preserve data.
+3. Enter the existing character's station. Warm up for three minutes, then
+   observe another two. Record warm HUD FPS range, stutter and device temperature;
+   observe static camera and movement separately. Inspect station geometry,
+   ships, text and effects for black lines, distortion or flicker. Check sticks,
+   LT layers and gear actions, then close/reopen the display once.
+4. Export support **while EVE is running**, label it **0.1.15-linear**, and quit
+   EVE normally. Confirm the client reports stopped and the server stays ready.
+   If performance is worse or there are visual/input faults, stop the client and
+   turn the experiment off.
+5. For comparison, let the device cool to a similar starting temperature, disable
+   the new experiment and repeat the same five-minute run. Label the live export
+   **0.1.15-original**. Save and stop the server afterward.
+
+Return the two labeled ZIPs, warm FPS ranges, approximate starting/ending
+GPU/SoC temperatures, visible faults and how each run ended. The support exporter
+now prioritizes current client diagnostics over older server history. Battery
+temperature in the logs is a different sensor from the reported GPU/SoC reading.
+No need to repeat the earlier cap/binning/FEX/A740 matrix.
+
+The new option is off by default. It asks Mesa to present from a mapped linear
+image, removing one GPU readback copy and staging buffer. Linear images can also
+render slower because they do not use Turnip's normal compressed optimal layout.
+Native capability and helper checks do not establish an EVE FPS improvement.
+The DXVK HUD GPU percentage measures queue completion activity, not a physical
+Adreno utilization counter. Display updates are not EVE engine FPS.
+
+Earlier tests remain below as historical evidence.
 
 ## Completed 0.1.14 station comparison
 

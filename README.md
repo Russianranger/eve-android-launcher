@@ -41,6 +41,13 @@ histories, accurate normal-exit reporting and an optional exact-device A740
 driver experiment. See [the measured evidence](docs/DEVICE-20261005.md) and
 [the two-run test](docs/TESTING.md); physical driver performance remains unqualified.
 
+The October7 FSR test helped modestly but introduced black lines. 0.1.15 adds
+an optional mapped-linear presentation experiment that removes one GPU staging
+copy while retaining the accepted runtime and original driver. Fresh hardware
+capability and native shader/display checks precede launch; actual warm FPS and
+geometry need [the focused Thor comparison](docs/TESTING.md). Current client
+logs now take priority over old server history in support exports.
+
 ## Fullscreen controls in 0.1.11
 
 The display fills the screen; a top-right space-themed gear opens the controls

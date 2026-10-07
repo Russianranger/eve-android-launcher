@@ -137,6 +137,12 @@ def a740_identity() -> dict:
     return value
 
 
+def linear_identity() -> dict:
+    value = a740_identity()
+    value["linear_presentation"] = {"supported": True, "bgra8_unorm": True, "rgba8_unorm": True}
+    return value
+
+
 def module_info(name: str, digest: str) -> dict:
     return {"path": "C:\\windows\\system32\\" + name + ".dll",
             "sha256": digest, "disk_machine": 0x8664, "loaded_machine": 0x8664,
@@ -659,6 +665,36 @@ class GraphicsTests(unittest.TestCase):
             with self.subTest(value=invalid), self.assertRaises(ValueError):
                 graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state, a740_pc_mode=invalid)
 
+    def test_linear_presentation_is_allowlisted_session_only_and_preserves_original_settings(self):
+        base = {"KEEP": "value", "MESA_VK_WSI_DEBUG": "linear,buffer,noshm"}
+        saved = dict(base)
+        baseline = graphics.configure_environment(base, "turnip-dxvk", self.folder, self.state)
+        linear = graphics.configure_environment(baseline, "turnip-dxvk", self.folder, self.state,
+                                                linear_presentation=True)
+        self.assertEqual(baseline["MESA_VK_WSI_DEBUG"], "sw")
+        self.assertEqual(linear["MESA_VK_WSI_DEBUG"], "sw,linear")
+        self.assertEqual({key: value for key, value in linear.items() if key != "MESA_VK_WSI_DEBUG"},
+                         {key: value for key, value in baseline.items() if key != "MESA_VK_WSI_DEBUG"})
+        self.assertEqual(graphics.configure_environment(linear, "turnip-dxvk", self.folder, self.state), baseline)
+        self.assertEqual(base, saved)
+        requested = graphics.optimization_settings("turnip-dxvk", linear_presentation=True)
+        self.assertTrue(requested["requestedLinearPresentation"])
+        self.assertTrue(requested["linearPresentation"])
+        self.assertEqual(requested["mesaWsiDebug"], "sw,linear")
+        self.assertFalse(requested["a740PcMode"])
+        self.assertFalse(requested["nativeEffectVerified"])
+        software = graphics.configure_environment(linear, "software", self.folder, self.state,
+                                                  linear_presentation=True)
+        self.assertFalse(any(key.startswith(("MESA_", "VK_", "DXVK_")) for key in software))
+        ignored = graphics.optimization_settings("software", linear_presentation=True)
+        self.assertTrue(ignored["requestedLinearPresentation"])
+        self.assertFalse(ignored["linearPresentation"])
+        self.assertIsNone(ignored["mesaWsiDebug"])
+        for invalid in (1, "sw,linear", None, []):
+            with self.subTest(value=invalid), self.assertRaises(ValueError):
+                graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state,
+                                               linear_presentation=invalid)
+
     def test_cpu_topology_is_bounded_numeric_evidence_and_allows_missing_permissions(self):
         topology = self.root / "sysfs"
         for index in (0, 1, 32):
@@ -862,6 +898,30 @@ class GraphicsTests(unittest.TestCase):
         for name, rejected in vulkan_failures().items():
             with self.subTest(name=name), self.assertRaises(ValueError):
                 graphics.parse_vulkan(noisy_log(rejected))
+
+    def test_linear_capability_requires_exact_booleans_current_hardware_and_matching_vulkan(self):
+        native = linear_identity()
+        receipt = graphics.parse_linear_presentation(noisy_log(native), vulkan_success())
+        self.assertTrue(receipt["hardwareCapabilityGatePassed"])
+        self.assertFalse(receipt["nativeEffectVerified"])
+        self.assertEqual(receipt["originalDriver"], "turnip-26.0.0.so")
+        self.assertEqual(receipt["identity"], native)
+        reports = [a740_identity(), modified(native, ("linear_presentation",), None),
+                   modified(native, ("mode",), "fixture"), modified(native, ("software",), True),
+                   modified(native, ("device_id",), 0x740)]
+        for key in ("supported", "bgra8_unorm", "rgba8_unorm"):
+            missing = copy.deepcopy(native)
+            missing["linear_presentation"].pop(key)
+            reports.append(missing)
+            reports.extend(modified(native, ("linear_presentation", key), value)
+                           for value in (False, 1, "true", None))
+        for report in reports:
+            with self.subTest(report=report), self.assertRaises(ValueError):
+                graphics.parse_linear_presentation(noisy_log(report), vulkan_success())
+        for baseline in (None, {}, modified(vulkan_success(), ("software",), True),
+                         modified(vulkan_success(), ("device",), "Adreno different device")):
+            with self.subTest(baseline=baseline), self.assertRaises(ValueError):
+                graphics.parse_linear_presentation(noisy_log(native), baseline)
 
     def test_a740_identity_requires_explicit_hardware_id_and_rejects_cpu_fixture(self):
         accepted = a740_identity()

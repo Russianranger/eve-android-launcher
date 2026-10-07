@@ -36,7 +36,7 @@ A740_EXPERIMENT = {
     "mesaSourceSha256": "2a44e98e64d5c36cec64633de2d0ec7eff64703ee25b35364ba8fcaa84f33f72",
     "upstreamCommit": "23f94c692cb1d41a2193a80fa531922d386e8d5d",
     "patchSha256": "1bb91daddcdbf264ee05337ef2fa4eebd544c9c3a1425810af73adf298e17b12",
-    "probeSourceSha256": "b79957f6b8f56f66877a397b7ba2d5084a44b84529da4166ae20bd7083ad5210",
+    "probeSourceSha256": "8bd8d2faf2e959baad024be4d0e185942a92584d5f04b91de287d4f1527e4371",
     "sourceFileSha256": "25206d1bae7e650e7266b50e107d6656e69cb640aadcb0c8e50e900241df3d09",
     "patchedSourceFileSha256": "a59ac4f80c0109ebffa7cd766bf91661ced97bdae35771af084ce6e73831bfdc",
     "deviceId": A740_DEVICE_ID, "registerOffset": 0x9804, "originalValue": 0x3f, "value": 0x1f1f,
@@ -289,11 +289,13 @@ def d3d_command(folder: Path, manifest: dict, wine: str = "/opt/wine/bin/wine") 
             "C:\\windows\\system32\\dxgi.dll", manifest["files"][DLLS["dxgi"]]["sha256"])
 
 
-def optimization_settings(mode, disable_concurrent_binning=False, disable_lrcpc2=False, a740_pc_mode=False):
+def optimization_settings(mode, disable_concurrent_binning=False, disable_lrcpc2=False, a740_pc_mode=False,
+                          linear_presentation=False):
     """Describe only fixed session assignments, not measured native effects."""
     if mode not in MODES:
         raise ValueError("Unsupported client renderer")
-    if any(type(value) is not bool for value in (disable_concurrent_binning, disable_lrcpc2, a740_pc_mode)):
+    if any(type(value) is not bool for value in
+           (disable_concurrent_binning, disable_lrcpc2, a740_pc_mode, linear_presentation)):
         raise ValueError("Client optimization selections must be booleans")
     gpu = mode == "turnip-dxvk"
     binning = disable_concurrent_binning and gpu
@@ -302,6 +304,10 @@ def optimization_settings(mode, disable_concurrent_binning=False, disable_lrcpc2
             "requestedDisableLrcpc2": disable_lrcpc2,
             "requestedA740PcMode": a740_pc_mode, "a740PcMode": a740_pc_mode and gpu,
             "a740PcModeExperimental": True, "a740PcModeDeviceGated": True,
+            "requestedLinearPresentation": linear_presentation,
+            "linearPresentation": linear_presentation and gpu,
+            "linearPresentationExperimental": True, "linearPresentationDeviceGated": True,
+            "mesaWsiDebug": ("sw,linear" if linear_presentation else "sw") if gpu else None,
             "disableConcurrentBinning": binning, "disableLrcpc2": lrcpc2,
             "turnipDebug": "nocb" if binning else None,
             "fexHostFeatures": "disablelrcpc2" if lrcpc2 else None,
@@ -340,10 +346,12 @@ def cpu_topology(root=Path("/sys/devices/system/cpu")):
 
 def configure_environment(base, mode, folder, state,
                           performance_profile=DEFAULT_PERFORMANCE_PROFILE, diagnostic_hud=False,
-                          disable_concurrent_binning=False, disable_lrcpc2=False, a740_pc_mode=False):
+                          disable_concurrent_binning=False, disable_lrcpc2=False, a740_pc_mode=False,
+                          linear_presentation=False):
     """Prove graphics options cannot leak between software/GPU sessions."""
     performance = performance_settings(mode, performance_profile, diagnostic_hud)
-    optimizations = optimization_settings(mode, disable_concurrent_binning, disable_lrcpc2, a740_pc_mode)
+    optimizations = optimization_settings(mode, disable_concurrent_binning, disable_lrcpc2, a740_pc_mode,
+                                         linear_presentation)
     env = {k:v for k,v in base.items()
            if not k.startswith(("DXVK_", "VK_", "MESA_", "LIBGL_", "TU_"))
            and k not in ("WINE_D3D_CONFIG", "GALLIUM_DRIVER", "LP_NUM_THREADS", "mesa_glthread",
@@ -354,7 +362,7 @@ def configure_environment(base, mode, folder, state,
     else:
         icd = str(state / "run/turnip-icd.json")
         dxvk_cache, mesa_cache = cache_directories(state, optimizations["a740PcMode"])
-        env.update(VK_DRIVER_FILES=icd, VK_ICD_FILENAMES=icd, MESA_VK_WSI_DEBUG="sw",
+        env.update(VK_DRIVER_FILES=icd, VK_ICD_FILENAMES=icd, MESA_VK_WSI_DEBUG=optimizations["mesaWsiDebug"],
                    DXVK_LOG_LEVEL="info", DXVK_LOG_PATH="Z:" + str(state / "logs").replace("/", "\\"),
                    DXVK_HUD=DIAGNOSTIC_HUD if performance["diagnosticHud"] else DEFAULT_HUD,
                    DXVK_CONFIG_FILE="Z:" + str(state / "run/dxvk.conf").replace("/", "\\"),
@@ -433,6 +441,27 @@ def parse_a740_identity(text):
             or not isinstance(r.get("driver_info"), str) or not r["driver_info"].startswith("Mesa 26.0.0")):
         raise ValueError("The driver experiment requires native Turnip 26 / Adreno 740 hardware identity")
     return r
+
+
+def parse_linear_presentation(text, baseline_vulkan):
+    """Accept current native format capability, separately from rendering/performance."""
+    identity = parse_a740_identity(text)
+    if not isinstance(baseline_vulkan, dict):
+        raise ValueError("Linear presentation requires current-session Vulkan hardware qualification")
+    parse_vulkan(json.dumps(baseline_vulkan))
+    if any(identity[key] != baseline_vulkan[key]
+           for key in ("vendor_id", "driver_id", "driver_version", "api_version", "software", "device")):
+        raise ValueError("Linear presentation identity differs from the current Vulkan presentation device")
+    capability = identity.get("linear_presentation")
+    if (not isinstance(capability, dict)
+            or any(capability.get(key) is not True
+                   for key in ("supported", "bgra8_unorm", "rgba8_unorm"))):
+        raise ValueError("The original driver does not qualify native linear presentation formats")
+    return {"requestedLinearPresentation": True, "linearPresentation": True,
+            "mesaWsiDebug": "sw,linear", "originalDriver": "turnip-26.0.0.so",
+            "hardwareCapabilityGatePassed": True, "identity": identity,
+            "baselineVulkan": baseline_vulkan, "nativeEffectVerified": False,
+            "qualificationScope": "native A740 linear format capability; helper rendering and EVE performance require independent checks"}
 
 
 def parse_d3d(text, manifest):

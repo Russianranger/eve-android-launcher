@@ -1,5 +1,44 @@
 # EVE Android Launcher handoff
 
+## Current 0.1.15 continuation: linear presentation
+
+The October 7 FSR test helped modestly but introduced black lines; the user
+explicitly requests optimization outside game settings. The original driver
+remains preferred after the neutral warmed A740 comparison. Do not repeat those
+experiments or promote Snapdragon 8 Elite recipes as qualified Thor settings.
+
+The supplied screenshot shows Adreno740/Mesa 26, 24.7 FPS and HUD GPU 98%.
+[DEVICE-20261007.md](DEVICE-20261007.md) records the fresh clean-exit log evidence.
+Warm shader workers are effectively idle, RSS is about 3 GiB and graphics threads
+repeatedly wait for Adreno completion. DXVK GPU% is derived from completion-queue
+idle ticks, not hardware utilization; it includes copy/fence pressure and does
+not prove a shader-only bottleneck or thermal throttling.
+
+0.1.15 adds default-off **Reduce GPU frame copies (experiment)**. The pinned
+Mesa 26 `sw,linear` CPU-WSI path maps the linear swapchain image directly rather
+than using an optimal image plus GPU image-to-buffer staging copy. It retains
+XCB/Xvnc/Raw RFB, rendering completion waits and IMMEDIATE presentation. Linear
+layout can hurt rendering and cannot promise 30 FPS. No runtime/driver/DXVK
+version, game preferences, shader cache, import, world or controls are changed.
+
+A current-session original-driver Vulkan check and source-built A740 identity
+helper require exact chip 0x43050a01 plus LINEAR BGRA8/RGBA8 UNORM capability for
+1280×720, COLOR_ATTACHMENT|TRANSFER_DST, sample 1/mip 1/layer 1. The selected
+presentation environment then independently repeats native Vulkan, exact ARM64EC
+D3D11 shader/readback and three visible RFB frames. Software ignores the flag;
+receipts retain requested/effective state and nativeEffectVerified=false.
+The old optional driver and this flag remain independently selectable, but the
+focused Thor comparison uses only this flag and the original driver.
+
+Support export now reserves current client receipts, run files and graphics/
+performance logs before server history. The prior shared 100-entry budget let 94
+server files crowd current client diagnostics out of the October 7 ZIP. Global
+limits, log tails and symlink/privacy checks remain bounded.
+
+Implementation and physical EVE performance qualification are pending below.
+Follow [the focused test](TESTING.md); update in place without data reset.
+
+
 ## Latest warmed A740 repeat
 
 The user repeated 0.1.14 with the A740 driver option enabled after its first
@@ -11,11 +50,10 @@ driver comparison complete. The user also inspected the videos: Snapdragon
 8 Elite and different system-driver combinations do not supply useful settings
 for Thor/Adreno 740. The next pass must address an independent, qualified
 optimization while preserving the accepted runtime, client, world and controls.
-The immediate comparison is EVE's own DX11-compatible FSR 1, retaining 720p
-output and the original driver. No completed FSR/minimum-quality result is
-recorded. [CLIENT-PERFORMANCE.md](CLIENT-PERFORMANCE.md) captures the exact-source
+This historical comparison proposed EVE's DX11-compatible FSR1; it is now
+complete with modest improvement and black-line artifacts. [CLIENT-PERFORMANCE.md](CLIENT-PERFORMANCE.md) captures the exact-source
 display and cached-buffer audit: neither is promoted as a proven bottleneck or
-an unqualified APK toggle. Current APK remains 0.1.14; only documentation changes.
+an unqualified APK toggle. This section describes the pre-0.1.15 documentation-only state.
 
 ## Latest October 5 device feedback and research
 
@@ -437,7 +475,7 @@ nor unequal startup/scene windows establish an engine-FPS regression cause.
 
 0.1.13 implements the first reversible experiments from that report:
 
-- Default restoration of accepted 0.1.11 DXVK30/latency1/Xvnc30 and requests after
+- Default restoration of accepted 0.1.11 DXVK30/latency 1/Xvnc30 and requests after
   each validated complete update. A versioned preference key restores baseline
   once on upgrade, then preserves explicit new profile choices.
 - Separate render60, queue2 and display60 profiles plus the prior combined caps.

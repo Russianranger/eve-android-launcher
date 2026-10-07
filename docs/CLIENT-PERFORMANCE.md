@@ -1,5 +1,36 @@
 # Client optimization evidence and qualification
 
+## October 7: optional linear presentation in 0.1.15
+
+The fresh [device evidence](DEVICE-20261007.md) shows a clean exit, stable warm
+RSS near 3 GiB, effectively idle shader compilation and recurring graphics
+completion waits. The screenshot HUD GPU 98% is a queue-derived DXVK measure:
+[`HudGpuLoadItem`](https://github.com/doitsujin/dxvk/blob/0cf05780abd7250c2cd713b7749cf32180157cf5/src/dxvk/hud/dxvk_hud_item.cpp)
+uses wall time minus GPU idle ticks;
+[the queue](https://github.com/doitsujin/dxvk/blob/0cf05780abd7250c2cd713b7749cf32180157cf5/src/dxvk/dxvk_queue.cpp)
+accumulates idle ticks only while its completion queue is empty. This does not
+measure physical Adreno utilization or distinguish rendering from WSI copies.
+
+Pinned Mesa 26 supports `MESA_VK_WSI_DEBUG=sw,linear`. The CPU-WSI branch selects
+LINEAR images and no buffer blit; the existing `sw` path uses optimal images plus
+a GPU image-to-buffer copy and mapped staging buffer before XCB put-image.
+Sources: [common WSI](https://github.com/chaotic-cx/mesa-mirror/blob/mesa-26.0.0/src/vulkan/wsi/wsi_common.c),
+[X11 WSI](https://github.com/chaotic-cx/mesa-mirror/blob/mesa-26.0.0/src/vulkan/wsi/wsi_common_x11.c).
+This removes one copy/buffer while retaining rendering completion waits and
+XCB/Xvnc/RFB/Android. It does not implement native Android surface presentation.
+Turnip linear images do not use UBWC, so rendering may be slower.
+
+0.1.15 exposes only a default-off experiment. Fresh original-driver capability
+queries require both BGRA8/RGBA8 UNORM linear formats and exact DXVK swapchain
+usage COLOR_ATTACHMENT|TRANSFER_DST at 1280×720/sample 1/mip 1/layer 1. They create
+no device or queue. Native Vulkan and unchanged exact EC D3D11 shader/readback
+plus three RFB frames independently qualify the selected environment. Production
+requires exact A740 chip 0x43050a01 and rejects software; CI software fixtures
+validate integration and retain physicalThorQualified/nativeEffectVerified=false.
+Original driver/cache, responsive 30/1/display 30 and IMMEDIATE policy remain.
+Only repeated warm device FPS/geometry tests can establish a useful change.
+
+
 ## October 5: warmed driver result and remaining candidates
 
 The 0.1.14 A740 repeat produced no user-observed improvement: typically 26 FPS,
@@ -9,17 +40,9 @@ comparison and qualification boundaries. The original driver remains preferred;
 the Adreno 740 station comparison is complete. Snapdragon 8 Elite videos with
 other system drivers do not establish a useful recipe for this exact runtime.
 
-The next small comparison is in-game **FSR 1**, retaining the 1280×720 output,
-baseline profile and original driver. CCP's [upscaling compatibility notes](https://www.eveonline.com/news/view/patch-notes-version-23-01)
-confirm FSR 1 works with DX11, whereas the newer Windows upscalers need DX12.
-Upscaling reduces scene rendering work and helps FPS only when GPU rendering
-is limiting. Compare Ultra Quality and then Quality, if offered, with all
-other game/launcher settings held constant. Record warm HUD FPS and device
-temperature; observe camera movement separately. This is an available game
-setting, not a runtime upgrade or automatic rewrite of player preferences.
-No prior completed FSR comparison or confirmed minimum graphics settings is
-recorded. A positive result would support scene-GPU load reduction; unchanged
-results would not alone identify a CPU or display bottleneck.
+The FSR1 comparison is now complete: modest improvement, but black lines were
+introduced. The user requests client optimization outside game settings; no
+further quality/upscaling trial is the current task. See the October 7 section.
 
 Read-only code review of the remaining engineering candidates found:
 
@@ -49,8 +72,7 @@ Read-only code review of the remaining engineering candidates found:
   fixtures do not establish this behavior. CI software fixtures cannot substitute
   for Thor hardware allocation/coherence proof.
 
-No renderer/runtime version, player data, resolution or application code changes
-accompany this review. Current APK remains 0.1.14.
+This historical review preceded the optional 0.1.15 presentation change.
 
 The requested 60-minute investigation ran 2026-10-03 20:42:57–21:42:57 UTC.
 Production changes began afterward. The accepted evidence is

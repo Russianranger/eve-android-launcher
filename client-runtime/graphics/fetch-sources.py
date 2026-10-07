@@ -46,7 +46,7 @@ A740_EXPERIMENT = {
     "mesaSourceSha256": SOURCE_ARCHIVES["mesa-26.0.0.tar.xz"],
     "upstreamCommit": "23f94c692cb1d41a2193a80fa531922d386e8d5d",
     "patchSha256": "1bb91daddcdbf264ee05337ef2fa4eebd544c9c3a1425810af73adf298e17b12",
-    "probeSourceSha256": "b79957f6b8f56f66877a397b7ba2d5084a44b84529da4166ae20bd7083ad5210",
+    "probeSourceSha256": "8bd8d2faf2e959baad024be4d0e185942a92584d5f04b91de287d4f1527e4371",
     "sourceFileSha256": "25206d1bae7e650e7266b50e107d6656e69cb640aadcb0c8e50e900241df3d09",
     "patchedSourceFileSha256": "a59ac4f80c0109ebffa7cd766bf91661ced97bdae35771af084ce6e73831bfdc",
     "deviceId": 0x43050a01, "registerOffset": 0x9804, "originalValue": 0x3f, "value": 0x1f1f,

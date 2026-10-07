@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT
- * Read exact physical GPU identity from the already pinned baseline ICD.
+ * Read exact physical GPU identity and linear WSI image capabilities from
+ * the already pinned baseline ICD.
  * This creates no device/queue and submits no GPU work. It cannot qualify
  * rendering or the backported register. --fixture is CI metadata evidence
  * only and is never accepted by the retail backend hardware selection gate.
@@ -19,6 +20,29 @@ static void json_string(const char *value) {
         else putchar(*p);
     }
     putchar('"');
+}
+
+static int linear_presentation_format(VkPhysicalDevice physical, VkFormat format) {
+    /* DXVK 2.4.1 creates its swapchain with COLOR_ATTACHMENT | TRANSFER_DST.
+     * Mesa 26's sw,linear WSI branch preserves that usage, chooses LINEAR
+     * tiling and does not add TRANSFER_SRC (the removed buffer-blit branch
+     * requires it). Query the actual driver, including the retail 1280x720
+     * extent, rather than infer support from its name or an environment flag.
+     */
+    const VkFormatFeatureFlags features = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    const VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VkFormatProperties format_properties;
+    vkGetPhysicalDeviceFormatProperties(physical, format, &format_properties);
+    if ((format_properties.linearTilingFeatures & features) != features) return 0;
+    VkImageFormatProperties image_properties;
+    VkResult result = vkGetPhysicalDeviceImageFormatProperties(physical, format,
+        VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_LINEAR, usage, 0, &image_properties);
+    return result == VK_SUCCESS && image_properties.maxExtent.width >= 1280 &&
+        image_properties.maxExtent.height >= 720 && image_properties.maxExtent.depth >= 1 &&
+        image_properties.maxMipLevels >= 1 && image_properties.maxArrayLayers >= 1 &&
+        (image_properties.sampleCounts & VK_SAMPLE_COUNT_1_BIT) != 0;
 }
 
 int main(int argc, char **argv) {
@@ -60,6 +84,8 @@ int main(int argc, char **argv) {
         .pNext = &driver};
     vkGetPhysicalDeviceProperties2(physical, &properties);
     int software = properties.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+    int bgra_linear = linear_presentation_format(physical, VK_FORMAT_B8G8R8A8_UNORM);
+    int rgba_linear = linear_presentation_format(physical, VK_FORMAT_R8G8B8A8_UNORM);
     int allowed = fixture ? software :
         (!software && properties.properties.vendorID == 0x5143 &&
          /* Mesa exports the FD740 KGSL chip ID, not the model number 0x740. */
@@ -72,10 +98,12 @@ int main(int argc, char **argv) {
     json_string(properties.properties.deviceName);
     printf(",\"driver\":"); json_string(driver.driverName);
     printf(",\"driver_info\":"); json_string(driver.driverInfo);
-    printf(",\"device_id\":%u,\"vendor_id\":%u,\"driver_id\":%u,\"driver_version\":%u,\"api_version\":%u,\"software\":%s}\n",
+    printf(",\"device_id\":%u,\"vendor_id\":%u,\"driver_id\":%u,\"driver_version\":%u,\"api_version\":%u,\"software\":%s,"
+        "\"linear_presentation\":{\"supported\":%s,\"bgra8_unorm\":%s,\"rgba8_unorm\":%s}}\n",
         properties.properties.deviceID, properties.properties.vendorID, driver.driverID,
         properties.properties.driverVersion, properties.properties.apiVersion,
-        software ? "true" : "false");
+        software ? "true" : "false", bgra_linear && rgba_linear ? "true" : "false",
+        bgra_linear ? "true" : "false", rgba_linear ? "true" : "false");
     vkDestroyInstance(instance, NULL);
     return allowed ? 0 : 1;
 }

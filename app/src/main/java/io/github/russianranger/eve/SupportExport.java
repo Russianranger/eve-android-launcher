@@ -12,34 +12,69 @@ import java.util.zip.*;
 
 /** Bounded support logs and receipts; never exports client assets, world tables or CA keys. */
 final class SupportExport {
+    static final int FILE_LIMIT = 100;
+    static final int SERVER_LOG_LIMIT = 30;
+    static final int FILE_BYTE_LIMIT = 256 * 1024;
+
     static LinkedHashMap<String, File> files(Context context) {
         RuntimeManager runtime = RuntimeManager.get(context);
         LinkedHashMap<String, File> result = new LinkedHashMap<>();
-        result.put("operations.log", new File(runtime.home, "operations.log"));
-        for (String name : new String[]{MemoryPressure.EVENTS, MemoryPressure.LIVE})
-            result.put("client/logs/" + name, MemoryPressure.file(context, name));
-        result.put("client/logs/client-graphicsIdentity.log", new File(runtime.clientState, "logs/client-graphicsIdentity.log"));
-        result.put("client/graphics-preflight.json", new File(runtime.clientState, "graphics-preflight.json"));
-        result.put("client/run/turnip-icd.json", new File(runtime.clientState, "run/turnip-icd.json"));
-        for (String name : new String[]{"status.json", "readiness.json"}) result.put("server/run/" + name, new File(runtime.serverState, "run/" + name));
-        for (String name : new String[]{"prepared.json"}) result.put("server/" + name, new File(runtime.serverState, name));
-        gatherLogs(result, new File(runtime.serverState, "logs"), "server/logs/", 0);
-        gatherLogs(result, runtime.clientState, "client/", 0);
+        add(result, runtime.home, "operations.log", "operations.log");
+        // Reserve current client evidence before considering either runtime's
+        // history. Server diagnostics previously exhausted the shared limit
+        // before the client display and DXVK logs could be selected.
         for (String name : new String[]{"status.json", "validation.json", "prepared.json", "probe.json", "import.json",
-                "client-performance.json", "client-performance.json.1", "controller.json"}) result.put("client/" + name, new File(runtime.clientState, name));
-        for (String name : new String[]{"client-window.json", "client-window.json.1", "dxvk.conf"})
-            result.put("client/run/" + name, new File(runtime.clientState, "run/" + name));
+                "import-session.json", "client-performance.json", "client-performance.json.1", "controller.json",
+                "graphics-preflight.json", "client-graphics-bundle.json", "client-gate.json", "launch-observation.json",
+                "launch-policy.json", "wine-trust-overlay.json", "preparation-memory.json"})
+            add(result, runtime.clientState, "client/" + name, name);
+        for (String name : new String[]{"status.json", "processes.json", "client-window.json", "client-window.json.1",
+                "dxvk.conf", "turnip-icd.json", "graphics-display.json"})
+            add(result, runtime.clientState, "client/run/" + name, "run/" + name);
+        for (String name : new String[]{MemoryPressure.EVENTS, MemoryPressure.LIVE, "display-performance.json",
+                "client-client.log", "exefile_d3d11.log", "exefile_dxgi.log", "client-display.log", "client-supervisor.log",
+                "client-wineServer.log", "client-gate.log", "client-probe.log", "client-prepare.log", "preparation-memory.log",
+                "client-graphicsIdentity.log", "client-graphicsVulkan.log", "client-graphicsD3d.log",
+                "client-graphicsD3d-helper.log", "client-graphicsD3d-helper-errors.log"})
+            add(result, runtime.clientState, "client/logs/" + name, "logs/" + name);
+        for (String name : new String[]{"status.json", "readiness.json"})
+            add(result, runtime.serverState, "server/run/" + name, "run/" + name);
+        add(result, runtime.serverState, "server/prepared.json", "prepared.json");
+
+        int serverStart = result.size();
+        for (String name : new String[]{"supervisor.log", "server-console.log", "market-console.log", "setup.log"})
+            add(result, runtime.serverState, "server/logs/" + name, "logs/" + name);
+        // Give server logs their own budget, including their current logs.
+        // Remaining slots belong to client diagnostics, even with a large
+        // directory of old server reports. All selection is deterministic.
+        gatherLogs(result, runtime.serverState, new File(runtime.serverState, "logs"), "server/logs/", 0,
+                Math.min(FILE_LIMIT, serverStart + SERVER_LOG_LIMIT));
+        gatherLogs(result, runtime.clientState, runtime.clientState, "client/", 0, FILE_LIMIT);
         return result;
     }
-    private static void gatherLogs(Map<String, File> result, File dir, String prefix, int depth) {
+    private static void add(Map<String, File> result, File root, String name, String relative) {
+        File file = new File(root, relative);
+        if (result.size() < FILE_LIMIT && safeFile(root, file)) result.put(name, file);
+    }
+    private static boolean safeFile(File root, File file) {
+        if (!file.isFile()) return false;
+        for (File current = file; current != null; current = current.getParentFile()) {
+            if (java.nio.file.Files.isSymbolicLink(current.toPath())) return false;
+            if (current.equals(root)) return true;
+        }
+        return false;
+    }
+    private static void gatherLogs(Map<String, File> result, File root, File dir, String prefix, int depth, int limit) {
         if (depth > 2 || !dir.isDirectory() || java.nio.file.Files.isSymbolicLink(dir.toPath())) return;
         File[] entries = dir.listFiles(); if (entries == null) return;
-        Arrays.sort(entries, Comparator.comparing(File::getName));
+        // Direct files precede subdirectory history at each bounded depth.
+        Arrays.sort(entries, Comparator.comparing(File::isDirectory).thenComparing(File::getName));
         for (File file : entries) {
-            if (result.size() > 100) break;
+            if (result.size() >= limit) break;
             if (java.nio.file.Files.isSymbolicLink(file.toPath())) continue;
-            if (file.isDirectory()) gatherLogs(result, file, prefix + file.getName() + "/", depth + 1);
-            else if (file.getName().endsWith(".log") || file.getName().endsWith(".json")) result.put(prefix + file.getName(), file);
+            if (file.isDirectory()) gatherLogs(result, root, file, prefix + file.getName() + "/", depth + 1, limit);
+            else if ((file.getName().endsWith(".log") || file.getName().endsWith(".json")) && safeFile(root, file))
+                result.put(prefix + file.getName(), file);
         }
     }
     static String tail(File file, int limit) throws IOException {
@@ -75,7 +110,7 @@ final class SupportExport {
             entry(zip, "support.json", metadata.toString(2));
             for (Map.Entry<String, File> item : files(context).entrySet()) {
                 RuntimeManager.cancelled();
-                if (item.getValue().isFile() && !java.nio.file.Files.isSymbolicLink(item.getValue().toPath())) entry(zip, item.getKey(), tail(item.getValue(), 256 * 1024));
+                if (safeFile(runtime.home, item.getValue())) entry(zip, item.getKey(), tail(item.getValue(), FILE_BYTE_LIMIT));
             }
         }
     }

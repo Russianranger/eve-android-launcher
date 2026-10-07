@@ -100,11 +100,12 @@ public final class ClientPerformanceSettingsTest {
         assertFalse(runtime.disableConcurrentBinning());
         assertFalse(runtime.disableLrcpc2());
         assertFalse(runtime.a740PcMode());
+        assertFalse(runtime.linearPresentation());
         for (String profile : new String[]{"render60", "queue2", "display60", "throughput", "responsive"}) {
             runtime.setPerformanceProfile(profile);
             assertEquals(profile, new ClientRuntime(context).performanceProfile());
         }
-        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode"}) {
+        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation"}) {
             runtime.setPerformanceOption(option, true);
             assertTrue(new ClientRuntime(context).performanceOption(option));
             RuntimeService.busy = true;
@@ -150,6 +151,49 @@ public final class ClientPerformanceSettingsTest {
         assertTrue(runtime.disableConcurrentBinning());
         runtime.setPerformanceOption("a740-pc-mode", true);
         assertTrue(new ClientRuntime(context).a740PcMode());
+    }
+
+    @Test public void linearPresentationPersistsIndependentlyAndOnlyLaunchesWithGpuRendering() throws Exception {
+        ClientRuntime runtime = new ClientRuntime(context);
+        assertFalse(runtime.linearPresentation());
+        assertFalse(runtime.status().getBoolean("requestedLinearPresentation"));
+        assertFalse(runtime.launchCommand("turnip-dxvk", "responsive", false).contains("--linear-presentation"));
+        runtime.setPerformanceProfile("render60");
+        runtime.setPerformanceOption("disable-lrcpc2", true);
+        runtime.setPerformanceOption("linear-presentation", true);
+        ClientRuntime restored = new ClientRuntime(context);
+        assertTrue(restored.linearPresentation());
+        assertTrue(restored.status().getBoolean("linearPresentation"));
+        assertTrue(restored.status().getBoolean("requestedLinearPresentation"));
+        assertTrue(restored.launchCommand("turnip-dxvk", "render60", false).contains("--linear-presentation"));
+        assertEquals("render60", restored.performanceProfile());
+        assertTrue(restored.disableLrcpc2());
+        assertFalse(restored.disableConcurrentBinning());
+        assertFalse(restored.a740PcMode());
+        restored.useAdreno(false);
+        assertTrue(restored.performanceOption("linear-presentation"));
+        assertTrue(restored.status().getBoolean("requestedLinearPresentation"));
+        assertFalse(restored.linearPresentation());
+        assertFalse(restored.status().getBoolean("linearPresentation"));
+        assertFalse(restored.launchCommand("software", "render60", false).contains("--linear-presentation"));
+        restored.useAdreno(true);
+        assertTrue(new ClientRuntime(context).linearPresentation());
+        restored.setPerformanceOption("linear-presentation", false);
+        assertFalse(new ClientRuntime(context).linearPresentation());
+        assertEquals("render60", restored.performanceProfile());
+        assertTrue(restored.disableLrcpc2());
+    }
+
+    @Test public void invalidLinearPreferenceFallsBackWithoutResettingExistingSettings() {
+        assertTrue(preferences.edit().putString("linear-presentation", "true")
+                .putString("performance-profile-v2", "queue2").putBoolean("a740-pc-mode", true).commit());
+        ClientRuntime runtime = new ClientRuntime(context);
+        assertFalse(runtime.linearPresentation());
+        assertFalse(runtime.launchCommand("turnip-dxvk", "queue2", false).contains("--linear-presentation"));
+        assertEquals("queue2", runtime.performanceProfile());
+        assertTrue(runtime.a740PcMode());
+        runtime.setPerformanceOption("linear-presentation", true);
+        assertTrue(new ClientRuntime(context).linearPresentation());
     }
 
     @Test public void graphicsAssetSelectionKeepsBaselineAndRequiresBothPinnedExperimentAssets() throws Exception {
@@ -207,9 +251,12 @@ public final class ClientPerformanceSettingsTest {
         catch (IllegalStateException expected) { }
         try { runtime.setPerformanceOption("a740-pc-mode", true); fail("Active client driver changed"); }
         catch (IllegalStateException expected) { }
+        try { runtime.setPerformanceOption("linear-presentation", true); fail("Active client presentation changed"); }
+        catch (IllegalStateException expected) { }
         assertEquals("responsive", runtime.performanceProfile());
         assertFalse(runtime.diagnosticHud());
         assertFalse(runtime.a740PcMode());
+        assertFalse(runtime.linearPresentation());
     }
 
     @Test public void busyAndLiveSessionsRejectChangesWithoutMutatingPreferences() {
@@ -246,12 +293,15 @@ public final class ClientPerformanceSettingsTest {
             assertTrue(new ClientRuntime(context).disableConcurrentBinning());
             checkBox(root, "Use A740 driver experiment").performClick();
             assertTrue(new ClientRuntime(context).a740PcMode());
+            checkBox(root, "Reduce GPU frame copies (experiment)").performClick();
+            assertTrue(new ClientRuntime(context).linearPresentation());
             button(root, "Server").performClick(); idle();
             button(root, "Client").performClick(); idle();
             assertEquals(1, profile(root).getSelectedItemPosition());
             assertTrue(checkBox(root, "Show frame-time and GPU diagnostics").isChecked());
             assertTrue(checkBox(root, "Disable concurrent binning (Adreno experiment)").isChecked());
             assertTrue(checkBox(root, "Use A740 driver experiment").isChecked());
+            assertTrue(checkBox(root, "Reduce GPU frame copies (experiment)").isChecked());
             assertSame(startServer, root.findViewWithTag("start-server"));
             assertSame(startClient, root.findViewWithTag("start-client"));
             assertTopStart(startServer); assertTopStart(startClient);
@@ -272,22 +322,26 @@ public final class ClientPerformanceSettingsTest {
             assertFalse(checkBox(root, "Disable concurrent binning (Adreno experiment)").isEnabled());
             assertFalse(checkBox(root, "Use alternate CPU load instructions (FEX experiment)").isEnabled());
             assertFalse(checkBox(root, "Use A740 driver experiment").isEnabled());
+            assertFalse(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
             RuntimeService.busy = false;
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", new LiveProcess());
             refresh();
             assertFalse(profile(root).isEnabled());
             assertFalse(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
             assertFalse(checkBox(root, "Use A740 driver experiment").isEnabled());
+            assertFalse(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", null); refresh();
             checkBox(root, "Use Adreno GPU rendering").performClick();
             assertEquals("software", new ClientRuntime(context).renderer());
             assertFalse(profile(root).isEnabled());
             assertFalse(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
             assertFalse(checkBox(root, "Use A740 driver experiment").isEnabled());
+            assertFalse(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
             checkBox(root, "Use Adreno GPU rendering").performClick();
             assertTrue(profile(root).isEnabled());
             assertTrue(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
             assertTrue(checkBox(root, "Use A740 driver experiment").isEnabled());
+            assertTrue(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
         } finally {
             RuntimeService.busy = false;
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", null);

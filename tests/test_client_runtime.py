@@ -20,7 +20,7 @@ import threading
 import time
 import unittest
 from unittest import mock
-from test_client_graphics import a740_identity, d3d_success, display_success, vulkan_success
+from test_client_graphics import a740_identity, d3d_success, display_success, linear_identity, vulkan_success
 
 BACKEND = Path(__file__).resolve().parents[1] / "backend/client_runtime.py"
 sys.path.insert(0, str(BACKEND.parent))
@@ -39,8 +39,12 @@ mode, state, port, behavior = sys.argv[1:]
 state = pathlib.Path(state)
 port = int(port)
 (state / (mode + '.pid')).write_text(str(os.getpid()))
-(state / (mode + '.environment.json')).write_text(json.dumps({key: os.environ.get(key) for key in ('DXVK_HUD', 'DXVK_CONFIG_FILE', 'TU_DEBUG', 'FEX_HOSTFEATURES', 'FEX_TSOENABLED')}))
-if mode in ('graphicsVulkan', 'graphicsD3d'):
+environment = {key: os.environ.get(key) for key in ('DXVK_HUD', 'DXVK_CONFIG_FILE', 'TU_DEBUG', 'FEX_HOSTFEATURES', 'FEX_TSOENABLED', 'MESA_VK_WSI_DEBUG', 'MESA_SHADER_CACHE_DIR')}
+(state / (mode + '.environment.json')).write_text(json.dumps(environment))
+history_file = state / (mode + '.environment-history.json')
+history = json.loads(history_file.read_text()) if history_file.exists() else []
+history_file.write_text(json.dumps(history + [environment]))
+if mode in ('graphicsVulkan', 'graphicsD3d', 'graphicsIdentity'):
     if behavior == mode + '-hangs':
         def finish_graphics(*args):
             (state / (mode + '.stopped')).write_text('graceful')
@@ -53,7 +57,14 @@ if mode in ('graphicsVulkan', 'graphicsD3d'):
     report = json.loads((state / ('fixture-' + mode + '.json')).read_text())
     if behavior == mode + '-bad':
         if mode == 'graphicsVulkan': report['software'] = True
+        elif mode == 'graphicsIdentity': report['device_id'] = 0x740
         else: report['passed'] = False
+    if mode == 'graphicsIdentity':
+        if behavior == 'linear-missing': report.pop('linear_presentation')
+        if behavior == 'linear-unsupported': report['linear_presentation']['supported'] = False
+        if behavior == 'linear-format-invalid': report['linear_presentation']['rgba8_unorm'] = 1
+    if mode == 'graphicsVulkan' and behavior == 'linear-vulkan-bad' and os.environ.get('MESA_VK_WSI_DEBUG') == 'sw,linear':
+        report['software'] = True
     if mode == 'graphicsD3d':
         if behavior == 'graphics-server-lost': (state / 'server-lost').touch()
         display = json.loads((state / 'fixture-display.json').read_text())
@@ -146,6 +157,7 @@ class ClientRuntimeTests(unittest.TestCase):
         self.processes = []
         self.addCleanup(self.cleanup_processes)
         (self.state / 'fixture-graphicsVulkan.json').write_text(json.dumps(vulkan_success()))
+        (self.state / 'fixture-graphicsIdentity.json').write_text(json.dumps(linear_identity()))
         (self.state / 'fixture-graphicsD3d.json').write_text(json.dumps(d3d_success()))
         (self.state / 'fixture-display.json').write_text(json.dumps(display_success()))
         (self.state / 'fixture-graphics.json').write_text(json.dumps({'files': {
@@ -153,7 +165,7 @@ class ClientRuntimeTests(unittest.TestCase):
             'dxvk-dxgi-arm64ec.dll': {'sha256': '2' * 64}}}))
 
     def settings(self, behavior="normal", graphics=False, performance_profile="responsive", diagnostic_hud=False,
-                 disable_concurrent_binning=False, disable_lrcpc2=False):
+                 disable_concurrent_binning=False, disable_lrcpc2=False, linear_presentation=False):
         def command(role):
             return (sys.executable, str(self.fixture), role, str(self.state), str(self.port), behavior)
         return MODULE.Settings(content=self.content, state=self.state, server_state=self.server,
@@ -164,17 +176,18 @@ class ClientRuntimeTests(unittest.TestCase):
                                graphics_mode="turnip-dxvk" if graphics else "software",
                                performance_profile=performance_profile, diagnostic_hud=diagnostic_hud,
                                disable_concurrent_binning=disable_concurrent_binning, disable_lrcpc2=disable_lrcpc2,
+                               linear_presentation=linear_presentation,
                                vulkan_command=command("graphicsVulkan") if graphics else None,
                                d3d_command=command("graphicsD3d") if graphics else None,
                                graphics_timeout=.5,
                                minimum_available_kib=0)
 
     def launch(self, behavior="normal", clear_stop=True, graphics=False, performance_profile="responsive", diagnostic_hud=False,
-               disable_concurrent_binning=False, disable_lrcpc2=False):
+               disable_concurrent_binning=False, disable_lrcpc2=False, linear_presentation=False):
         if clear_stop:
             (self.state / "run/stop").unlink(missing_ok=True)
         selected = self.settings(behavior, graphics, performance_profile, diagnostic_hud,
-                                 disable_concurrent_binning, disable_lrcpc2)
+                                 disable_concurrent_binning, disable_lrcpc2, linear_presentation)
         (self.state / 'fixture-performance.json').write_text(json.dumps(MODULE.client_graphics.performance_settings(
             "turnip-dxvk", performance_profile)))
         values = {key: str(value) if isinstance(value, Path) else value for key, value in selected.__dict__.items()}
@@ -189,6 +202,7 @@ class ClientRuntimeTests(unittest.TestCase):
             " def preflight(self):\n"
             "  self.graphics_bundle=json.loads((self.s.state/'fixture-graphics.json').read_text()) if self.s.graphics_mode=='turnip-dxvk' else {}\n"
             "  if self.s.graphics_mode=='turnip-dxvk': module.client_graphics.verify_mapped=lambda folder,state: self.graphics_bundle\n"
+            "  if self.s.graphics_mode=='turnip-dxvk': module.client_graphics.a740_identity_command=lambda folder: (*self.s.vulkan_command[:2],'graphicsIdentity',*self.s.vulkan_command[3:])\n"
             "  return {'contentBuild':3396210}\n"
             " def require_server(self):\n"
             "  if (self.s.state/'server-lost').exists(): raise module.RuntimeErrorDetail('server session exited')\n"
@@ -213,7 +227,7 @@ class ClientRuntimeTests(unittest.TestCase):
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=2)
-        for role in ("display", "wineServer", "gate", "graphicsVulkan", "graphicsD3d", "client", "orphan"):
+        for role in ("display", "wineServer", "gate", "graphicsVulkan", "graphicsIdentity", "graphicsD3d", "client", "orphan"):
             pidfile = self.state / (role + ".pid")
             if pidfile.is_file():
                 pid = int(pidfile.read_text())
@@ -393,6 +407,92 @@ class ClientRuntimeTests(unittest.TestCase):
         with mock.patch.object(MODULE.client_graphics, "select_driver") as gate:
             self.assertFalse(runtime.run_graphics()["optimizations"]["a740PcMode"])
             gate.assert_not_called()
+
+    def test_linear_cli_is_boolean_default_off_and_software_records_ignored_request(self):
+        for arguments, enabled in (([], False), (["--linear-presentation"], True)):
+            with self.subTest(arguments=arguments), mock.patch.object(MODULE, "Runtime") as constructor, \
+                    mock.patch.object(MODULE.signal, "signal"):
+                self.assertEqual(MODULE.main(["start", *arguments]), 0)
+                selected = constructor.call_args.args[0]
+                self.assertEqual(selected.linear_presentation, enabled)
+                self.assertFalse(selected.a740_pc_mode)
+                self.assertEqual(selected.performance_profile, "responsive")
+        with mock.patch.object(MODULE, "Runtime") as constructor, \
+                mock.patch("sys.stderr", new=io.StringIO()), self.assertRaises(SystemExit):
+            MODULE.main(["start", "--linear-presentation", "sw,linear"])
+        constructor.assert_not_called()
+        runtime = MODULE.Runtime(self.settings(linear_presentation=True))
+        with mock.patch.object(runtime, "wait_graphics") as helper:
+            report = runtime.run_graphics()
+        helper.assert_not_called()
+        self.assertTrue(report["optimizations"]["requestedLinearPresentation"])
+        self.assertFalse(report["optimizations"]["linearPresentation"])
+        self.assertIsNone(report["optimizations"]["mesaWsiDebug"])
+        self.assertNotIn("MESA_VK_WSI_DEBUG", runtime.environment())
+
+    def test_linear_uses_current_original_capability_then_render_gates_and_resets_on_restart(self):
+        process = self.launch(graphics=True, linear_presentation=True)
+        running = self.wait_status("running")
+        self.assertEqual(running["performance"], MODULE.client_graphics.performance_settings("turnip-dxvk"))
+        self.assertTrue(running["optimizations"]["linearPresentation"])
+        self.assertEqual(running["optimizations"]["mesaWsiDebug"], "sw,linear")
+        self.assertFalse(running["optimizations"]["a740PcMode"])
+        self.assertFalse(running["optimizations"]["nativeEffectVerified"])
+        preflight = running["graphicsPreflight"]
+        linear = preflight["linearPresentationQualification"]
+        self.assertTrue(linear["hardwareCapabilityGatePassed"])
+        self.assertTrue(linear["vulkanPresentationPassed"])
+        self.assertFalse(linear["nativeEffectVerified"])
+        self.assertEqual(linear["originalDriver"], "turnip-26.0.0.so")
+        self.assertTrue(preflight["display"]["display_pixels_verified"])
+        self.assertEqual(preflight["driverSelection"]["driver"], "turnip-26.0.0.so")
+        self.assertEqual(preflight["presentation"]["observedPresentModes"], ["VK_PRESENT_MODE_IMMEDIATE_KHR"])
+        history = json.loads((self.state / "graphicsVulkan.environment-history.json").read_text())
+        self.assertEqual([environment["MESA_VK_WSI_DEBUG"] for environment in history], ["sw", "sw,linear"])
+        identity_env = json.loads((self.state / "graphicsIdentity.environment.json").read_text())
+        self.assertEqual(identity_env["MESA_VK_WSI_DEBUG"], "sw")
+        for role in ("graphicsD3d", "client"):
+            environment = json.loads((self.state / (role + ".environment.json")).read_text())
+            self.assertEqual(environment["MESA_VK_WSI_DEBUG"], "sw,linear")
+            self.assertEqual(environment["MESA_SHADER_CACHE_DIR"], str(self.state / "cache/mesa-26.0.0"))
+        (self.state / "run/stop").write_text("stop")
+        self.assertEqual(process.wait(timeout=4), 0)
+        baseline = self.launch(graphics=True)
+        restarted = self.wait_status("running")
+        self.assertFalse(restarted["optimizations"]["linearPresentation"])
+        self.assertFalse(restarted["graphicsPreflight"]["linearPresentationQualification"]["hardwareCapabilityGatePassed"])
+        self.assertEqual(json.loads((self.state / "client.environment.json").read_text())["MESA_VK_WSI_DEBUG"], "sw")
+        (self.state / "run/stop").write_text("stop")
+        self.assertEqual(baseline.wait(timeout=4), 0)
+
+    def test_linear_failed_capability_or_rendering_does_not_reuse_old_receipt_or_launch_eve(self):
+        for behavior in ("graphicsIdentity-bad", "graphicsIdentity-exit", "linear-missing",
+                         "linear-unsupported", "linear-format-invalid", "linear-vulkan-bad",
+                         "graphicsD3d-bad", "graphicsD3d-display-bad", "graphicsD3d-policy-fifo"):
+            with self.subTest(behavior=behavior):
+                (self.state / "graphics-preflight.json").write_text(json.dumps({
+                    "hardwarePreflightPassed": True,
+                    "linearPresentationQualification": {"hardwareCapabilityGatePassed": True}}))
+                process = self.launch(behavior, graphics=True, linear_presentation=True)
+                self.assertEqual(process.wait(timeout=5), 1)
+                failed = self.wait_status("failed")
+                self.assertFalse(failed["ready"])
+                self.assertFalse((self.state / "client.pid").exists())
+                self.assertFalse((self.state / "run/processes.json").exists())
+                self.assertEqual((self.content / "keep-client-files").read_text(), "unchanged")
+
+    def test_stop_and_timeout_during_linear_capability_clean_helpers_without_game(self):
+        for stop in (True, False):
+            with self.subTest(stop=stop):
+                process = self.launch("graphicsIdentity-hangs", graphics=True, linear_presentation=True)
+                self.wait_role("graphicsIdentity")
+                if stop:
+                    (self.state / "run/stop").write_text("stop")
+                self.assertEqual(process.wait(timeout=5), 0 if stop else 1)
+                finished = self.wait_status("stopped" if stop else "failed")
+                self.assertTrue(finished["cleanShutdown"])
+                self.assertFalse((self.state / "client.pid").exists())
+                self.assertFalse((self.state / "run/processes.json").exists())
 
     def test_server_loss_after_graphics_prevents_eve(self):
         process = self.launch("graphics-server-lost", graphics=True)

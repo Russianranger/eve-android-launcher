@@ -1,3 +1,23 @@
+# EVE Android Launcher 0.1.15 — optional linear presentation
+
+Warm station FPS remains around 26 and the FSR comparison introduced black lines.
+A default-off **Reduce GPU frame copies (experiment)** now selects Mesa's mapped
+linear swapchain path, removing one GPU staging copy without changing game
+preferences, runtime versions or the original driver. The option is locked while
+the client is running. Linear layout can also reduce rendering performance; a
+physical same-scene comparison is required and no FPS gain is promised.
+
+The experiment requires fresh exact A740 hardware identity and native linear
+format/image capability, then repeats Vulkan, ARM64EC D3D11 shader/readback and
+visible-frame qualification. Baseline30/one-frame/display 30 and the working
+IMMEDIATE presentation workaround remain intact. Software rendering ignores it;
+receipts distinguish requested settings, capability and unmeasured native effect.
+
+Support exports prioritize current client diagnostics before older server history,
+fixing missing client logs in the October 7 export. Install in place and follow
+[the focused comparison](TESTING.md). Preserve the client, prefix, shader caches,
+account, world and fullscreen controls.
+
 # EVE Android Launcher 0.1.14 — memory-pressure handling and A740 experiment
 
 The October 5 baseline was killed by Android for low memory; the other exports

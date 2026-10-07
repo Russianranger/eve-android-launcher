@@ -67,6 +67,7 @@ final class ClientRuntime {
     boolean disableConcurrentBinning() { return performanceOption("disable-concurrent-binning"); }
     boolean disableLrcpc2() { return performanceOption("disable-lrcpc2"); }
     boolean a740PcMode() { return renderer().equals("turnip-dxvk") && performanceOption("a740-pc-mode"); }
+    boolean linearPresentation() { return renderer().equals("turnip-dxvk") && performanceOption("linear-presentation"); }
 
     boolean performanceOption(String key) {
         try { return context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).getBoolean(key, false); }
@@ -74,7 +75,7 @@ final class ClientRuntime {
     }
 
     void setPerformanceOption(String key, boolean enabled) {
-        if (!Arrays.asList("early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode").contains(key))
+        if (!Arrays.asList("early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation").contains(key))
             throw new IllegalArgumentException("Choose a supported performance option");
         if (alive() || RuntimeService.busy) throw new IllegalStateException("Stop the client before changing its performance settings");
         context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).edit().putBoolean(key, enabled).apply();
@@ -106,6 +107,7 @@ final class ClientRuntime {
                 .put("selectedPerformanceProfile", performanceProfile()).put("diagnosticHud", diagnosticHud())
                 .put("earlyDisplayRequests", earlyDisplayRequests()).put("disableConcurrentBinning", disableConcurrentBinning())
                 .put("disableLrcpc2", disableLrcpc2()).put("a740PcMode", a740PcMode())
+                .put("linearPresentation", linearPresentation()).put("requestedLinearPresentation", performanceOption("linear-presentation"))
                 .put("supported_build", 3396210).put("client_launch_qualified", false)
                 .put("phase", "missing_client").put("message", "Import the complete EVE build 3396210 shared cache first");
         File status = new File(manager.clientState, "status.json");
@@ -316,6 +318,7 @@ final class ClientRuntime {
                 .put("performanceProfile", performanceProfile).put("diagnosticHud", diagnosticHud)
                 .put("earlyDisplayRequests", earlyDisplayRequests()).put("disableConcurrentBinning", disableConcurrentBinning())
                 .put("disableLrcpc2", disableLrcpc2()).put("a740PcMode", a740PcMode())
+                .put("linearPresentation", linearPresentation()).put("requestedLinearPresentation", performanceOption("linear-presentation"))
                 .put("login_qualified", false).put("graphics_qualified", false);
         RuntimeManager.text(new File(manager.clientState, "run/status.json"), pending.toString());
         List<String> launch = launchCommand(graphicsMode, performanceProfile, diagnosticHud);
@@ -349,6 +352,7 @@ final class ClientRuntime {
         if (disableConcurrentBinning()) launch.add("--disable-concurrent-binning");
         if (disableLrcpc2()) launch.add("--disable-lrcpc2");
         if (graphicsMode.equals("turnip-dxvk") && a740PcMode()) launch.add("--a740-pc-mode");
+        if (graphicsMode.equals("turnip-dxvk") && linearPresentation()) launch.add("--linear-presentation");
         return launch;
     }
 

@@ -1,6 +1,52 @@
 # EVE Android Launcher handoff
 
-## Current 0.1.15 continuation: linear presentation
+## Current 0.1.16 continuation: export-time pressure stop and baseline clarity
+
+The October 8 user reports slight linear FPS improvement, 72°C and a client
+closure while exporting. [DEVICE-20261008.md](DEVICE-20261008.md) records the exact
+session/event analysis. Both supplied ZIPs retain requested/effective linear=true
+and `MESA_VK_WSI_DEBUG=sw,linear`, including the one labeled baseline. Fresh exact
+A740 capability/Vulkan/EC shader/readback/RFB gates and actual EVE BGRA8/720p
+IMMEDIATE swapchains passed. This supports compatibility, not an A/B performance
+or heat conclusion. Do not treat the filenames as actual configurations.
+
+The first session was deliberately stopped by our unconditional trim level 15 guard at
+16:24:28, with cleanup 16:24:30 and export beginning 16:24:45. At the event,
+lowMemory=false, available 4.66 GiB, threshold 216 MiB. No fresh native/game crash or
+Android kill is recorded; server remains ready. The same event is in both ZIPs.
+The second session remained alive when exporting. The earlier 0.1.14 safeguard
+was too aggressive and is corrected before another physical performance trial.
+
+0.1.16 records critical trims but requires fresh corroboration: Android lowMemory
+or a valid available-byte reading at/below its positive low-memory threshold.
+Ample or unavailable readings retain the client. Asynchronous work is bound to
+its original session and rechecked before delayed stop dispatch; manual stop
+precedence and server ownership remain. Abrupt LMKD protection remains best effort.
+
+**Restore baseline settings** explicitly restores responsive 30/queue 1/display 30
+and clears all five experiment flags in one preferences transaction. It retains
+HUD, renderer, caches and unrelated settings. Ordinary profile selection remains
+cap-only; the visible summary distinguishes baseline caps from active experiments.
+No automatic preference reset on upgrade occurs. The next physical test uses the
+reset action for an actual `sw` baseline, then only linear after cooling.
+
+New bounded read-only hardware observations retain driver-reported GPU frequencies,
+CPU scaling/requested state and thermal driver labels/units where readable. Missing
+or denied sysfs data remains explicit; no root permission, clock, governor or
+thermal-policy change is made. The existing history size limits remain enforced.
+User-reported 72°C was not recorded by prior battery 41–43°C/thermalStatus0 fields;
+no existing evidence proves throttling. Matched warm clientCPU ~202–204% and
+RSS ~3 GiB are similar; compiler workers are idle and Adreno completion waits recur.
+
+Keep original Turnip 26/Wine 10.13/FEX 2510/native DXVK 2.4.1, IMMEDIATE policy,
+client build 3396210/EVE.js 0.12.9, world, fullscreen and controls. No new third GPU
+experiment or further game-quality tuning is introduced. Optional SHM staging is
+an audited later candidate, not an unqualified toggle; see CLIENT-PERFORMANCE.md.
+Build/device qualification follows below. [TESTING.md](TESTING.md) has the focused
+export-continuity and actual original-versus-linear comparison.
+
+
+## Historical 0.1.15 continuation: linear presentation
 
 The October 7 FSR test helped modestly but introduced black lines; the user
 explicitly requests optimization outside game settings. The original driver

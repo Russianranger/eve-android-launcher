@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -36,10 +37,12 @@ class DiagnosticsTests(unittest.TestCase):
         self.state.mkdir()
         self.proc = self.root / "proc"
         self.proc.mkdir()
+        self.sysfs = self.root / "sys"
+        self.sysfs.mkdir()
         self.cache = self.state / "cache"
         self.cache.mkdir()
         self.caches = (self.cache / "dxvk", self.cache / "mesa")
-        self.history = diagnostics.PerformanceHistory(self.state, self.caches, proc=self.proc)
+        self.history = diagnostics.PerformanceHistory(self.state, self.caches, proc=self.proc, sysfs=self.sysfs)
         self.namespace = mock.patch.object(server_runtime, "NAMESPACE_MAPPING", False)
         self.namespace.start()
         self.addCleanup(self.namespace.stop)
@@ -60,6 +63,183 @@ class DiagnosticsTests(unittest.TestCase):
 
     def read(self):
         return json.loads(self.history.path.read_bytes())
+
+    def sysfs_file(self, name, value):
+        path = self.sysfs / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(value)
+        return path
+
+    def test_hardware_frequencies_and_thermal_units_are_preserved(self):
+        self.sysfs_file("class/kgsl/kgsl-3d0/devfreq/cur_freq", "599000000\n")
+        self.sysfs_file("class/kgsl/kgsl-3d0/devfreq/max_freq", "1000000000\n")
+        self.sysfs_file("class/kgsl/kgsl-3d0/gpuclk", "0\n")
+        self.sysfs_file("devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "1200000\n")
+        self.sysfs_file("devices/system/cpu/cpu0/cpufreq/scaling_max_freq", "3000000\n")
+        self.sysfs_file("class/thermal/thermal_zone0/type", "cpu-0-0\n")
+        self.sysfs_file("class/thermal/thermal_zone0/temp", "72000\n")
+        self.sysfs_file("class/thermal/thermal_zone1/type", "battery\n")
+        self.sysfs_file("class/thermal/thermal_zone1/temp", "-500\n")
+        report = diagnostics.hardware_metrics(self.sysfs)
+        self.assertEqual(report["gpu"], {"curFreqHz": 599000000, "maxFreqHz": 1000000000, "gpuclkHz": 0})
+        self.assertEqual(report["cpu"]["cores"],
+                         [{"cpu": 0, "scalingCurFreqKHz": 1200000, "scalingMaxFreqKHz": 3000000}])
+        self.assertEqual(report["thermal"]["zones"],
+                         [{"zone": 0, "type": "cpu-0-0", "tempMilliC": 72000},
+                          {"zone": 1, "type": "battery", "tempMilliC": -500}])
+        self.assertNotIn("utilization", json.dumps(report))
+        self.assertNotIn(str(self.sysfs), json.dumps(report))
+
+    def test_absent_hardware_is_explicit_without_invented_zero_values(self):
+        report = diagnostics.hardware_metrics(self.sysfs)
+        self.assertEqual(report["gpu"], {"unavailable": {"curFreqHz": "missing", "maxFreqHz": "missing", "gpuclkHz": "missing"}})
+        self.assertEqual(report["cpu"], {"cores": [], "missingCores": list(range(8))})
+        self.assertEqual(report["thermal"], {"zones": [], "missingZones": list(range(32))})
+
+    def test_hardware_permission_io_and_partial_missing_statuses_are_truthful(self):
+        self.sysfs_file("devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "500000\n")
+        self.sysfs_file("class/thermal/thermal_zone0/type", "gpu-0\n")
+        original = diagnostics._bounded_text
+        def readable(path, limit):
+            if path == self.sysfs / "class/kgsl/kgsl-3d0/devfreq/cur_freq":
+                raise PermissionError(errno.EACCES, "private path should never be retained")
+            if path == self.sysfs / "class/kgsl/kgsl-3d0/gpuclk":
+                raise OSError(errno.EIO, "private path should never be retained")
+            if path == self.sysfs / "class/thermal/thermal_zone0/temp":
+                raise PermissionError(errno.EPERM, "private path should never be retained")
+            return original(path, limit)
+        with mock.patch.object(diagnostics, "_bounded_text", side_effect=readable):
+            report = diagnostics.hardware_metrics(self.sysfs)
+        self.assertEqual(report["gpu"]["unavailable"],
+                         {"curFreqHz": "permission-denied", "maxFreqHz": "missing", "gpuclkHz": "unavailable"})
+        self.assertEqual(report["cpu"]["cores"],
+                         [{"cpu": 0, "scalingCurFreqKHz": 500000, "unavailable": {"scalingMaxFreqKHz": "missing"}}])
+        self.assertEqual(report["thermal"]["zones"],
+                         [{"zone": 0, "type": "gpu-0", "unavailable": {"tempMilliC": "permission-denied"}}])
+        self.assertNotIn("private", json.dumps(report))
+
+    def test_hardware_numeric_reads_and_driver_identifiers_are_bounded(self):
+        for invalid in ("", "not-a-number", "12.5", "NaN", "-1", "9" * 33, "100000000001"):
+            with self.subTest(value=invalid):
+                self.sysfs_file("class/kgsl/kgsl-3d0/devfreq/cur_freq", invalid)
+                self.assertEqual(diagnostics.hardware_metrics(self.sysfs)["gpu"]["unavailable"]["curFreqHz"], "malformed")
+        self.sysfs_file("devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "100000001")
+        self.sysfs_file("class/thermal/thermal_zone0/type", "private secret\nstack")
+        self.sysfs_file("class/thermal/thermal_zone0/temp", "2147483647")
+        self.sysfs_file("class/thermal/thermal_zone1/type", "a" * 65)
+        self.sysfs_file("class/thermal/thermal_zone1/temp", "-273151")
+        report = diagnostics.hardware_metrics(self.sysfs)
+        self.assertEqual(report["cpu"]["cores"][0]["unavailable"]["scalingCurFreqKHz"], "malformed")
+        for zone in report["thermal"]["zones"]:
+            self.assertEqual(zone["unavailable"], {"type": "malformed", "tempMilliC": "malformed"})
+        self.assertNotIn("private", json.dumps(report))
+
+    def test_hardware_only_fixed_eight_cpus_and_thirty_two_zones_are_read(self):
+        for cpu in range(9):
+            for attribute in ("scaling_cur_freq", "scaling_max_freq"):
+                self.sysfs_file(f"devices/system/cpu/cpu{cpu}/cpufreq/{attribute}", "1000000")
+        for zone in range(33):
+            self.sysfs_file(f"class/thermal/thermal_zone{zone}/type", "tsens_tz_sensor")
+            self.sysfs_file(f"class/thermal/thermal_zone{zone}/temp", "70000")
+        with mock.patch.object(diagnostics, "_bounded_text", wraps=diagnostics._bounded_text) as reads, \
+                mock.patch.object(os, "scandir", side_effect=AssertionError("hardware directory walk")):
+            report = diagnostics.hardware_metrics(self.sysfs)
+        self.assertEqual(len(report["cpu"]["cores"]), 8)
+        self.assertEqual(len(report["thermal"]["zones"]), 32)
+        self.assertEqual(reads.call_count, 3 + 2 * 8 + 2 * 32)
+        self.assertFalse(any("cpu8/" in str(call.args[0]) or "thermal_zone32/" in str(call.args[0])
+                             for call in reads.call_args_list))
+        self.assertLess(len(json.dumps(report, separators=(",", ":"))), 3500)
+
+    def test_hardware_sysfs_class_and_policy_symlinks_are_readable(self):
+        policy = self.sysfs / "devices/system/cpu/cpufreq/policy0"
+        policy.mkdir(parents=True)
+        (policy / "scaling_cur_freq").write_text("1200000")
+        (policy / "scaling_max_freq").write_text("3000000")
+        cpu = self.sysfs / "devices/system/cpu/cpu0"
+        cpu.mkdir()
+        (cpu / "cpufreq").symlink_to(policy, target_is_directory=True)
+        sensor = self.sysfs / "devices/virtual/thermal/thermal_zone0"
+        sensor.mkdir(parents=True)
+        (sensor / "type").write_text("tsens_tz_sensor0")
+        (sensor / "temp").write_text("72000")
+        thermal = self.sysfs / "class/thermal"
+        thermal.mkdir(parents=True)
+        (thermal / "thermal_zone0").symlink_to(sensor, target_is_directory=True)
+        report = diagnostics.hardware_metrics(self.sysfs)
+        self.assertEqual(report["cpu"]["cores"][0]["scalingCurFreqKHz"], 1200000)
+        self.assertEqual(report["thermal"]["zones"][0]["tempMilliC"], 72000)
+
+    def test_hardware_cached_ten_seconds_not_duplicated_and_reset_per_session(self):
+        self.task()
+        self.history.begin()
+        with mock.patch.object(diagnostics, "hardware_metrics", wraps=diagnostics.hardware_metrics) as hardware:
+            self.history.sample(self.snapshot(1), {"client": 20}, "starting")
+            self.history.sample(self.snapshot(6), {"client": 20}, "running")
+            report = self.read()
+            self.assertEqual(hardware.call_count, 1)
+            self.assertNotIn("hardware", report["samples"][-1])
+            self.assertEqual(report["samples"][-1]["hardwareSampleAgeSeconds"], 5)
+            self.assertEqual(report["samples"][-1]["hardwareSampleAt"], report["latestHardware"]["at"])
+            self.history.sample(self.snapshot(11), {"client": 20}, "running")
+            self.assertEqual(hardware.call_count, 2)
+            report = self.read()
+            self.assertEqual(report["samples"][-1]["hardwareSampleAgeSeconds"], 0)
+            self.assertEqual(report["samples"][-1]["hardware"], report["latestHardware"])
+            self.history.finish("stopped")
+            self.history.sample(self.snapshot(21), {"client": 20}, "running")
+            self.assertEqual(hardware.call_count, 2)
+            self.history.begin()
+            self.history.sample(self.snapshot(22), {"client": 20}, "starting")
+            self.assertEqual(hardware.call_count, 3)
+            self.assertEqual(self.read()["samples"][0]["hardwareSampleAgeSeconds"], 0)
+
+    def test_hardware_live_and_terminal_history_remain_within_existing_byte_budget(self):
+        for cpu in range(8):
+            for attribute in ("scaling_cur_freq", "scaling_max_freq"):
+                self.sysfs_file(f"devices/system/cpu/cpu{cpu}/cpufreq/{attribute}", "3000000")
+        for zone in range(32):
+            self.sysfs_file(f"class/thermal/thermal_zone{zone}/type", "tsens_tz_sensor" + str(zone))
+            self.sysfs_file(f"class/thermal/thermal_zone{zone}/temp", "72000")
+        for tid in range(30, 46):
+            self.task(tid=tid)
+        self.history.begin()
+        for at in range(1, 651, 5):
+            self.history.sample(self.snapshot(at), {"client": 20}, "running")
+        self.assertLessEqual(self.history.path.stat().st_size, diagnostics.FILE_LIMIT)
+        self.assertGreater(self.read().get("samplesDroppedForBytes", 0), 0)
+        self.history.finish("stopped")
+        report = self.read()
+        self.assertLessEqual(self.history.path.stat().st_size, diagnostics.FILE_LIMIT)
+        self.assertLessEqual(len(report["samples"]), diagnostics.SAMPLE_LIMIT)
+        self.assertEqual(report["phase"], "stopped")
+        self.assertEqual(len(report["latestHardware"]["thermal"]["zones"]), 32)
+        self.assertNotIn("permission-denied", json.dumps(report["latestHardware"]["thermal"]))
+        self.history.begin()
+        with mock.patch.object(diagnostics, "_sysfs_text", return_value=(None, "permission-denied")):
+            for at in range(1, 651, 5):
+                self.history.sample(self.snapshot(at), {"client": 20}, "running")
+            self.history.finish("failed")
+        report = self.read()
+        self.assertLessEqual(self.history.path.stat().st_size, diagnostics.FILE_LIMIT)
+        self.assertEqual(report["phase"], "failed")
+        self.assertEqual(len(report["latestHardware"]["thermal"]["zones"]), 32)
+        self.assertTrue(all(zone["unavailable"]["tempMilliC"] == "permission-denied"
+                            for zone in report["latestHardware"]["thermal"]["zones"]))
+
+    def test_tiny_budget_drops_latest_hardware_without_losing_terminal_update(self):
+        self.task()
+        self.history.file_limit = 1400
+        self.history.begin()
+        with mock.patch.object(diagnostics, "_sysfs_text", return_value=(None, "permission-denied")):
+            self.history.sample(self.snapshot(1), {"client": 20}, "running")
+        self.history.finish("failed")
+        report = self.read()
+        self.assertLessEqual(self.history.path.stat().st_size, 1400)
+        self.assertEqual(report["phase"], "failed")
+        self.assertIn("endedAt", report)
+        self.assertTrue(report["latestHardwareDroppedForBytes"])
+        self.assertNotIn("latestHardware", report)
 
     def test_cpu_thread_identity_and_compiler_waits_survive_stop(self):
         self.task(ticks=10)
@@ -311,6 +491,7 @@ class DiagnosticsTests(unittest.TestCase):
     def test_actual_process_cpu_and_rss_are_retained_after_exit(self):
         self.namespace.stop()
         runtime = client_runtime.Runtime(client_runtime.Settings(state=self.state))
+        runtime.diagnostics.sysfs = self.sysfs
         runtime.identities = {"supervisorIdentity": server_runtime.process_identity(os.getpid())}
         process = runtime.spawn("client", (sys.executable, "-c", "while True: sum(range(2000))"),
                                 env={"PATH": "/usr/bin:/bin"}, cwd=self.state)

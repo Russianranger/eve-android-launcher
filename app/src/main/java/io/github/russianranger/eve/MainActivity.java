@@ -21,11 +21,12 @@ public final class MainActivity extends Activity {
     private static final int CLIENT_ZIP = 1, SUPPORT_ZIP = 2;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private LinearLayout body;
-    private TextView stateText, workText, logText;
+    private TextView stateText, workText, logText, performanceSummary;
     private String tab = "Server";
     private CheckBox useAdreno;
     private Spinner performanceProfile;
     private CheckBox diagnosticHud;
+    private Button restoreBaseline;
     private static final List<String> PERFORMANCE_PROFILES = Arrays.asList("responsive", "render60", "queue2", "display60", "throughput");
     private final Map<String, CheckBox> performanceOptions = new LinkedHashMap<>();
     private boolean updatingRenderer;
@@ -96,7 +97,7 @@ public final class MainActivity extends Activity {
     }
     private void render() {
         logGeneration++; controls.clear(); controls.addAll(launchControls); body.removeAllViews(); stateText = null; logText = null;
-        performanceProfile = null; diagnosticHud = null; performanceOptions.clear();
+        performanceProfile = null; diagnosticHud = null; performanceSummary = null; restoreBaseline = null; performanceOptions.clear();
         if (tab.equals("Server")) {
             LinearLayout state = card("Your local universe", "EVE.js 0.12.9 · client build 3396210\nSetup downloads the prepared ARM64 server package. World data stays on this device.");
             stateText = label("", 15, 0xff6ee4f0); state.addView(stateText);
@@ -107,10 +108,12 @@ public final class MainActivity extends Activity {
         } else if (tab.equals("Client")) {
             LinearLayout state = card("Client performance", "Start the local server first. GPU rendering and responsive text entry are the focus of this preview.");
             stateText = label("", 14, 0xff6ee4f0); state.addView(stateText);
-            LinearLayout performance = card("Adreno performance", "Baseline restores the smoother 0.1.11 settings. Compare one experiment at a time in the same warmed scene. Stop the client before changing settings.");
+            LinearLayout performance = card("Adreno performance", "Profiles change frame caps and queue depth while keeping selected experiments. Restore baseline settings clears all experiments. Compare one experiment at a time in the same warmed scene.");
+            performanceSummary = label(new ClientRuntime(this).performanceSummary(), 14, 0xff6ee4f0);
+            performanceSummary.setContentDescription("Selected client performance settings"); performance.addView(performanceSummary);
             performanceProfile = new Spinner(this);
             performanceProfile.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
-                    new String[]{"Baseline · 30 FPS target", "Render cap only · 60 FPS", "Frame queue only · 2 frames",
+                    new String[]{"Baseline caps · 30 FPS / 1 frame / display 30", "Render cap only · 60 FPS", "Frame queue only · 2 frames",
                             "Display cap only · 60 FPS", "0.1.12 combined · 60 FPS / 2 frames"}));
             performanceProfile.setContentDescription("Client performance profile");
             performanceProfile.setSelection(PERFORMANCE_PROFILES.indexOf(new ClientRuntime(this).performanceProfile()));
@@ -121,7 +124,7 @@ public final class MainActivity extends Activity {
                     ClientRuntime runtime = new ClientRuntime(MainActivity.this);
                     String profile = PERFORMANCE_PROFILES.get(position);
                     if (profile.equals(runtime.performanceProfile())) return;
-                    try { runtime.setPerformanceProfile(profile); }
+                    try { runtime.setPerformanceProfile(profile); updateState(); }
                     catch (IllegalStateException error) {
                         updatingPerformance = true;
                         ((Spinner) parent).setSelection(PERFORMANCE_PROFILES.indexOf(runtime.performanceProfile()));
@@ -131,6 +134,13 @@ public final class MainActivity extends Activity {
                 }
                 @Override public void onNothingSelected(AdapterView<?> parent) { }
             });
+            restoreBaseline = actionButton("Restore baseline settings", "restore-baseline");
+            restoreBaseline.setOnClickListener(view -> {
+                ClientRuntime runtime = new ClientRuntime(this);
+                try { runtime.restoreBaselineSettings(); syncPerformanceSettings(runtime); updateState(); }
+                catch (IllegalStateException error) { Toast.makeText(this, error.getMessage(), Toast.LENGTH_SHORT).show(); }
+            });
+            performance.addView(restoreBaseline, new LinearLayout.LayoutParams(-1, -2));
             performanceOption(performance, "Request next display frame early", "early-display-requests");
             performanceOption(performance, "Disable concurrent binning (Adreno experiment)", "disable-concurrent-binning");
             performanceOption(performance, "Use alternate CPU load instructions (FEX experiment)", "disable-lrcpc2");
@@ -190,6 +200,8 @@ public final class MainActivity extends Activity {
                 boolean adrenoSettings = stopped && client.renderer().equals("turnip-dxvk");
                 if (performanceProfile != null) performanceProfile.setEnabled(adrenoSettings);
                 if (diagnosticHud != null) diagnosticHud.setEnabled(adrenoSettings);
+                if (restoreBaseline != null) restoreBaseline.setEnabled(adrenoSettings);
+                if (performanceSummary != null) performanceSummary.setText(client.performanceSummary());
                 for (CheckBox option : performanceOptions.values()) option.setEnabled(adrenoSettings);
                 JSONObject state = client.status(); stateText.setText(state.optString("message", state.toString(2)));
             }
@@ -201,12 +213,21 @@ public final class MainActivity extends Activity {
         box.setOnCheckedChangeListener((button, checked) -> {
             if (updatingPerformance) return;
             ClientRuntime runtime = new ClientRuntime(this);
-            try { runtime.setPerformanceOption(key, checked); }
+            try { runtime.setPerformanceOption(key, checked); updateState(); }
             catch (IllegalStateException error) {
                 updatingPerformance = true; button.setChecked(runtime.performanceOption(key)); updatingPerformance = false;
                 Toast.makeText(this, error.getMessage(), Toast.LENGTH_SHORT).show();
             }
         });
+    }
+    private void syncPerformanceSettings(ClientRuntime runtime) {
+        updatingPerformance = true;
+        try {
+            if (performanceProfile != null) performanceProfile.setSelection(PERFORMANCE_PROFILES.indexOf(runtime.performanceProfile()));
+            for (Map.Entry<String, CheckBox> option : performanceOptions.entrySet())
+                option.getValue().setChecked(runtime.performanceOption(option.getKey()));
+            if (diagnosticHud != null) diagnosticHud.setChecked(runtime.diagnosticHud());
+        } finally { updatingPerformance = false; }
     }
     private void loadLogs() {
         final TextView target = logText; final long generation = logGeneration;

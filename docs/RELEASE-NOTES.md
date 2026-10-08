@@ -1,3 +1,23 @@
+# EVE Android Launcher 0.1.16 — export continuity and explicit baseline reset
+
+The October 8 closure during export navigation was our automatic trim-callback
+stop, despite 4.66 GiB available and Android lowMemory=false. This update records
+critical trim evidence but requires fresh corroborating pressure before stopping
+the same client session. Ample/unavailable readings retain EVE; stale asynchronous
+work cannot stop a later session. Genuine low-memory cleanup remains asynchronous
+and keeps the world server running.
+
+Both supplied exports still had linear presentation enabled. **Restore baseline
+settings** now clears all five experiments and restores the accepted 30/1/display 30
+caps together, while retaining HUD, renderer and unrelated preferences. A visible
+summary shows active experiments; ordinary profile selection remains cap-only.
+
+Bounded read-only GPU/CPU frequency and thermal observations are included where
+Android exposes them. Missing readings are explicit, and no clock/governor/thermal
+control changes are made. No game-quality, driver/runtime version or data/cache
+change is part of this update. Linear remains optional; its sustained FPS/heat
+benefit still needs [the actual baseline comparison](TESTING.md).
+
 # EVE Android Launcher 0.1.15 — optional linear presentation
 
 Warm station FPS remains around 26 and the FSR comparison introduced black lines.

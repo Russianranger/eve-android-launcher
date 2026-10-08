@@ -22,7 +22,10 @@ import java.io.InputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 import org.json.JSONObject;
 import org.junit.After;
 import org.junit.Before;
@@ -196,6 +199,98 @@ public final class ClientPerformanceSettingsTest {
         assertTrue(new ClientRuntime(context).linearPresentation());
     }
 
+    @Test public void softwareSummaryShowsSavedGpuCapsAndKeepsEarlyDisplayRequestsActive() {
+        ClientRuntime runtime = new ClientRuntime(context);
+        runtime.setPerformanceProfile("throughput");
+        runtime.setPerformanceOption("early-display-requests", true);
+        runtime.setPerformanceOption("linear-presentation", true);
+        runtime.useAdreno(false);
+        assertEquals("Saved GPU caps: render 60 FPS · queue 2 frames · display 60 FPS\n"
+                + "Saved experiments: Early display requests (active), Reduce GPU frame copies (inactive in software)",
+                runtime.performanceSummary());
+        assertTrue(runtime.earlyDisplayRequests());
+        assertFalse(runtime.linearPresentation());
+        runtime.restoreBaselineSettings();
+        assertEquals("Saved GPU caps: render 30 FPS · queue 1 frame · display 30 FPS\nSaved experiments: none",
+                runtime.performanceSummary());
+    }
+
+    @Test public void explicitBaselineRestoreClearsEveryExperimentTogetherAndPreservesOtherSettings() {
+        String[] options = {"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation"};
+        for (boolean adreno : new boolean[]{true, false}) {
+            SharedPreferences.Editor setup = preferences.edit().putString("performance-profile-v2", "throughput")
+                    .putBoolean("use-adreno", adreno).putBoolean("diagnostic-hud", true).putString("unrelated-setting", "preserved");
+            for (String option : options) setup.putBoolean(option, true);
+            assertTrue(setup.commit());
+            List<Map<String, ?>> snapshots = new ArrayList<>();
+            SharedPreferences.OnSharedPreferenceChangeListener observe = (changed, key) -> snapshots.add(changed.getAll());
+            preferences.registerOnSharedPreferenceChangeListener(observe);
+            try {
+                new ClientRuntime(context).restoreBaselineSettings(); idle();
+                assertFalse("Reset publishes its changed settings", snapshots.isEmpty());
+                for (Map<String, ?> snapshot : snapshots) {
+                    assertEquals("responsive", snapshot.get("performance-profile-v2"));
+                    for (String option : options) assertEquals("Every notification sees the complete reset", false, snapshot.get(option));
+                    assertEquals(adreno, snapshot.get("use-adreno"));
+                    assertEquals(true, snapshot.get("diagnostic-hud"));
+                    assertEquals("preserved", snapshot.get("unrelated-setting"));
+                }
+                ClientRuntime restored = new ClientRuntime(context);
+                assertEquals("responsive", restored.performanceProfile());
+                for (String option : options) assertFalse(restored.performanceOption(option));
+                assertEquals(adreno ? "turnip-dxvk" : "software", restored.renderer());
+                assertTrue(restored.diagnosticHud());
+                assertEquals("preserved", preferences.getString("unrelated-setting", ""));
+                assertTrue(restored.performanceSummary().endsWith("none"));
+            } finally { preferences.unregisterOnSharedPreferenceChangeListener(observe); }
+        }
+    }
+
+    @Test public void explicitBaselineRestoreRejectsBusyAndLiveSessionsWithoutClearingTheirSelections() {
+        ClientRuntime runtime = new ClientRuntime(context);
+        runtime.setPerformanceProfile("throughput"); runtime.setPerformanceOption("linear-presentation", true);
+        RuntimeService.busy = true;
+        try { runtime.restoreBaselineSettings(); fail("Busy session reset accepted"); }
+        catch (IllegalStateException expected) { }
+        finally { RuntimeService.busy = false; }
+        assertEquals("throughput", runtime.performanceProfile()); assertTrue(runtime.linearPresentation());
+        ReflectionHelpers.setStaticField(ClientRuntime.class, "session", new LiveProcess());
+        try { runtime.restoreBaselineSettings(); fail("Live session reset accepted"); }
+        catch (IllegalStateException expected) { }
+        finally { ReflectionHelpers.setStaticField(ClientRuntime.class, "session", null); }
+        assertEquals("throughput", runtime.performanceProfile()); assertTrue(runtime.linearPresentation());
+    }
+
+    @Test public void baselineCapsKeepExperimentsVisibleUntilExplicitRestoreUpdatesAllControls() {
+        ClientRuntime runtime = new ClientRuntime(context);
+        runtime.setPerformanceProfile("render60"); runtime.setDiagnosticHud(true);
+        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation"})
+            runtime.setPerformanceOption(option, true);
+        ActivityController<MainActivity> owned = Robolectric.buildActivity(MainActivity.class).create().start().resume().visible();
+        try {
+            View root = owned.get().findViewById(android.R.id.content);
+            button(root, "Client").performClick(); idle();
+            assertEquals(1, profile(root).getSelectedItemPosition());
+            profile(root).setSelection(0); idle();
+            assertEquals("responsive", new ClientRuntime(context).performanceProfile());
+            assertTrue(new ClientRuntime(context).linearPresentation());
+            assertTrue(checkBox(root, "Reduce GPU frame copies (experiment)").isChecked());
+            assertTrue(performanceSummary(root).getText().toString().startsWith("Baseline caps:"));
+            assertTrue(performanceSummary(root).getText().toString().contains("Reduce GPU frame copies"));
+            button(root, "Restore baseline settings").performClick();
+            assertEquals(0, profile(root).getSelectedItemPosition());
+            for (String label : new String[]{"Request next display frame early", "Disable concurrent binning (Adreno experiment)",
+                    "Use alternate CPU load instructions (FEX experiment)", "Use A740 driver experiment", "Reduce GPU frame copies (experiment)"})
+                assertFalse("Reset immediately clears " + label, checkBox(root, label).isChecked());
+            assertEquals("Baseline caps: render 30 FPS · queue 1 frame · display 30 FPS\nSelected experiments: none",
+                    performanceSummary(root).getText().toString());
+            assertTrue(checkBox(root, "Show frame-time and GPU diagnostics").isChecked());
+            assertTrue(checkBox(root, "Use Adreno GPU rendering").isChecked());
+            idle();
+            assertFalse(new ClientRuntime(context).linearPresentation());
+        } finally { owned.pause().stop().destroy(); }
+    }
+
     @Test public void graphicsAssetSelectionKeepsBaselineAndRequiresBothPinnedExperimentAssets() throws Exception {
         JSONObject manifest = baselineGraphicsManifest();
         String[] baseline = {"turnip-26.0.0.so", "vulkan-probe", "dxvk-d3d11-arm64ec.dll", "dxvk-dxgi-arm64ec.dll", "eve-d3d11-probe.exe"};
@@ -315,6 +410,7 @@ public final class ClientPerformanceSettingsTest {
             button(root, "Client").performClick(); idle();
             assertTrue(profile(root).isEnabled());
             assertTrue(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
+            assertTrue(button(root, "Restore baseline settings").isEnabled());
             RuntimeService.busy = true; refresh();
             assertFalse(profile(root).isEnabled());
             assertFalse(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
@@ -323,6 +419,7 @@ public final class ClientPerformanceSettingsTest {
             assertFalse(checkBox(root, "Use alternate CPU load instructions (FEX experiment)").isEnabled());
             assertFalse(checkBox(root, "Use A740 driver experiment").isEnabled());
             assertFalse(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
+            assertFalse(button(root, "Restore baseline settings").isEnabled());
             RuntimeService.busy = false;
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", new LiveProcess());
             refresh();
@@ -330,6 +427,7 @@ public final class ClientPerformanceSettingsTest {
             assertFalse(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
             assertFalse(checkBox(root, "Use A740 driver experiment").isEnabled());
             assertFalse(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
+            assertFalse(button(root, "Restore baseline settings").isEnabled());
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", null); refresh();
             checkBox(root, "Use Adreno GPU rendering").performClick();
             assertEquals("software", new ClientRuntime(context).renderer());
@@ -337,11 +435,13 @@ public final class ClientPerformanceSettingsTest {
             assertFalse(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
             assertFalse(checkBox(root, "Use A740 driver experiment").isEnabled());
             assertFalse(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
+            assertFalse(button(root, "Restore baseline settings").isEnabled());
             checkBox(root, "Use Adreno GPU rendering").performClick();
             assertTrue(profile(root).isEnabled());
             assertTrue(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
             assertTrue(checkBox(root, "Use A740 driver experiment").isEnabled());
             assertTrue(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
+            assertTrue(button(root, "Restore baseline settings").isEnabled());
         } finally {
             RuntimeService.busy = false;
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", null);
@@ -413,6 +513,9 @@ public final class ClientPerformanceSettingsTest {
     }
     private static Spinner profile(View root) {
         Spinner spinner = (Spinner) find(root, Spinner.class, "Client performance profile", true); assertNotNull(spinner); return spinner;
+    }
+    private static TextView performanceSummary(View root) {
+        TextView summary = (TextView) find(root, TextView.class, "Selected client performance settings", true); assertNotNull(summary); return summary;
     }
     private static void idle() { Shadows.shadowOf(Looper.getMainLooper()).idle(); }
     private static void refresh() { Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1)); }

@@ -1,52 +1,54 @@
-# EVE Android Launcher 0.1.15: client presentation experiment
+# EVE Android Launcher 0.1.16: export continuity and a true baseline comparison
 
-## Current 0.1.15 test
+## Current 0.1.16 test
 
-Install **EVE-Android-Launcher-0.1.15.apk** over the existing app with client and
-server stopped. Keep app data, imported client, runtime, prefix, shader caches,
-account, character and controller mappings. No reimport, validation or runtime
-probe is required. The APK retains the preview signing identity.
+Install **EVE-Android-Launcher-0.1.16.apk** over the existing app with client and
+server stopped. Preserve app data, client import, runtime, prefix, shader caches,
+account, world and controller mappings. No import, validation or probe is needed.
+The preview signing identity remains the same.
 
-The A740 driver repeat did not improve warm station performance. FSR helped a
-little but introduced black lines. This test changes the client presentation
-path rather than game quality. Disable FSR for a clean comparison, keep the
-other game settings unchanged, and retain the same station, 1280×720 output and
-Thor fan/power mode.
+The October 8 exports both retained linear presentation. The apparent crash was
+our pressure guard requesting an orderly stop after a trim callback despite 4.66 GiB
+available and lowMemory=false. This update requires corroborating pressure,
+provides an explicit baseline reset and makes active experiments visible. It adds
+bounded read-only frequency/thermal observations where Android allows access.
+There is no new rendering experiment or game-quality change in this pass.
 
-1. With the client stopped, keep **Use Adreno GPU rendering** enabled, select
-   **Baseline · 30 FPS target**, enable the diagnostic HUD and turn all existing
-   experiments off, including **Use A740 driver experiment**. This uses the
-   original driver, 30 FPS render/display caps and one-frame latency.
-2. Enable only **Reduce GPU frame copies (experiment)**. Start server →
-   **SERVER READY** → Start EVE client → Open client display. The launcher first
-   checks exact A740 hardware and linear-image capabilities, then runs the native
-   Vulkan, D3D11 shader/readback and visible-frame checks. If a check fails,
-   export immediately, report the stage and switch the experiment off; preserve data.
-3. Enter the existing character's station. Warm up for three minutes, then
-   observe another two. Record warm HUD FPS range, stutter and device temperature;
-   observe static camera and movement separately. Inspect station geometry,
-   ships, text and effects for black lines, distortion or flicker. Check sticks,
-   LT layers and gear actions, then close/reopen the display once.
-4. Export support **while EVE is running**, label it **0.1.15-linear**, and quit
-   EVE normally. Confirm the client reports stopped and the server stays ready.
-   If performance is worse or there are visual/input faults, stop the client and
-   turn the experiment off.
-5. For comparison, let the device cool to a similar starting temperature, disable
-   the new experiment and repeat the same five-minute run. Label the live export
-   **0.1.15-original**. Save and stop the server afterward.
+1. With the client stopped, keep **Use Adreno GPU rendering** enabled and press
+   **Restore baseline settings**. Enable the diagnostic HUD. Confirm the visible
+   summary says **Baseline caps** with render 30/queue 1/display 30 and
+   **Selected experiments: none**. This button clears all experiments in one step;
+   selecting a profile alone changes caps and keeps previously selected experiments.
+2. Keep FSR off because of the earlier black lines, and retain the same station,
+   1280×720 output, other game settings, camera/windows and Thor fan/power mode.
+   Start server → **SERVER READY** → Start EVE client → Open client display.
+   Enter the existing character's station and check fullscreen/controls.
+3. Warm up three minutes, then observe two. Record warm HUD FPS range, stutter and
+   starting/ending GPU/SoC temperature. Observe static camera and movement
+   separately. While EVE is still running, export support as **0.1.16-baseline**.
+   Return from the file picker and reopen the display: EVE should remain in the
+   same session when memory is sufficient. Confirm controls and the server remain
+   working. Report any stop message and export again before restarting if it stops.
+4. Quit EVE normally and let the device cool to a similar starting temperature.
+   Press **Restore baseline settings** again, then enable only
+   **Reduce GPU frame copies (experiment)**. Confirm that is the only experiment
+   in the summary. Repeat the same warm-up/observation and live export as
+   **0.1.16-linear**, then reopen the display to check export continuity.
+5. Quit normally; confirm the client reports stopped and the server remains ready.
+   Save and stop the server afterward. If linear qualification fails, performance
+   is worse, or geometry/controls glitch, export and turn that experiment off.
 
-Return the two labeled ZIPs, warm FPS ranges, approximate starting/ending
-GPU/SoC temperatures, visible faults and how each run ended. The support exporter
-now prioritizes current client diagnostics over older server history. Battery
-temperature in the logs is a different sensor from the reported GPU/SoC reading.
-No need to repeat the earlier cap/binning/FEX/A740 matrix.
+Return both labeled ZIPs, FPS ranges, approximate temperatures, visible faults
+and whether exporting preserved each running session. Do not repeat the old
+render-cap/binning/FEX/A740 matrix. Linear compatibility passed the previous
+physical helper gates, but sustained FPS/heat benefit is still unproven.
 
-The new option is off by default. It asks Mesa to present from a mapped linear
-image, removing one GPU readback copy and staging buffer. Linear images can also
-render slower because they do not use Turnip's normal compressed optimal layout.
-Native capability and helper checks do not establish an EVE FPS improvement.
-The DXVK HUD GPU percentage measures queue completion activity, not a physical
-Adreno utilization counter. Display updates are not EVE engine FPS.
+The pressure stop remains best effort when fresh Android MemoryInfo corroborates
+low memory. Abrupt Android kills can lack callbacks. Frequency fields retain their
+kernel meanings; CPU scaling frequencies may be requested states, not measured
+clocks. Thermal sensors keep their driver labels; unreadable sensors remain
+unavailable. Battery temperature is separate from the user's SoC reading.
+DXVK GPU% and delivered RFB updates do not measure physical GPU load or engine FPS.
 
 Earlier tests remain below as historical evidence.
 

@@ -10,7 +10,9 @@ import java.io.*;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import org.json.JSONObject;
 
 /** A single worker owns setup; the service remains foreground for both runtime sessions. */
 public final class RuntimeService extends Service {
@@ -21,11 +23,27 @@ public final class RuntimeService extends Service {
     private volatile Thread worker;
     private volatile boolean destroyed;
     private volatile String pendingStop;
+    private PressureRequest pendingPressureStop;
     private PowerManager.WakeLock wake;
     private long lastNotice;
-    private final AtomicBoolean criticalStopPending = new AtomicBoolean();
+    private static final String PRESSURE_REQUEST = "eve-pressure-request";
+    private static final AtomicLong pressureIds = new AtomicLong();
+    private final AtomicLong clientGeneration = new AtomicLong();
+    private final AtomicReference<PressureRequest> criticalRequest = new AtomicReference<>();
     private final ScheduledThreadPoolExecutor pressureWork = new ScheduledThreadPoolExecutor(1,
             task -> new Thread(task, "eve-memory-pressure"));
+
+    private static final class PressureRequest {
+        final long id = pressureIds.incrementAndGet();
+        final long generation, observedAt;
+        final int level;
+        String session;
+        JSONObject evidence;
+        boolean dispatched;
+        PressureRequest(long generation, int level) {
+            this.generation = generation; this.level = level; observedAt = System.currentTimeMillis();
+        }
+    }
 
     @Override public void onCreate() {
         super.onCreate();
@@ -33,7 +51,11 @@ public final class RuntimeService extends Service {
         pressureWork.setContinueExistingPeriodicTasksAfterShutdownPolicy(false);
         pressureWork.scheduleWithFixedDelay(() -> {
             if (destroyed || !active) return;
-            if (!new ClientRuntime(this).alive()) { criticalStopPending.set(false); return; }
+            if (!new ClientRuntime(this).alive()) {
+                PressureRequest request = criticalRequest.get();
+                if (request != null) criticalRequest.compareAndSet(request, null);
+                return;
+            }
             try { MemoryPressure.saveLive(this); }
             catch (Exception ignored) { } // Evidence must not interrupt runtime ownership.
         }, 10, 10, TimeUnit.SECONDS);
@@ -41,24 +63,96 @@ public final class RuntimeService extends Service {
 
     @Override public void onTrimMemory(int level) {
         super.onTrimMemory(level);
-        if (destroyed || !MemoryPressure.criticalRunning(level) || !criticalStopPending.compareAndSet(false, true)) return;
-        final long observedAt = System.currentTimeMillis();
+        if (destroyed || !MemoryPressure.criticalRunning(level)) return;
+        PressureRequest request = new PressureRequest(clientGeneration.get(), level);
+        if (!criticalRequest.compareAndSet(null, request)) return;
+        try {
+            pressureWork.execute(() -> inspectPressure(request));
+        } catch (RejectedExecutionException stopped) { criticalRequest.compareAndSet(request, null); }
+    }
+    private boolean currentPressure(PressureRequest request, boolean requireSession) {
+        return !destroyed && criticalRequest.get() == request && clientGeneration.get() == request.generation
+                && (!requireSession || (request.session != null && request.session.equals(clientSession())));
+    }
+    private String clientSession() {
+        try {
+            JSONObject status = new ClientRuntime(this).sessionStatus();
+            if (!status.optBoolean("alive")) return null;
+            JSONObject identity = status.optJSONObject("supervisorIdentity");
+            if (identity == null) return null;
+            Object pid = identity.opt("pid"), ticks = identity.opt("startTicks");
+            if (!(pid instanceof Integer || pid instanceof Long) || ((Number) pid).longValue() <= 1
+                    || !(ticks instanceof String) || !((String) ticks).matches("[0-9]{1,20}")) return null;
+            return pid + ":" + ticks;
+        } catch (Exception unavailable) { return null; }
+    }
+    private void inspectPressure(PressureRequest request) {
+        if (!currentPressure(request, false) || !new ClientRuntime(this).alive()) {
+            criticalRequest.compareAndSet(request, null); return;
+        }
+        request.session = clientSession();
+        try { request.evidence = MemoryPressure.snapshot(this, true); }
+        catch (Exception unavailable) {
+            try {
+                request.evidence = MemoryPressure.memoryState(this)
+                        .put("diagnosticsError", unavailable.getClass().getSimpleName());
+            } catch (Exception failed) { request.evidence = new JSONObject(); }
+        }
+        String reason = MemoryPressure.stopReason(request.evidence);
+        if (!currentPressure(request, false) || request.session == null || !request.session.equals(clientSession())) {
+            recordPressure(request, "client-retained", "client-session-unavailable-or-changed", false, null);
+            criticalRequest.compareAndSet(request, null); return;
+        }
+        if (reason == null) {
+            recordPressure(request, "client-retained", MemoryPressure.retentionReason(request.evidence), false, null);
+            criticalRequest.compareAndSet(request, null); return;
+        }
+        recordPressure(request, "client-stop-queued", reason, false, null);
+        handler.post(() -> dispatchPressure(request));
+    }
+    private void dispatchPressure(PressureRequest request) {
+        JSONObject memory;
+        try { memory = MemoryPressure.memoryState(this); }
+        catch (Exception unavailable) { memory = new JSONObject(); }
+        String reason = MemoryPressure.stopReason(memory);
+        String response = "client-retained";
+        if (!currentPressure(request, true)) reason = "client-session-unavailable-or-changed";
+        else if (reason == null) reason = MemoryPressure.retentionReason(memory);
+        else {
+            try {
+                // This is the existing client-only stop path. The token also
+                // scopes any pending stop behind another service operation.
+                onStartCommand(new Intent(this, RuntimeService.class).setAction("stop-client")
+                        .putExtra(PRESSURE_REQUEST, request.id), 0, 0);
+                if (request.dispatched) response = "orderly-client-stop-requested";
+                else reason = "client-session-unavailable-or-changed";
+            } catch (RuntimeException failed) {
+                if (request.dispatched) response = "orderly-client-stop-requested";
+                else reason = "client-stop-dispatch-failed";
+            }
+        }
+        final JSONObject dispatchMemory = memory;
+        final String action = response, finalReason = reason;
         try {
             pressureWork.execute(() -> {
-                if (destroyed || !new ClientRuntime(this).alive()) { criticalStopPending.set(false); return; }
-                try { MemoryPressure.recordCritical(this, level, observedAt); }
-                catch (Exception error) { append(this, "Android critical memory evidence: " + error.getMessage()); }
-                // Use the existing stop path, including its pending-operation
-                // handling. Only the client is stopped; the world server remains
-                // under its foreground owner. The trim callback performs no IO.
-                handler.post(() -> {
-                    if (!destroyed && new ClientRuntime(RuntimeService.this).alive()) {
-                        append(RuntimeService.this, "Android running-critical memory pressure; requesting orderly client stop");
-                        onStartCommand(new Intent(RuntimeService.this, RuntimeService.class).setAction("stop-client"), 0, 0);
-                    } else criticalStopPending.set(false);
-                });
+                boolean requested = action.equals("orderly-client-stop-requested");
+                recordPressure(request, action, finalReason, requested, dispatchMemory);
+                if (!requested) criticalRequest.compareAndSet(request, null);
             });
-        } catch (RejectedExecutionException stopped) { criticalStopPending.set(false); }
+        } catch (RejectedExecutionException stopped) { criticalRequest.compareAndSet(request, null); }
+    }
+    private void recordPressure(PressureRequest request, String response, String reason,
+                                boolean stopRequested, JSONObject dispatchMemory) {
+        try {
+            JSONObject event = new JSONObject(request.evidence.toString())
+                    .put("eventId", android.os.Process.myPid() + ":" + request.observedAt + ":" + request.id)
+                    .put("observedAtMillis", request.observedAt).put("trimLevel", request.level)
+                    .put("event", "running-critical").put("response", response).put("reason", reason)
+                    .put("clientStopRequested", stopRequested).put("serverStopRequested", false)
+                    .put("clientGeneration", request.generation).put("clientSession", request.session);
+            if (dispatchMemory != null) event.put("dispatchMemoryInfo", dispatchMemory);
+            MemoryPressure.append(this, event);
+        } catch (Exception error) { append(this, "Android critical memory evidence unavailable: " + error.getClass().getSimpleName()); }
     }
     private final Runnable monitor = new Runnable() {
         @Override public void run() {
@@ -95,6 +189,12 @@ public final class RuntimeService extends Service {
         }
     }
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        PressureRequest pressureStop = null;
+        if (intent != null && intent.hasExtra(PRESSURE_REQUEST)) {
+            pressureStop = criticalRequest.get();
+            if (pressureStop == null || pressureStop.id != intent.getLongExtra(PRESSURE_REQUEST, -1)
+                    || !"stop-client".equals(intent.getAction()) || !currentPressure(pressureStop, true)) return START_NOT_STICKY;
+        }
         NotificationManager manager = getSystemService(NotificationManager.class);
         manager.createNotificationChannel(new NotificationChannel("eve-runtime", "Local EVE runtime", NotificationManager.IMPORTANCE_LOW));
         startForeground(1, notification(message));
@@ -107,19 +207,27 @@ public final class RuntimeService extends Service {
         if (worker != null) {
             if (action.equals("stop-server") || (action.equals("stop-client") &&
                     (new ClientRuntime(this).alive() || operation.equals("start-client")))) {
-                if (pendingStop == null || action.equals("stop-server")) pendingStop = action;
+                if (pendingStop == null || action.equals("stop-server")) {
+                    pendingStop = action; pendingPressureStop = pressureStop;
+                } else if (pendingStop.equals("stop-client") && pressureStop == null) pendingPressureStop = null;
                 try { if (new ClientRuntime(this).alive()) new ClientRuntime(this).requestStop(); }
                 catch (Exception e) { append(this, "Client stop request failed: " + e.getMessage()); }
-                worker.interrupt(); update("Stopping the current operation…");
+                worker.interrupt();
+                if (pressureStop != null) pressureStop.dispatched = true;
+                update("Stopping the current operation…");
             }
             return START_NOT_STICKY;
         }
-        if (action.equals("start-client")) criticalStopPending.set(false);
+        if (action.equals("start-client")) {
+            clientGeneration.incrementAndGet(); criticalRequest.set(null);
+            if (pendingPressureStop != null) { pendingStop = null; pendingPressureStop = null; }
+        }
         busy = true; operation = action; error = "";
         if (wake == null) wake = getSystemService(PowerManager.class).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "eve:runtime");
         // Renew while a user-started runtime session exists; never acquire without a foreground notice.
         if (!wake.isHeld()) wake.acquire(12 * 60 * 60 * 1000L);
         Uri uri = intent.getData();
+        final PressureRequest acceptedPressureStop = pressureStop;
         worker = new Thread(() -> {
             RuntimeManager runtime = RuntimeManager.get(this); ClientRuntime client = new ClientRuntime(this);
             append(this, "Started " + action);
@@ -158,6 +266,10 @@ public final class RuntimeService extends Service {
                 }
                 append(this, "Completed " + action + ": " + message);
             } catch (Exception e) {
+                // A failed pressure-only stop may leave this same client alive.
+                // Permit a later corroborated callback to retry without clearing
+                // another session's or a newer callback's request.
+                if (acceptedPressureStop != null) criticalRequest.compareAndSet(acceptedPressureStop, null);
                 error = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
                 update(Thread.currentThread().isInterrupted() ? "Operation cancelled. Open Logs for details." : "Failed: " + error);
                 append(this, action + " failed: " + e.getClass().getSimpleName() + ": " + error);
@@ -166,13 +278,23 @@ public final class RuntimeService extends Service {
                 busy = false; worker = null;
                 if (!destroyed) handler.post(() -> {
                     handler.removeCallbacks(monitor);
-                    String next = pendingStop; pendingStop = null;
-                    if (next != null) onStartCommand(new Intent(RuntimeService.this, RuntimeService.class).setAction(next), 0, startId);
-                    else handler.post(monitor);
+                    drainPendingStop(startId);
                 });
             }
         }, "eve-" + action);
-        worker.start(); return START_NOT_STICKY;
+        worker.start();
+        if (pressureStop != null) pressureStop.dispatched = true;
+        return START_NOT_STICKY;
+    }
+    void drainPendingStop(int startId) {
+        String next = pendingStop;
+        PressureRequest pressureStop = pendingPressureStop;
+        pendingStop = null; pendingPressureStop = null;
+        if (next != null && (pressureStop == null || currentPressure(pressureStop, true))) {
+            Intent intent = new Intent(this, RuntimeService.class).setAction(next);
+            if (pressureStop != null) intent.putExtra(PRESSURE_REQUEST, pressureStop.id);
+            onStartCommand(intent, 0, startId);
+        } else handler.post(monitor);
     }
     static synchronized void append(Context context, String line) {
         try {
@@ -184,6 +306,7 @@ public final class RuntimeService extends Service {
     private void finish() { active = false; handler.removeCallbacks(monitor); if (wake != null && wake.isHeld()) wake.release(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(); }
     @Override public void onDestroy() {
         destroyed = true;
+        clientGeneration.incrementAndGet(); criticalRequest.set(null); pendingPressureStop = null;
         pressureWork.shutdownNow();
         active = false;
         handler.removeCallbacks(monitor);

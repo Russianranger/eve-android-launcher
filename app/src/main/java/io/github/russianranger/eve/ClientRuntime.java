@@ -29,6 +29,8 @@ final class ClientRuntime {
     private static final String MANIFEST_HASH = "d375adf23b621f83ef7b5fff95365312377399704abb486fd8d4164a1fe29a13";
     private static final long MAX_ARCHIVE = 160L * 1024 * 1024 * 1024;
     private static final long MIN_FREE_MEMORY = 1024L * 1024 * 1024;
+    private static final List<String> PERFORMANCE_OPTIONS = Arrays.asList("early-display-requests", "disable-concurrent-binning",
+            "disable-lrcpc2", "a740-pc-mode", "linear-presentation");
     private final Context context;
     private final RuntimeManager manager;
     private static volatile Process session;
@@ -75,10 +77,38 @@ final class ClientRuntime {
     }
 
     void setPerformanceOption(String key, boolean enabled) {
-        if (!Arrays.asList("early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation").contains(key))
+        if (!PERFORMANCE_OPTIONS.contains(key))
             throw new IllegalArgumentException("Choose a supported performance option");
         if (alive() || RuntimeService.busy) throw new IllegalStateException("Stop the client before changing its performance settings");
         context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).edit().putBoolean(key, enabled).apply();
+    }
+
+    void restoreBaselineSettings() {
+        if (alive() || RuntimeService.busy) throw new IllegalStateException("Stop the client before restoring baseline settings");
+        android.content.SharedPreferences.Editor edit = context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).edit()
+                .putString("performance-profile-v2", "responsive");
+        for (String key : PERFORMANCE_OPTIONS) edit.putBoolean(key, false);
+        edit.apply();
+    }
+
+    String performanceSummary() {
+        String profile = performanceProfile();
+        boolean software = renderer().equals("software");
+        int render = Arrays.asList("render60", "throughput").contains(profile) ? 60 : 30;
+        int queue = Arrays.asList("queue2", "throughput").contains(profile) ? 2 : 1;
+        int display = Arrays.asList("display60", "throughput").contains(profile) ? 60 : 30;
+        String caps = (software ? "Saved GPU caps: " : profile.equals("responsive") ? "Baseline caps: " : "Selected caps: ")
+                + "render " + render + " FPS · queue " + queue + (queue == 1 ? " frame" : " frames") + " · display " + display + " FPS";
+        String[] labels = {"Early display requests", "Concurrent binning disabled", "Alternate CPU load instructions",
+                "A740 driver", "Reduce GPU frame copies"};
+        List<String> selected = new ArrayList<>();
+        for (int index = 0; index < PERFORMANCE_OPTIONS.size(); index++) {
+            String key = PERFORMANCE_OPTIONS.get(index);
+            if (performanceOption(key)) selected.add(labels[index] + (software
+                    ? key.equals("early-display-requests") ? " (active)" : " (inactive in software)" : ""));
+        }
+        return caps + "\n" + (software ? "Saved experiments: " : "Selected experiments: ")
+                + (selected.isEmpty() ? "none" : String.join(", ", selected));
     }
 
     boolean diagnosticHud() {

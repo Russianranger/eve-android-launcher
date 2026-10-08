@@ -7,6 +7,7 @@ module reports observations only and never adopts or signals any process.
 from __future__ import annotations
 
 from collections import Counter, deque
+import errno
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,9 @@ FILE_LIMIT = 256 * 1024
 SAMPLE_LIMIT = 120
 SAMPLE_SECONDS = 5
 CACHE_SECONDS = 30
+HARDWARE_SECONDS = 10
+CPU_LIMIT = 8
+THERMAL_ZONE_LIMIT = 32
 TASK_LIMIT = 256
 THREAD_ROWS = 16
 MAIN_ROWS = 4
@@ -46,6 +50,92 @@ def _bounded_text(path: Path, limit: int) -> str:
     if len(value) > limit:
         raise ValueError("Oversized proc record")
     return value
+
+
+def _sysfs_text(path: Path, limit: int) -> tuple[str | None, str | None]:
+    try:
+        return _bounded_text(path, limit).strip(), None
+    except OSError as error:
+        if error.errno in (errno.ENOENT, errno.ENOTDIR):
+            return None, "missing"
+        if isinstance(error, PermissionError) or error.errno in (errno.EACCES, errno.EPERM):
+            return None, "permission-denied"
+        return None, "unavailable"
+    except ValueError:
+        return None, "malformed"
+
+
+def _sysfs_number(path: Path, minimum: int, maximum: int) -> tuple[int | None, str | None]:
+    raw, error = _sysfs_text(path, 32)
+    if error is not None:
+        return None, error
+    if not re.fullmatch(r"[+-]?[0-9]{1,12}", raw or ""):
+        return None, "malformed"
+    value = int(raw)
+    return (value, None) if minimum <= value <= maximum else (None, "malformed")
+
+
+def hardware_metrics(sysfs: Path) -> dict[str, Any]:
+    """Read only fixed, bounded kernel attributes; unavailable is not zero.
+
+    CPUFreq scaling frequencies are kHz: cur is often the requested P-state,
+    and max is the policy ceiling, not the hardware's maximum frequency.
+    https://www.kernel.org/doc/html/latest/admin-guide/pm/cpufreq.html
+    Devfreq and KGSL gpuclk report Hz; gpuclk can be the active power-level
+    setting rather than a measured hardware clock. Neither measures load.
+    Thermal-zone temp is millidegree Celsius; type is the driver's identifier.
+    https://docs.kernel.org/driver-api/thermal/sysfs-api.html
+    Class/policy symlinks are normal sysfs ABI; no directory traversal is used.
+    """
+    gpu: dict[str, Any] = {}
+    gpu_path = sysfs / "class/kgsl/kgsl-3d0"
+    for label, suffix in (("curFreqHz", "devfreq/cur_freq"),
+                          ("maxFreqHz", "devfreq/max_freq"), ("gpuclkHz", "gpuclk")):
+        value, error = _sysfs_number(gpu_path / suffix, 0, 100_000_000_000)
+        if error is None:
+            gpu[label] = value
+        else:
+            gpu.setdefault("unavailable", {})[label] = error
+    cores = []
+    missing_cores = []
+    for cpu in range(CPU_LIMIT):
+        path = sysfs / "devices/system/cpu" / f"cpu{cpu}" / "cpufreq"
+        row: dict[str, Any] = {"cpu": cpu}
+        for label, suffix in (("scalingCurFreqKHz", "scaling_cur_freq"),
+                              ("scalingMaxFreqKHz", "scaling_max_freq")):
+            value, error = _sysfs_number(path / suffix, 0, 100_000_000)
+            if error is None:
+                row[label] = value
+            else:
+                row.setdefault("unavailable", {})[label] = error
+        # Compact entirely absent devices; partial and denied reads stay explicit.
+        if row.get("unavailable") == {"scalingCurFreqKHz": "missing", "scalingMaxFreqKHz": "missing"}:
+            missing_cores.append(cpu)
+        else:
+            cores.append(row)
+    zones = []
+    missing_zones = []
+    for zone in range(THERMAL_ZONE_LIMIT):
+        path = sysfs / "class/thermal" / f"thermal_zone{zone}"
+        row = {"zone": zone}
+        label, error = _sysfs_text(path / "type", 64)
+        if error is None and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", label or ""):
+            error = "malformed"
+        if error is None:
+            row["type"] = label
+        else:
+            row.setdefault("unavailable", {})["type"] = error
+        value, error = _sysfs_number(path / "temp", -273_150, 1_000_000)
+        if error is None:
+            row["tempMilliC"] = value
+        else:
+            row.setdefault("unavailable", {})["tempMilliC"] = error
+        if row.get("unavailable") == {"type": "missing", "tempMilliC": "missing"}:
+            missing_zones.append(zone)
+        else:
+            zones.append(row)
+    return {"gpu": gpu, "cpu": {"cores": cores, "missingCores": missing_cores},
+            "thermal": {"zones": zones, "missingZones": missing_zones}}
 
 
 def _stat(path: Path) -> tuple[str, dict[str, Any]]:
@@ -135,10 +225,11 @@ def cache_metadata(path: Path) -> dict[str, Any]:
 
 class PerformanceHistory:
     def __init__(self, state: Path, caches: tuple[Path, ...], *, proc: Path = Path("/proc"),
-                 file_limit: int = FILE_LIMIT):
+                 sysfs: Path = Path("/sys"), file_limit: int = FILE_LIMIT):
         self.path = state / "client-performance.json"
         self.caches = caches
         self.proc = proc
+        self.sysfs = sysfs
         self.file_limit = file_limit
         self.active = False
         self.wrapper_pid: int | None = None
@@ -147,6 +238,8 @@ class PerformanceHistory:
         self.previous_thread_time: float | None = None
         self.cache_time: float | None = None
         self.cache_report: dict[str, Any] = {}
+        self.hardware_time: float | None = None
+        self.hardware_report: dict[str, Any] = {}
         self.samples: deque[dict[str, Any]] = deque(maxlen=SAMPLE_LIMIT)
         self.report: dict[str, Any] = {}
 
@@ -160,10 +253,14 @@ class PerformanceHistory:
         self.previous_thread_time = None
         self.cache_time = None
         self.cache_report = {}
+        self.hardware_time = None
+        self.hardware_report = {}
         self.report = {"format": 1, "startedAt": time.time(), "sampleIntervalSeconds": SAMPLE_SECONDS,
                        "sampleLimit": SAMPLE_LIMIT, "taskLimit": TASK_LIMIT,
                        "threadRowLimit": THREAD_ROWS, "cacheIntervalSeconds": CACHE_SECONDS,
                        "mainThreadRowLimit": MAIN_ROWS,
+                       "hardwareIntervalSeconds": HARDWARE_SECONDS,
+                       "hardwareCpuLimit": CPU_LIMIT, "hardwareThermalZoneLimit": THERMAL_ZONE_LIMIT,
                        "fileLimitBytes": self.file_limit,
                        "cpuPercentMeaning": "100 percent is one logical CPU", "phase": "starting"}
         try:
@@ -294,8 +391,22 @@ class PerformanceHistory:
             if self.cache_time is None or snapshot.captured_at - self.cache_time >= CACHE_SECONDS:
                 self.cache_report = {label: cache_metadata(path) for label, path in zip(("dxvk", "mesa"), self.caches)}
                 self.cache_time = snapshot.captured_at
-            self.samples.append({"at": time.time(), "phase": phase, "roles": roles, "clientThreads": threads,
-                                 "cache": self.cache_report, "cacheSampleAgeSeconds": snapshot.captured_at - self.cache_time})
+            hardware_sample = None
+            if self.hardware_time is None or snapshot.captured_at - self.hardware_time >= HARDWARE_SECONDS:
+                self.hardware_report = {"at": time.time(), **hardware_metrics(self.sysfs)}
+                self.hardware_time = snapshot.captured_at
+                self.report["latestHardware"] = self.hardware_report
+                hardware_sample = self.hardware_report
+            sample = {"at": time.time(), "phase": phase, "roles": roles, "clientThreads": threads,
+                      "cache": self.cache_report, "cacheSampleAgeSeconds": snapshot.captured_at - self.cache_time,
+                      "hardwareSampleAt": self.hardware_report["at"],
+                      "hardwareSampleAgeSeconds": snapshot.captured_at - self.hardware_time}
+            # Retain each hardware reading once, rather than duplicate it in
+            # intervening 5-second process samples. Latest remains readable even
+            # when the byte budget has evicted the sample containing that read.
+            if hardware_sample is not None:
+                sample["hardware"] = hardware_sample
+            self.samples.append(sample)
             self.previous_snapshot = snapshot
             self.report["phase"] = phase
             self._write()
@@ -320,6 +431,12 @@ class PerformanceHistory:
                 if len(payload) <= self.file_limit:
                     break
                 if not self.samples:
+                    if "latestHardware" in self.report:
+                        # Keep terminal markers writable even under a smaller
+                        # injected budget that cannot fit one hardware read.
+                        self.report.pop("latestHardware")
+                        self.report["latestHardwareDroppedForBytes"] = True
+                        continue
                     return
                 self.samples.popleft()
                 self.report["samplesDroppedForBytes"] = self.report.get("samplesDroppedForBytes", 0) + 1

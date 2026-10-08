@@ -48,6 +48,12 @@ capability and native shader/display checks precede launch; actual warm FPS and
 geometry need [the focused Thor comparison](docs/TESTING.md). Current client
 logs now take priority over old server history in support exports.
 
+The October 8 export-adjacent closure was the pressure guard overreacting despite
+ample memory. 0.1.16 requires corroborated pressure, provides **Restore baseline
+settings** and a visible experiment summary, and records bounded readable
+frequency/thermal evidence. Both 0.1.15 exports retained linear, so use
+[the actual baseline comparison](docs/TESTING.md) to assess its warm FPS/heat benefit.
+
 ## Fullscreen controls in 0.1.11
 
 The display fills the screen; a top-right space-themed gear opens the controls

@@ -35,20 +35,55 @@ final class MemoryPressure {
         return new File(RuntimeManager.get(context).clientState, "logs/" + name);
     }
 
-    static JSONObject snapshot(Context context, boolean detailed) throws Exception {
-        ActivityManager.MemoryInfo memory = new ActivityManager.MemoryInfo();
-        context.getSystemService(ActivityManager.class).getMemoryInfo(memory);
-        Runtime java = Runtime.getRuntime();
-        JSONObject result = new JSONObject().put("timeMillis", System.currentTimeMillis())
-                .put("pid", android.os.Process.myPid()).put("availableBytes", memory.availMem)
-                .put("totalBytes", memory.totalMem).put("thresholdBytes", memory.threshold)
-                .put("lowMemory", memory.lowMemory)
-                .put("javaUsedBytes", java.totalMemory() - java.freeMemory()).put("javaMaxBytes", java.maxMemory());
-        PowerManager power = context.getSystemService(PowerManager.class);
-        if (power != null) {
-            result.put("powerSaveMode", power.isPowerSaveMode());
-            if (Build.VERSION.SDK_INT >= 29) result.put("thermalStatus", power.getCurrentThermalStatus());
+    static JSONObject memoryState(Context context) throws Exception {
+        JSONObject result = new JSONObject().put("memoryInfoAvailable", false);
+        try {
+            ActivityManager manager = context.getSystemService(ActivityManager.class);
+            if (manager == null) return result;
+            ActivityManager.MemoryInfo memory = new ActivityManager.MemoryInfo();
+            manager.getMemoryInfo(memory);
+            result.put("memoryInfoAvailable", true).put("availableBytes", memory.availMem)
+                    .put("totalBytes", memory.totalMem).put("thresholdBytes", memory.threshold)
+                    .put("lowMemory", memory.lowMemory);
+        } catch (RuntimeException unavailable) {
+            result.put("memoryInfoError", unavailable.getClass().getSimpleName());
         }
+        return result;
+    }
+
+    static String stopReason(JSONObject memory) {
+        if (memory == null || memory.opt("memoryInfoAvailable") != Boolean.TRUE) return null;
+        if (memory.opt("lowMemory") == Boolean.TRUE) return "android-low-memory";
+        Object available = memory.opt("availableBytes"), threshold = memory.opt("thresholdBytes");
+        if (integer(available) && integer(threshold)
+                && ((Number) available).longValue() >= 0 && ((Number) threshold).longValue() > 0
+                && ((Number) available).longValue() <= ((Number) threshold).longValue())
+            return "available-at-or-below-android-threshold";
+        return null;
+    }
+
+    static String retentionReason(JSONObject memory) {
+        if (memory == null || memory.opt("memoryInfoAvailable") != Boolean.TRUE) return "android-memory-info-unavailable";
+        Object available = memory.opt("availableBytes"), threshold = memory.opt("thresholdBytes");
+        return integer(available) && integer(threshold)
+                && ((Number) available).longValue() >= 0 && ((Number) threshold).longValue() > 0
+                ? "android-memory-ample" : "android-memory-values-unavailable";
+    }
+
+    private static boolean integer(Object value) { return value instanceof Long || value instanceof Integer; }
+
+    static JSONObject snapshot(Context context, boolean detailed) throws Exception {
+        Runtime java = Runtime.getRuntime();
+        JSONObject result = memoryState(context).put("timeMillis", System.currentTimeMillis())
+                .put("pid", android.os.Process.myPid())
+                .put("javaUsedBytes", java.totalMemory() - java.freeMemory()).put("javaMaxBytes", java.maxMemory());
+        try {
+            PowerManager power = context.getSystemService(PowerManager.class);
+            if (power != null) {
+                result.put("powerSaveMode", power.isPowerSaveMode());
+                if (Build.VERSION.SDK_INT >= 29) result.put("thermalStatus", power.getCurrentThermalStatus());
+            }
+        } catch (RuntimeException unavailable) { result.put("powerStateAvailable", false); }
         try {
             Intent battery = context.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
             int temperature = battery == null ? Integer.MIN_VALUE
@@ -65,7 +100,8 @@ final class MemoryPressure {
         } catch (IOException | NumberFormatException unavailable) { result.put("appRssAvailable", false); }
         // PSS requires an accounting scan. Capture it once for a critical event,
         // never in the lightweight ten-second running sampler.
-        if (detailed) result.put("appPssKiB", Debug.getPss());
+        if (detailed) try { result.put("appPssKiB", Debug.getPss()); }
+        catch (RuntimeException unavailable) { result.put("appPssAvailable", false); }
         try { result.put("memoryPressure", RuntimeManager.read(new File("/proc/pressure/memory"), 2048)); }
         catch (IOException unavailable) { result.put("memoryPressureAvailable", false); }
         return result;
@@ -91,22 +127,22 @@ final class MemoryPressure {
         RuntimeManager.text(liveFile, bounded(history, samples));
     }
 
-    static void recordCritical(Context context, int level, long observedAt) throws Exception {
-        JSONObject event = snapshot(context, true).put("observedAtMillis", observedAt).put("trimLevel", level)
-                .put("event", "running-critical").put("response", "orderly-client-stop-requested")
-                .put("serverStopRequested", false);
-        append(context, event);
-    }
-
     static synchronized void append(Context context, JSONObject event) throws Exception {
         File historyFile = file(context, EVENTS);
         JSONArray previous;
         try { previous = new JSONObject(RuntimeManager.read(historyFile, HISTORY_BYTE_LIMIT)).getJSONArray("events"); }
         catch (Exception unavailable) { previous = new JSONArray(); }
         JSONArray events = new JSONArray();
-        for (int index = Math.max(0, previous.length() - EVENT_LIMIT + 1); index < previous.length(); index++)
-            events.put(previous.getJSONObject(index));
-        events.put(event);
+        String eventId = event.optString("eventId", "");
+        boolean replaced = false;
+        for (int index = 0; index < previous.length(); index++) {
+            JSONObject prior = previous.getJSONObject(index);
+            if (!eventId.isEmpty() && eventId.equals(prior.optString("eventId", ""))) {
+                events.put(event); replaced = true;
+            } else events.put(prior);
+        }
+        if (!replaced) events.put(event);
+        while (events.length() > EVENT_LIMIT) events.remove(0);
         JSONObject history = new JSONObject().put("format", 1).put("eventLimit", EVENT_LIMIT).put("events", events);
         RuntimeManager.text(historyFile, bounded(history, events));
     }

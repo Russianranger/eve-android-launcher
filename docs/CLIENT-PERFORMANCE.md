@@ -1,5 +1,38 @@
 # Client optimization evidence and qualification
 
+## October 8: same-setting runs and the next controlled comparison
+
+[The new logs](DEVICE-20261008.md) both record linear presentation. Physical
+compatibility passed, but different naming/activity does not prove its FPS or heat
+benefit. The unconditional pressure callback stop interrupted the first session
+with ample memory. 0.1.16 repairs that guard, adds an explicit baseline reset and
+records bounded hardware-frequency/thermal evidence where readable. Obtain a
+true original `sw` versus `sw,linear` comparison before choosing another GPU change.
+
+Linear removes the image-to-buffer blit but disables UBWC for the presented image.
+Rendering completion fences and XCB/Xvnc/RFB remain. They must not be bypassed.
+A later optional Mesa staging path could keep optimal/tiled rendering and GPU
+readback while memcpying into per-image SysV shared memory, replacing large X11
+socket payloads with `xcb_shm_put_image`. It still retains GPU readback/RFB and
+may add CPU copying; the present measurements do not prove it is the bottleneck.
+Existing built-in Mesa SHM requires EXT_external_memory_host (absent from this
+Turnip extension table) and DRI3/Present checks, so it cannot simply be enabled.
+A separate staging branch needs bounded allocation/attach fallback, server
+completion before buffer reuse, resize/cleanup and exact PRoot SysV IPC proof.
+The current geometry query occurs before put-image and cannot serve as that
+completion barrier. Native Android surface/AHB remains a larger buffer/fence/Xserver
+project. Neither candidate is added to 0.1.16.
+
+Telemetry follows primary [CPUFreq](https://docs.kernel.org/admin-guide/pm/cpufreq.html),
+[devfreq ABI](https://github.com/torvalds/linux/blob/master/Documentation/ABI/testing/sysfs-class-devfreq)
+and [thermal sysfs](https://docs.kernel.org/driver-api/thermal/sysfs-api.html) meanings.
+CPU scaling_cur_freq can describe a requested P-state rather than measured clocks;
+thermal labels do not identify the user's SoC sensor by inference. Pressure
+corroboration follows [Android MemoryInfo](https://developer.android.com/reference/android/app/ActivityManager.MemoryInfo),
+independently of [trim callback levels](https://developer.android.com/reference/android/content/ComponentCallbacks2).
+These are bounded observations, not clock/thermal control or a guarantee against LMKD.
+
+
 ## October 7: optional linear presentation in 0.1.15
 
 The fresh [device evidence](DEVICE-20261007.md) shows a clean exit, stable warm

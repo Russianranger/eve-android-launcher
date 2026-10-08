@@ -45,6 +45,40 @@ an audited later candidate, not an unqualified toggle; see CLIENT-PERFORMANCE.md
 Build/device qualification follows below. [TESTING.md](TESTING.md) has the focused
 export-continuity and actual original-versus-linear comparison.
 
+### 0.1.16 build and delivery qualification
+
+Implementation `fe285e127ee84e8c2bc510e4b66b063fb5923f49` on
+`codex/wine-localhost-tls`. [Actions run 37849222118](https://github.com/Russianranger/eve-android-launcher/actions/runs/37849222118)
+passed backend/host regressions, immutable server reuse, native Wine trust/PRoot/
+graphics, Android release build/tests/lint, APK content checks and signing-anchor
+equality. Development release publication is skipped; main remains unchanged at
+`b3880ff92049ce690b6ae0f6f23b6d8c84a7f292`.
+
+- Backend: 188 tests passed; server package, archive, display/controller,
+  graphics observer and ARM64EC parser/mutation checks passed.
+- Android: 82 cases passed across API 33 and 35, no failures/errors/skips:
+  display 10, performance settings 36, pressure 30, support export 6. Release
+  lint completed with 36 warnings and no errors.
+- Native: all seven exact ARM64EC shader/readback/three-frame RFB fixtures and
+  CPU/no-KGSL/A740/linear rejection controls passed. IMMEDIATE policy remains.
+  Native source/driver pins are unchanged; CI remains lavapipe qualification,
+  `physicalThorQualified=false`, not a physical performance result.
+- Independent review confirmed the final guard, reset/UI, telemetry bounds and
+  downloaded native/Android evidence. Downloaded ZIP digests match GitHub;
+  local APK checks pass and all ten tracked backend Python/shell files match
+  checked-out source byte for byte.
+
+Delivered **EVE-Android-Launcher-0.1.16.apk**, 10,762,921 bytes, versionCode 17,
+non-debuggable with shell profiling enabled. APK SHA-256:
+`a473a283e5c646d06a3557154b0c6de6660abc0c53a239294c4e04d5c567f5d1`.
+The embedded APK v2 certificate was independently checked and matches the
+CI-verified signing anchor SHA-256:
+`456c617128420fd315e1aa453d154e3d08f71a9b593d91966d21f75eed3a2c15`.
+Update in place with client/server stopped; preserve import, runtime, prefix,
+shader caches, account, world and mappings. No reimport or revalidation is needed.
+Physical export continuity and sustained FPS/temperature require the focused
+Thor comparison in TESTING.md; no stable-30 or heat improvement is claimed.
+
 
 ## Historical 0.1.15 continuation: linear presentation
 

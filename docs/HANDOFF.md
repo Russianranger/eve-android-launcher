@@ -1,6 +1,46 @@
 # EVE Android Launcher handoff
 
-## Current 0.1.16 continuation: export-time pressure stop and baseline clarity
+## Current 0.1.17 continuation: direct GPU rendering alongside linear
+
+[The October 8 evening exports](DEVICE-20261008-EVENING.md) are a true A/B:
+baseline `sw`/linear=false versus `sw,linear`/linear=true, with the original
+driver and responsive 30/queue 1/display 30. The user reports a small FPS gain
+and slight cooling from linear. Matched warm CPU/RSS and cpuss-0 means remain
+similar (~68°C); GPU ceilings remain 680 MHz. Logs do not record engine FPS or
+prove throttling. The baseline export completed and the same client remained
+alive after reopening; no fresh pressure-guard event appears in either export.
+
+Upstream Mesa 26.1 prefers SYSMEM for DXVK/VKD3D because these games commonly
+favor it over GMEM. The pinned Mesa 26.0.0 already has `TU_DEBUG=sysmem`. 0.1.17
+adds independent default-off **Use direct GPU rendering (experiment)** to select
+that existing mode. This is a forced older-driver mode, not a backport of newer
+Mesa's full autotuner. It can increase memory traffic/heat or reduce performance.
+Keep the original driver; test linear alone versus linear+SYS, not the previous
+cap/binning/FEX/A740 matrix. No game-quality changes are included.
+
+Session assignments use only `sysmem` or the existing fixed combination
+`nocb,sysmem`; inherited TU flags are scrubbed, software ignores the selection,
+and off restarts clear it. Fresh original-driver Vulkan/exact-A740 identity,
+selected-environment Vulkan, exact ARM64EC D3D11 shader/readback and three visible
+RFB frames qualify compatibility before EVE. Receipts distinguish requested,
+effective and independent gate results, retaining `nativeEffectVerified=false`:
+the helpers do not prove the physical render-mode choice or sustained benefit.
+A fresh qualification removes stale preflight output before starting. Baseline
+reset now clears all six experiments atomically and keeps renderer/HUD/data.
+
+The Android display bitmap remains ARGB_8888 with full 8-bit RGB. Since decoded
+RFB pixels are all opaque, allocation now uses hasAlpha=false, matching black
+untouched pixels and allowing Android's opaque drawing hint. Lifecycle tests
+cover partial updates, reuse, resize, rendering and destruction. Both test arms
+include this hint; the A/B isolates only SYS. The pressure correction, bounded
+telemetry, completion fences, IMMEDIATE policy, runtime/native driver pins,
+shader caches, prefix/world/account and fullscreen controls remain intact.
+
+[CLIENT-PERFORMANCE.md](CLIENT-PERFORMANCE.md) ranks the research and deferred
+transport work. [TESTING.md](TESTING.md) gives the next focused physical trial.
+Build qualification is recorded here after CI and APK inspection complete.
+
+## Historical 0.1.16 continuation: export-time pressure stop and baseline clarity
 
 The October 8 user reports slight linear FPS improvement, 72°C and a client
 closure while exporting. [DEVICE-20261008.md](DEVICE-20261008.md) records the exact

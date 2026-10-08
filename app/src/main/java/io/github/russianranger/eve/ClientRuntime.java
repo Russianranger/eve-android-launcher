@@ -30,7 +30,7 @@ final class ClientRuntime {
     private static final long MAX_ARCHIVE = 160L * 1024 * 1024 * 1024;
     private static final long MIN_FREE_MEMORY = 1024L * 1024 * 1024;
     private static final List<String> PERFORMANCE_OPTIONS = Arrays.asList("early-display-requests", "disable-concurrent-binning",
-            "disable-lrcpc2", "a740-pc-mode", "linear-presentation");
+            "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering");
     private final Context context;
     private final RuntimeManager manager;
     private static volatile Process session;
@@ -70,6 +70,7 @@ final class ClientRuntime {
     boolean disableLrcpc2() { return performanceOption("disable-lrcpc2"); }
     boolean a740PcMode() { return renderer().equals("turnip-dxvk") && performanceOption("a740-pc-mode"); }
     boolean linearPresentation() { return renderer().equals("turnip-dxvk") && performanceOption("linear-presentation"); }
+    boolean sysmemRendering() { return renderer().equals("turnip-dxvk") && performanceOption("sysmem-rendering"); }
 
     boolean performanceOption(String key) {
         try { return context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).getBoolean(key, false); }
@@ -100,7 +101,7 @@ final class ClientRuntime {
         String caps = (software ? "Saved GPU caps: " : profile.equals("responsive") ? "Baseline caps: " : "Selected caps: ")
                 + "render " + render + " FPS · queue " + queue + (queue == 1 ? " frame" : " frames") + " · display " + display + " FPS";
         String[] labels = {"Early display requests", "Concurrent binning disabled", "Alternate CPU load instructions",
-                "A740 driver", "Reduce GPU frame copies"};
+                "A740 driver", "Reduce GPU frame copies", "Direct GPU rendering"};
         List<String> selected = new ArrayList<>();
         for (int index = 0; index < PERFORMANCE_OPTIONS.size(); index++) {
             String key = PERFORMANCE_OPTIONS.get(index);
@@ -138,6 +139,7 @@ final class ClientRuntime {
                 .put("earlyDisplayRequests", earlyDisplayRequests()).put("disableConcurrentBinning", disableConcurrentBinning())
                 .put("disableLrcpc2", disableLrcpc2()).put("a740PcMode", a740PcMode())
                 .put("linearPresentation", linearPresentation()).put("requestedLinearPresentation", performanceOption("linear-presentation"))
+                .put("sysmemRendering", sysmemRendering()).put("requestedSysmemRendering", performanceOption("sysmem-rendering"))
                 .put("supported_build", 3396210).put("client_launch_qualified", false)
                 .put("phase", "missing_client").put("message", "Import the complete EVE build 3396210 shared cache first");
         File status = new File(manager.clientState, "status.json");
@@ -349,6 +351,7 @@ final class ClientRuntime {
                 .put("earlyDisplayRequests", earlyDisplayRequests()).put("disableConcurrentBinning", disableConcurrentBinning())
                 .put("disableLrcpc2", disableLrcpc2()).put("a740PcMode", a740PcMode())
                 .put("linearPresentation", linearPresentation()).put("requestedLinearPresentation", performanceOption("linear-presentation"))
+                .put("sysmemRendering", sysmemRendering()).put("requestedSysmemRendering", performanceOption("sysmem-rendering"))
                 .put("login_qualified", false).put("graphics_qualified", false);
         RuntimeManager.text(new File(manager.clientState, "run/status.json"), pending.toString());
         List<String> launch = launchCommand(graphicsMode, performanceProfile, diagnosticHud);
@@ -383,6 +386,7 @@ final class ClientRuntime {
         if (disableLrcpc2()) launch.add("--disable-lrcpc2");
         if (graphicsMode.equals("turnip-dxvk") && a740PcMode()) launch.add("--a740-pc-mode");
         if (graphicsMode.equals("turnip-dxvk") && linearPresentation()) launch.add("--linear-presentation");
+        if (graphicsMode.equals("turnip-dxvk") && sysmemRendering()) launch.add("--sysmem-rendering");
         return launch;
     }
 

@@ -695,6 +695,44 @@ class GraphicsTests(unittest.TestCase):
                 graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state,
                                                linear_presentation=invalid)
 
+    def test_sysmem_flag_is_strict_allowlisted_and_independent_of_presentation_and_cache(self):
+        base = {"KEEP": "value", "TU_DEBUG": "forcecb,gmem,sysmem", "TU_DEBUG_FILE": "/outside/options",
+                "MESA_VK_WSI_DEBUG": "buffer,linear"}
+        saved = dict(base)
+        baseline = graphics.configure_environment(base, "turnip-dxvk", self.folder, self.state)
+        for binning, sysmem, expected in ((False, False, None), (True, False, "nocb"),
+                                          (False, True, "sysmem"), (True, True, "nocb,sysmem")):
+            for linear in (False, True):
+                with self.subTest(binning=binning, sysmem=sysmem, linear=linear):
+                    options = {"disable_concurrent_binning": binning, "sysmem_rendering": sysmem,
+                               "linear_presentation": linear}
+                    env = graphics.configure_environment(base, "turnip-dxvk", self.folder, self.state, **options)
+                    receipt = graphics.optimization_settings("turnip-dxvk", **options)
+                    self.assertEqual(env.get("TU_DEBUG"), expected)
+                    self.assertEqual(receipt["turnipDebug"], expected)
+                    self.assertEqual(receipt["requestedSysmemRendering"], sysmem)
+                    self.assertEqual(receipt["sysmemRendering"], sysmem)
+                    self.assertTrue(receipt["sysmemRenderingExperimental"])
+                    self.assertTrue(receipt["sysmemRenderingDeviceGated"])
+                    self.assertFalse(receipt["nativeEffectVerified"])
+                    self.assertEqual(env["MESA_VK_WSI_DEBUG"], "sw,linear" if linear else "sw")
+                    self.assertNotIn("TU_DEBUG_FILE", env)
+                    self.assertEqual({key: value for key, value in env.items()
+                                      if key not in ("TU_DEBUG", "MESA_VK_WSI_DEBUG")},
+                                     {key: value for key, value in baseline.items()
+                                      if key not in ("TU_DEBUG", "MESA_VK_WSI_DEBUG")})
+                    self.assertEqual(graphics.configure_environment(env, "turnip-dxvk", self.folder, self.state), baseline)
+                    software = graphics.configure_environment(env, "software", self.folder, self.state, **options)
+                    self.assertFalse(any(key.startswith(("TU_", "MESA_", "VK_", "DXVK_")) for key in software))
+                    ignored = graphics.optimization_settings("software", **options)
+                    self.assertEqual(ignored["requestedSysmemRendering"], sysmem)
+                    self.assertFalse(ignored["sysmemRendering"])
+                    self.assertIsNone(ignored["turnipDebug"])
+        self.assertEqual(base, saved)
+        for invalid in (1, "sysmem", "nocb,sysmem", None, [], {}):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state, sysmem_rendering=invalid)
+
     def test_cpu_topology_is_bounded_numeric_evidence_and_allows_missing_permissions(self):
         topology = self.root / "sysfs"
         for index in (0, 1, 32):
@@ -938,6 +976,25 @@ class GraphicsTests(unittest.TestCase):
             missing.pop(field)
             with self.subTest(missing=field), self.assertRaises(ValueError):
                 graphics.parse_a740_identity(json.dumps(missing))
+
+    def test_sysmem_identity_requires_fresh_matching_a740_but_not_linear_capability(self):
+        identity = a740_identity()
+        receipt = graphics.parse_sysmem_rendering(noisy_log(identity), vulkan_success())
+        self.assertTrue(receipt["hardwareIdentityGatePassed"])
+        self.assertTrue(receipt["sysmemRendering"])
+        self.assertFalse(receipt["selectedVulkanPresentationPassed"])
+        self.assertFalse(receipt["nativeEffectVerified"])
+        self.assertEqual(receipt["identity"], identity)
+        for report in ({}, modified(identity, ("device_id",), True),
+                       modified(identity, ("device_id",), 0x740), modified(identity, ("mode",), "fixture"),
+                       modified(identity, ("software",), True),
+                       modified(identity, ("device",), "Adreno (TM) 740 alternate adapter")):
+            with self.subTest(report=report), self.assertRaises(ValueError):
+                graphics.parse_sysmem_rendering(noisy_log(report), vulkan_success())
+        for baseline in (None, {}, modified(vulkan_success(), ("software",), True),
+                         modified(vulkan_success(), ("device",), "Adreno alternate adapter")):
+            with self.subTest(baseline=baseline), self.assertRaises(ValueError):
+                graphics.parse_sysmem_rendering(noisy_log(identity), baseline)
 
     def test_d3d_requires_native_bound_dlls_hardware_pixels_and_presentations(self):
         report = self.report()

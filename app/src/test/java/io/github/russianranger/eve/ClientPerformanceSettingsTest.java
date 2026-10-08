@@ -104,11 +104,12 @@ public final class ClientPerformanceSettingsTest {
         assertFalse(runtime.disableLrcpc2());
         assertFalse(runtime.a740PcMode());
         assertFalse(runtime.linearPresentation());
+        assertFalse(runtime.sysmemRendering());
         for (String profile : new String[]{"render60", "queue2", "display60", "throughput", "responsive"}) {
             runtime.setPerformanceProfile(profile);
             assertEquals(profile, new ClientRuntime(context).performanceProfile());
         }
-        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation"}) {
+        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering"}) {
             runtime.setPerformanceOption(option, true);
             assertTrue(new ClientRuntime(context).performanceOption(option));
             RuntimeService.busy = true;
@@ -199,6 +200,45 @@ public final class ClientPerformanceSettingsTest {
         assertTrue(new ClientRuntime(context).linearPresentation());
     }
 
+    @Test public void sysmemRenderingPersistsIndependentlyAndOnlyLaunchesWithGpuRendering() throws Exception {
+        assertTrue(preferences.edit().putBoolean("linear-presentation", true)
+                .putString("performance-profile-v2", "queue2").putBoolean("diagnostic-hud", true).commit());
+        ClientRuntime runtime = new ClientRuntime(context);
+        assertTrue(runtime.linearPresentation());
+        assertFalse(runtime.sysmemRendering());
+        assertFalse(runtime.status().getBoolean("requestedSysmemRendering"));
+        assertFalse(runtime.launchCommand("turnip-dxvk", "queue2", true).contains("--sysmem-rendering"));
+        runtime.setPerformanceOption("sysmem-rendering", true);
+        ClientRuntime restored = new ClientRuntime(context);
+        assertTrue(restored.sysmemRendering());
+        assertTrue(restored.linearPresentation());
+        assertTrue(restored.status().getBoolean("requestedSysmemRendering"));
+        assertTrue(restored.status().getBoolean("sysmemRendering"));
+        assertTrue(restored.launchCommand("turnip-dxvk", "queue2", true).contains("--sysmem-rendering"));
+        assertTrue(restored.launchCommand("turnip-dxvk", "queue2", true).contains("--linear-presentation"));
+        assertTrue(restored.performanceSummary().endsWith("Selected experiments: Reduce GPU frame copies, Direct GPU rendering"));
+        restored.setPerformanceOption("linear-presentation", false);
+        assertTrue(restored.sysmemRendering());
+        assertTrue(restored.performanceSummary().endsWith("Selected experiments: Direct GPU rendering"));
+        assertFalse(restored.launchCommand("turnip-dxvk", "queue2", true).contains("--linear-presentation"));
+        restored.setPerformanceOption("linear-presentation", true);
+        restored.useAdreno(false);
+        assertFalse(restored.sysmemRendering());
+        assertTrue(restored.performanceOption("sysmem-rendering"));
+        assertTrue(restored.status().getBoolean("requestedSysmemRendering"));
+        assertFalse(restored.status().getBoolean("sysmemRendering"));
+        assertFalse(restored.launchCommand("software", "queue2", true).contains("--sysmem-rendering"));
+        assertTrue(restored.performanceSummary().endsWith("Reduce GPU frame copies (inactive in software), Direct GPU rendering (inactive in software)"));
+        restored.useAdreno(true);
+        assertTrue(new ClientRuntime(context).sysmemRendering());
+        assertTrue(restored.linearPresentation());
+        assertEquals("queue2", restored.performanceProfile());
+        assertTrue(restored.diagnosticHud());
+        restored.setPerformanceOption("sysmem-rendering", false);
+        assertFalse(new ClientRuntime(context).sysmemRendering());
+        assertTrue(restored.linearPresentation());
+    }
+
     @Test public void softwareSummaryShowsSavedGpuCapsAndKeepsEarlyDisplayRequestsActive() {
         ClientRuntime runtime = new ClientRuntime(context);
         runtime.setPerformanceProfile("throughput");
@@ -216,7 +256,7 @@ public final class ClientPerformanceSettingsTest {
     }
 
     @Test public void explicitBaselineRestoreClearsEveryExperimentTogetherAndPreservesOtherSettings() {
-        String[] options = {"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation"};
+        String[] options = {"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering"};
         for (boolean adreno : new boolean[]{true, false}) {
             SharedPreferences.Editor setup = preferences.edit().putString("performance-profile-v2", "throughput")
                     .putBoolean("use-adreno", adreno).putBoolean("diagnostic-hud", true).putString("unrelated-setting", "preserved");
@@ -264,7 +304,7 @@ public final class ClientPerformanceSettingsTest {
     @Test public void baselineCapsKeepExperimentsVisibleUntilExplicitRestoreUpdatesAllControls() {
         ClientRuntime runtime = new ClientRuntime(context);
         runtime.setPerformanceProfile("render60"); runtime.setDiagnosticHud(true);
-        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation"})
+        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering"})
             runtime.setPerformanceOption(option, true);
         ActivityController<MainActivity> owned = Robolectric.buildActivity(MainActivity.class).create().start().resume().visible();
         try {
@@ -280,7 +320,8 @@ public final class ClientPerformanceSettingsTest {
             button(root, "Restore baseline settings").performClick();
             assertEquals(0, profile(root).getSelectedItemPosition());
             for (String label : new String[]{"Request next display frame early", "Disable concurrent binning (Adreno experiment)",
-                    "Use alternate CPU load instructions (FEX experiment)", "Use A740 driver experiment", "Reduce GPU frame copies (experiment)"})
+                    "Use alternate CPU load instructions (FEX experiment)", "Use A740 driver experiment", "Reduce GPU frame copies (experiment)",
+                    "Use direct GPU rendering (experiment)"})
                 assertFalse("Reset immediately clears " + label, checkBox(root, label).isChecked());
             assertEquals("Baseline caps: render 30 FPS · queue 1 frame · display 30 FPS\nSelected experiments: none",
                     performanceSummary(root).getText().toString());
@@ -348,10 +389,13 @@ public final class ClientPerformanceSettingsTest {
         catch (IllegalStateException expected) { }
         try { runtime.setPerformanceOption("linear-presentation", true); fail("Active client presentation changed"); }
         catch (IllegalStateException expected) { }
+        try { runtime.setPerformanceOption("sysmem-rendering", true); fail("Active client rendering experiment changed"); }
+        catch (IllegalStateException expected) { }
         assertEquals("responsive", runtime.performanceProfile());
         assertFalse(runtime.diagnosticHud());
         assertFalse(runtime.a740PcMode());
         assertFalse(runtime.linearPresentation());
+        assertFalse(runtime.sysmemRendering());
     }
 
     @Test public void busyAndLiveSessionsRejectChangesWithoutMutatingPreferences() {
@@ -390,6 +434,8 @@ public final class ClientPerformanceSettingsTest {
             assertTrue(new ClientRuntime(context).a740PcMode());
             checkBox(root, "Reduce GPU frame copies (experiment)").performClick();
             assertTrue(new ClientRuntime(context).linearPresentation());
+            checkBox(root, "Use direct GPU rendering (experiment)").performClick();
+            assertTrue(new ClientRuntime(context).sysmemRendering());
             button(root, "Server").performClick(); idle();
             button(root, "Client").performClick(); idle();
             assertEquals(1, profile(root).getSelectedItemPosition());
@@ -397,6 +443,7 @@ public final class ClientPerformanceSettingsTest {
             assertTrue(checkBox(root, "Disable concurrent binning (Adreno experiment)").isChecked());
             assertTrue(checkBox(root, "Use A740 driver experiment").isChecked());
             assertTrue(checkBox(root, "Reduce GPU frame copies (experiment)").isChecked());
+            assertTrue(checkBox(root, "Use direct GPU rendering (experiment)").isChecked());
             assertSame(startServer, root.findViewWithTag("start-server"));
             assertSame(startClient, root.findViewWithTag("start-client"));
             assertTopStart(startServer); assertTopStart(startClient);
@@ -411,6 +458,7 @@ public final class ClientPerformanceSettingsTest {
             assertTrue(profile(root).isEnabled());
             assertTrue(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
             assertTrue(button(root, "Restore baseline settings").isEnabled());
+            assertTrue(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
             RuntimeService.busy = true; refresh();
             assertFalse(profile(root).isEnabled());
             assertFalse(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
@@ -419,6 +467,7 @@ public final class ClientPerformanceSettingsTest {
             assertFalse(checkBox(root, "Use alternate CPU load instructions (FEX experiment)").isEnabled());
             assertFalse(checkBox(root, "Use A740 driver experiment").isEnabled());
             assertFalse(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
+            assertFalse(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
             assertFalse(button(root, "Restore baseline settings").isEnabled());
             RuntimeService.busy = false;
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", new LiveProcess());
@@ -427,6 +476,7 @@ public final class ClientPerformanceSettingsTest {
             assertFalse(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
             assertFalse(checkBox(root, "Use A740 driver experiment").isEnabled());
             assertFalse(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
+            assertFalse(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
             assertFalse(button(root, "Restore baseline settings").isEnabled());
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", null); refresh();
             checkBox(root, "Use Adreno GPU rendering").performClick();
@@ -435,12 +485,14 @@ public final class ClientPerformanceSettingsTest {
             assertFalse(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
             assertFalse(checkBox(root, "Use A740 driver experiment").isEnabled());
             assertFalse(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
+            assertFalse(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
             assertFalse(button(root, "Restore baseline settings").isEnabled());
             checkBox(root, "Use Adreno GPU rendering").performClick();
             assertTrue(profile(root).isEnabled());
             assertTrue(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
             assertTrue(checkBox(root, "Use A740 driver experiment").isEnabled());
             assertTrue(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
+            assertTrue(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
             assertTrue(button(root, "Restore baseline settings").isEnabled());
         } finally {
             RuntimeService.busy = false;

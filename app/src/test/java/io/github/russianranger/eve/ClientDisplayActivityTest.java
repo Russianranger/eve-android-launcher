@@ -1,5 +1,8 @@
 package io.github.russianranger.eve;
 
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
 import android.view.View;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
@@ -36,6 +39,43 @@ public final class ClientDisplayActivityTest {
         assertEquals(FrameLayout.LayoutParams.MATCH_PARENT, display.getLayoutParams().width);
         assertEquals(FrameLayout.LayoutParams.MATCH_PARENT, display.getLayoutParams().height);
         owned.destroy();
+    }
+
+    @Test public void opaqueDisplayPreservesPartialUpdatesAcrossResizeAndDestruction() {
+        ActivityController<ClientDisplayActivity> owned = Robolectric.buildActivity(ClientDisplayActivity.class).create();
+        RfbView display = ReflectionHelpers.getField(owned.get(), "screen");
+        Bitmap resized = null;
+        try {
+            display.resize(3, 2);
+            Bitmap first = ReflectionHelpers.getField(display, "image");
+            assertFalse("The transport supplies opaque RGB pixels", first.hasAlpha());
+            for (int y = 0; y < 2; y++) for (int x = 0; x < 3; x++) assertEquals(Color.BLACK, first.getPixel(x, y));
+
+            display.pixels(1, 1, 2, 1, new int[]{0xff123456, 0xffabcdef});
+            assertEquals(0xff123456, first.getPixel(1, 1));
+            assertEquals(0xffabcdef, first.getPixel(2, 1));
+            assertEquals("A partial update leaves untouched pixels black", Color.BLACK, first.getPixel(0, 1));
+            display.resize(3, 2);
+            assertSame("An unchanged desktop size retains its pixels", first, ReflectionHelpers.getField(display, "image"));
+            assertEquals(0xff123456, first.getPixel(1, 1));
+
+            display.resize(2, 3);
+            resized = ReflectionHelpers.getField(display, "image");
+            assertNotSame(first, resized);
+            assertTrue("The replaced framebuffer is released", first.isRecycled());
+            assertFalse(resized.hasAlpha());
+            for (int y = 0; y < 3; y++) for (int x = 0; x < 2; x++) assertEquals(Color.BLACK, resized.getPixel(x, y));
+            display.pixels(0, 2, 1, 1, new int[]{0xff3984cf});
+            display.layout(0, 0, 2, 3);
+            Bitmap rendered = Bitmap.createBitmap(2, 3, Bitmap.Config.ARGB_8888);
+            try {
+                display.draw(new Canvas(rendered));
+                assertEquals("RGB precision survives bitmap drawing", 0xff3984cf, rendered.getPixel(0, 2));
+                assertEquals(Color.BLACK, rendered.getPixel(1, 2));
+            } finally { rendered.recycle(); }
+        } finally { owned.destroy(); }
+        assertTrue("Activity destruction releases the active framebuffer", resized.isRecycled());
+        assertNull(ReflectionHelpers.getField(display, "image"));
     }
 
     @Test public void gearMenuReleasesHeldInputsAndClosesCleanly() {

@@ -1,6 +1,82 @@
 # Client optimization evidence and qualification
 
-## October 8: same-setting runs and the next controlled comparison
+## October 8 evening: true linear A/B and the 0.1.17 SYS trial
+
+[The evening evidence](DEVICE-20261008-EVENING.md) confirms original `sw` versus
+`sw,linear`, the same driver and responsive 30/1/display 30. The user reports a
+small linear FPS gain and slightly lower heat, with FPS still in the 20s.
+Matched warm client CPU 194.05→198.71%, RSS 2983.10→2989.20 MiB and cpuss-0
+68.03→67.95°C remain similar. Readable GPU ceiling stays 680 MHz; no observed
+ceiling reduction establishes throttling. Shader workers are idle and completion
+waits recur. Engine FPS is not logged. Export/reopen retained the baseline client;
+no fresh pressure event appears. Keep linear as the comparison baseline.
+
+### Chosen: existing Turnip SYSMEM mode, default off
+
+Primary [Mesa 26.1 release notes](https://docs.mesa3d.org/relnotes/26.1.0.html)
+list “tu+util: Prefer SYSMEM for DXVK/VKD3D”. Upstream
+[commit 3002d77](https://github.com/chaotic-cx/mesa-mirror/commit/3002d77dfdd23c2b792b80724822ccc890258771)
+sets DXVK/vkd3d `tu_autotune_algorithm=prefer_sysmem`, citing complex PC fragment
+shaders that commonly favor direct-memory rendering. This is a relevant lead for
+our exact DXVK path, not a qualified EVE/Adreno 740 recipe.
+
+The SHA-verified Mesa 26.0.0 source already implements the documented
+[`TU_DEBUG=sysmem`](https://docs.mesa3d.org/envvars.html) flag.
+[`use_sysmem_rendering`](https://github.com/chaotic-cx/mesa-mirror/blob/mesa-26.0.0/src/freedreno/vulkan/tu_cmd_buffer.cc)
+checks it before the old autotuning decision; rendering remains on Adreno and
+retains cache/resolve/synchronization behavior. SYS is independent of
+[linear image layout](https://github.com/chaotic-cx/mesa-mirror/blob/mesa-26.0.0/src/freedreno/vulkan/tu_image.cc).
+The old forced mode is not an exact backport of 26.1's preference: newer policy
+retains specific GMEM choices within a broader autotuner rewrite. Forcing SYS may
+increase external-memory traffic, temperature or frame time.
+
+0.1.17 exposes **Use direct GPU rendering (experiment)**, independent and default
+off. Original-driver exact A740/Vulkan identity, selected-environment Vulkan and
+unchanged native EC shader/readback/three-RFB-frame gates precede EVE. Fixed
+assignments are `sysmem` or `nocb,sysmem`; software/off restarts scrub them.
+Receipts retain `nativeEffectVerified=false`; compatibility helpers do not prove
+render-mode selection or performance. Two additional native CI fixtures cover
+SYS alone and linear+SYS (nine total). Lavapipe ignores Turnip's flag, so these
+prove option integration/pixels/IMMEDIATE policy only, not Thor mode or FPS.
+The next device test is linear alone versus linear+SYS at 30/1/display 30.
+
+### Small Android drawing improvement
+
+[`Bitmap.createBitmap(..., hasAlpha=false)`](https://developer.android.com/reference/android/graphics/Bitmap)
+initializes black and permits opaque drawing. RFB already sets every decoded
+pixel's alpha to 0xff, so the allocation now supplies that hint while keeping
+ARGB_8888 and full 8-bit RGB. Partial updates retain black untouched pixels;
+same-size reuse, resize/recycle, draw and Activity destruction are covered by
+API 33/35 lifecycle tests. Both SYS comparison arms include this change. Its
+physical benefit is unmeasured; Android frame timings describe bitmap drawing,
+not the EVE GPU render time.
+
+### Deferred transport and unsafe/neutral candidates
+
+- Exact shipped TigerVNC is 1.12.0. `-CompareFB 0` or the compression-level-zero
+  RFB pseudoencoding disables comparison, but the logs show it filters 15.4%/
+  21.7% of pixels. Disabling it would add about 18.2%/27.7% pixel traffic in these
+  runs. CPU/rectangle savings are unproven; try separately only after SYS.
+- Linear-compatible per-image SHM staging could replace Mesa→Xvnc X11 payloads
+  with CPU memcpy plus `xcb_shm_put_image`, retaining GPU waits and RFB. It needs
+  checked attach/allocation fallback, bounds, resize/cleanup and a reply barrier
+  after PutImage before buffer reuse. The existing GetGeometry occurs before
+  PutImage. One production guest invocation shares its patched PRoot SysV IPC
+  namespace with Xvnc/Wine/probes/EVE; a separate invocation does not. This is a
+  larger audited driver change, not a simple safe environment flag.
+- Native Android AHB/surface transport needs buffer/fence/Xserver lifecycle work;
+  SurfaceView alone does not establish avoided upload/composition costs. Bitmap
+  publication is already small and no measured dominant transport bottleneck
+  justifies replacing that path in this build.
+- Turnip's SSBO alignment handling already takes the relevant existing path.
+  Ignoring/relaxing barriers risks incorrect rendering; suppressing optimized
+  pipelines may hurt warm performance. Neutral cap/FEX/binning/A740 trials and
+  game-quality/FSR changes are not repeated.
+
+Runtime/driver/source pins, hardware gates, completion fences, IMMEDIATE policy,
+shader caches, pressure handling, data and controls remain intact.
+
+## October 8 afternoon: same-setting runs and the baseline comparison
 
 [The new logs](DEVICE-20261008.md) both record linear presentation. Physical
 compatibility passed, but different naming/activity does not prove its FPS or heat

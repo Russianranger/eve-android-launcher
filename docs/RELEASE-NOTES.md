@@ -1,3 +1,24 @@
+# EVE Android Launcher 0.1.17 — optional direct GPU rendering
+
+The latest true baseline/linear comparison gave a small user-observed FPS gain
+and slight cooling from linear, while performance still remained in the 20s.
+This update adds default-off **Use direct GPU rendering (experiment)**. It
+selects SYSMEM rendering already supported by the original pinned Turnip driver,
+following the rendering preference added upstream for DXVK/VKD3D games. It can
+also increase bandwidth or heat; no stable-30 improvement is claimed.
+
+The selection is independent of linear and locked during client operation.
+Fresh original-driver/exact-A740 identity, selected Vulkan and native EC
+shader/readback/visible-frame checks run before EVE. Software ignores the flag;
+support receipts distinguish assignments from unverified native performance.
+**Restore baseline settings** now clears all six experiments.
+
+The Android display bitmap is marked opaque while retaining full RGB precision,
+matching the RFB decoder's opaque pixels and black untouched regions. The
+accepted pressure guard, original driver/runtime, IMMEDIATE policy, caches,
+import, account/world and controls remain intact. Install in place and follow
+[linear alone versus linear plus direct GPU rendering](TESTING.md).
+
 # EVE Android Launcher 0.1.16 — export continuity and explicit baseline reset
 
 The October 8 closure during export navigation was our automatic trim-callback

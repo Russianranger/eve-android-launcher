@@ -1,6 +1,52 @@
-# EVE Android Launcher 0.1.16: export continuity and a true baseline comparison
+# EVE Android Launcher 0.1.17: linear versus linear plus direct GPU rendering
 
-## Current 0.1.16 test
+## Current 0.1.17 test
+
+Install **EVE-Android-Launcher-0.1.17.apk** over the existing app with client and
+server stopped. Preserve app data, imported client, runtime, prefix, shader
+caches, account/world and mappings. No reimport or validation is needed; preview
+signing identity remains the same.
+
+Your latest reports favor linear slightly. This test keeps linear in both arms
+and changes only the new direct GPU rendering experiment. It selects the pinned
+Turnip driver's SYSMEM mode; upstream favors this mode for DXVK, but forced SYS
+can also worsen FPS/heat. The opaque Android bitmap change is present in both
+arms, preserving RGB precision. No game-quality or runtime upgrade is involved.
+
+1. With the client stopped, keep **Use Adreno GPU rendering** enabled. Press
+   **Restore baseline settings**, then enable only **Reduce GPU frame copies
+   (experiment)** and the diagnostic HUD. Confirm render 30/queue 1/display 30
+   and **Selected experiments: Reduce GPU frame copies**. Leave A740, binning,
+   alternate CPU instructions, early display requests and direct GPU rendering off.
+2. Keep FSR off because of the earlier black lines. Use the same 1280×720 station,
+   character, camera/windows, other game settings and Thor fan/power mode. Start
+   server → **SERVER READY** → Start EVE client → Open client display. Check
+   fullscreen, text/geometry and controls.
+3. Warm three minutes, then observe two minutes, keeping equal static-camera and
+   movement intervals in both runs. Record HUD FPS range, stutter/input delay and
+   starting/ending SoC temperature. Export while running as **0.1.17-linear**,
+   reopen the display and confirm the same client/server session remains usable.
+   Quit EVE normally; leave the server running.
+4. Cool to a similar starting temperature. With the client stopped, enable
+   **Use direct GPU rendering (experiment)** as well. Confirm the summary has
+   only **Reduce GPU frame copies, Direct GPU rendering**. Repeat the same five-minute
+   run and live export as **0.1.17-linear-sysmem**. Check ships, transparency,
+   effects, station geometry, text, controls and export/reopen continuity.
+5. If SYS qualification fails, export immediately and report the stage. If FPS,
+   heat or visual behavior worsens, turn off only direct GPU rendering after
+   stopping. If it helps, repeat once after cooling with the caches warm before
+   keeping it. Quit normally, then save and stop the server.
+
+Return both labeled ZIPs, HUD FPS ranges, starting/ending temperatures, any
+visible/input faults and export continuity. Display updates are not engine FPS;
+thermal driver labels and unavailable fields retain their actual meanings.
+Do not repeat the old cap/binning/FEX/A740 matrix. The helpers qualify compatibility,
+not physical SYS selection or stable 30 FPS. Abrupt Android memory kills remain
+possible without callbacks; the existing corroborated-pressure guard is unchanged.
+
+Earlier instructions remain below as historical evidence.
+
+## Completed 0.1.16 baseline/linear test
 
 Install **EVE-Android-Launcher-0.1.16.apk** over the existing app with client and
 server stopped. Preserve app data, client import, runtime, prefix, shader caches,

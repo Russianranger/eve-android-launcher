@@ -54,6 +54,16 @@ settings** and a visible experiment summary, and records bounded readable
 frequency/thermal evidence. Both 0.1.15 exports retained linear, so use
 [the actual baseline comparison](docs/TESTING.md) to assess its warm FPS/heat benefit.
 
+The October 8 evening comparison records a true original-versus-linear pair.
+The user reports a small linear FPS gain and slightly lower temperatures;
+matched logged CPU/RSS/thermal readings remain similar. 0.1.17 adds default-off
+**Use direct GPU rendering (experiment)** using the pinned driver's SYSMEM mode,
+following newer Mesa's DXVK rendering preference. It also marks the full-color
+Android display bitmap opaque. Test [linear alone versus linear plus direct GPU
+rendering](docs/TESTING.md); stable 30 FPS and lower heat remain physical gates.
+See [the evening evidence](docs/DEVICE-20261008-EVENING.md) and
+[the source-backed optimization review](docs/CLIENT-PERFORMANCE.md).
+
 ## Fullscreen controls in 0.1.11
 
 The display fills the screen; a top-right space-themed gear opens the controls

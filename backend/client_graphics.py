@@ -290,16 +290,18 @@ def d3d_command(folder: Path, manifest: dict, wine: str = "/opt/wine/bin/wine") 
 
 
 def optimization_settings(mode, disable_concurrent_binning=False, disable_lrcpc2=False, a740_pc_mode=False,
-                          linear_presentation=False):
+                          linear_presentation=False, sysmem_rendering=False):
     """Describe only fixed session assignments, not measured native effects."""
     if mode not in MODES:
         raise ValueError("Unsupported client renderer")
     if any(type(value) is not bool for value in
-           (disable_concurrent_binning, disable_lrcpc2, a740_pc_mode, linear_presentation)):
+           (disable_concurrent_binning, disable_lrcpc2, a740_pc_mode, linear_presentation, sysmem_rendering)):
         raise ValueError("Client optimization selections must be booleans")
     gpu = mode == "turnip-dxvk"
     binning = disable_concurrent_binning and gpu
     lrcpc2 = disable_lrcpc2 and gpu
+    sysmem = sysmem_rendering and gpu
+    turnip_debug = ",".join(flag for flag, enabled in (("nocb", binning), ("sysmem", sysmem)) if enabled) or None
     return {"requestedDisableConcurrentBinning": disable_concurrent_binning,
             "requestedDisableLrcpc2": disable_lrcpc2,
             "requestedA740PcMode": a740_pc_mode, "a740PcMode": a740_pc_mode and gpu,
@@ -307,9 +309,11 @@ def optimization_settings(mode, disable_concurrent_binning=False, disable_lrcpc2
             "requestedLinearPresentation": linear_presentation,
             "linearPresentation": linear_presentation and gpu,
             "linearPresentationExperimental": True, "linearPresentationDeviceGated": True,
+            "requestedSysmemRendering": sysmem_rendering, "sysmemRendering": sysmem,
+            "sysmemRenderingExperimental": True, "sysmemRenderingDeviceGated": True,
             "mesaWsiDebug": ("sw,linear" if linear_presentation else "sw") if gpu else None,
             "disableConcurrentBinning": binning, "disableLrcpc2": lrcpc2,
-            "turnipDebug": "nocb" if binning else None,
+            "turnipDebug": turnip_debug,
             "fexHostFeatures": "disablelrcpc2" if lrcpc2 else None,
             "nativeEffectVerified": False}
 
@@ -347,11 +351,11 @@ def cpu_topology(root=Path("/sys/devices/system/cpu")):
 def configure_environment(base, mode, folder, state,
                           performance_profile=DEFAULT_PERFORMANCE_PROFILE, diagnostic_hud=False,
                           disable_concurrent_binning=False, disable_lrcpc2=False, a740_pc_mode=False,
-                          linear_presentation=False):
+                          linear_presentation=False, sysmem_rendering=False):
     """Prove graphics options cannot leak between software/GPU sessions."""
     performance = performance_settings(mode, performance_profile, diagnostic_hud)
     optimizations = optimization_settings(mode, disable_concurrent_binning, disable_lrcpc2, a740_pc_mode,
-                                         linear_presentation)
+                                         linear_presentation, sysmem_rendering)
     env = {k:v for k,v in base.items()
            if not k.startswith(("DXVK_", "VK_", "MESA_", "LIBGL_", "TU_"))
            and k not in ("WINE_D3D_CONFIG", "GALLIUM_DRIVER", "LP_NUM_THREADS", "mesa_glthread",
@@ -369,8 +373,8 @@ def configure_environment(base, mode, folder, state,
                    DXVK_STATE_CACHE_PATH="Z:" + str(dxvk_cache).replace("/", "\\"),
                    MESA_SHADER_CACHE_DIR=str(mesa_cache),
                    MESA_SHADER_CACHE_MAX_SIZE="512M")
-        if optimizations["disableConcurrentBinning"]:
-            env["TU_DEBUG"] = "nocb"
+        if optimizations["turnipDebug"]:
+            env["TU_DEBUG"] = optimizations["turnipDebug"]
         if optimizations["disableLrcpc2"]:
             env["FEX_HOSTFEATURES"] = "disablelrcpc2"
     return env
@@ -462,6 +466,23 @@ def parse_linear_presentation(text, baseline_vulkan):
             "hardwareCapabilityGatePassed": True, "identity": identity,
             "baselineVulkan": baseline_vulkan, "nativeEffectVerified": False,
             "qualificationScope": "native A740 linear format capability; helper rendering and EVE performance require independent checks"}
+
+
+def parse_sysmem_rendering(text, baseline_vulkan):
+    """Gate a fixed session flag by current hardware identity, not its effect."""
+    identity = parse_a740_identity(text)
+    if not isinstance(baseline_vulkan, dict):
+        raise ValueError("SYSMEM rendering requires current-session Vulkan hardware qualification")
+    parse_vulkan(json.dumps(baseline_vulkan))
+    if any(identity[key] != baseline_vulkan[key]
+           for key in ("vendor_id", "driver_id", "driver_version", "api_version", "software", "device")):
+        raise ValueError("SYSMEM rendering identity differs from the current Vulkan presentation device")
+    return {"requestedSysmemRendering": True, "sysmemRendering": True,
+            "originalDriver": "turnip-26.0.0.so", "hardwareIdentityGatePassed": True,
+            "selectedVulkanPresentationPassed": False, "nativeD3d11ShaderReadbackPassed": False,
+            "visibleRfbFramesPassed": False, "identity": identity, "baselineVulkan": baseline_vulkan,
+            "nativeEffectVerified": False,
+            "qualificationScope": "native A740 identity and selected helper environment; render mode and EVE performance require independent observation"}
 
 
 def parse_d3d(text, manifest):

@@ -60,11 +60,20 @@ if mode in ('graphicsVulkan', 'graphicsD3d', 'graphicsIdentity'):
         elif mode == 'graphicsIdentity': report['device_id'] = 0x740
         else: report['passed'] = False
     if mode == 'graphicsIdentity':
+        if behavior == 'identity-unavailable':
+            print('native identity unavailable', flush=True)
+            sys.exit(0)
+        if behavior == 'identity-software': report['software'] = True
+        if behavior == 'identity-fixture': report['mode'] = 'fixture'
+        if behavior == 'identity-variant-device': report['device'] += ' alternate adapter'
         if behavior == 'linear-missing': report.pop('linear_presentation')
         if behavior == 'linear-unsupported': report['linear_presentation']['supported'] = False
         if behavior == 'linear-format-invalid': report['linear_presentation']['rgba8_unorm'] = 1
     if mode == 'graphicsVulkan' and behavior == 'linear-vulkan-bad' and os.environ.get('MESA_VK_WSI_DEBUG') == 'sw,linear':
         report['software'] = True
+    selected_sysmem = mode == 'graphicsVulkan' and 'sysmem' in os.environ.get('TU_DEBUG', '').split(',')
+    if selected_sysmem and behavior == 'sysmem-vulkan-bad': report['software'] = True
+    if selected_sysmem and behavior == 'sysmem-vulkan-device': report['device'] += ' alternate adapter'
     if mode == 'graphicsD3d':
         if behavior == 'graphics-server-lost': (state / 'server-lost').touch()
         display = json.loads((state / 'fixture-display.json').read_text())
@@ -81,7 +90,7 @@ if mode in ('graphicsVulkan', 'graphicsD3d', 'graphicsIdentity'):
         if behavior == 'graphicsD3d-policy-missing': policy_log = ''
         (state / 'logs/client-graphicsD3d-helper-errors.log').write_text(policy_log)
     print(json.dumps(report), flush=True)
-    sys.exit(5 if behavior in (mode + '-exit', mode + '-orphan') else 0)
+    sys.exit(5 if behavior in (mode + '-exit', mode + '-orphan') or (selected_sysmem and behavior == 'sysmem-vulkan-exit') else 0)
 if mode == 'gate':
     health = {'status':'ok','service':'express-secondary','gatewayMode':'local',
               'offlinePolicy':{'version':2,'proxyForwarding':'disabled','clientFeatureFlags':'defaults'}}
@@ -165,7 +174,7 @@ class ClientRuntimeTests(unittest.TestCase):
             'dxvk-dxgi-arm64ec.dll': {'sha256': '2' * 64}}}))
 
     def settings(self, behavior="normal", graphics=False, performance_profile="responsive", diagnostic_hud=False,
-                 disable_concurrent_binning=False, disable_lrcpc2=False, linear_presentation=False):
+                 disable_concurrent_binning=False, disable_lrcpc2=False, linear_presentation=False, sysmem_rendering=False):
         def command(role):
             return (sys.executable, str(self.fixture), role, str(self.state), str(self.port), behavior)
         return MODULE.Settings(content=self.content, state=self.state, server_state=self.server,
@@ -176,18 +185,18 @@ class ClientRuntimeTests(unittest.TestCase):
                                graphics_mode="turnip-dxvk" if graphics else "software",
                                performance_profile=performance_profile, diagnostic_hud=diagnostic_hud,
                                disable_concurrent_binning=disable_concurrent_binning, disable_lrcpc2=disable_lrcpc2,
-                               linear_presentation=linear_presentation,
+                               linear_presentation=linear_presentation, sysmem_rendering=sysmem_rendering,
                                vulkan_command=command("graphicsVulkan") if graphics else None,
                                d3d_command=command("graphicsD3d") if graphics else None,
                                graphics_timeout=.5,
                                minimum_available_kib=0)
 
     def launch(self, behavior="normal", clear_stop=True, graphics=False, performance_profile="responsive", diagnostic_hud=False,
-               disable_concurrent_binning=False, disable_lrcpc2=False, linear_presentation=False):
+               disable_concurrent_binning=False, disable_lrcpc2=False, linear_presentation=False, sysmem_rendering=False):
         if clear_stop:
             (self.state / "run/stop").unlink(missing_ok=True)
         selected = self.settings(behavior, graphics, performance_profile, diagnostic_hud,
-                                 disable_concurrent_binning, disable_lrcpc2, linear_presentation)
+                                 disable_concurrent_binning, disable_lrcpc2, linear_presentation, sysmem_rendering)
         (self.state / 'fixture-performance.json').write_text(json.dumps(MODULE.client_graphics.performance_settings(
             "turnip-dxvk", performance_profile)))
         values = {key: str(value) if isinstance(value, Path) else value for key, value in selected.__dict__.items()}
@@ -338,6 +347,24 @@ class ClientRuntimeTests(unittest.TestCase):
         self.assertFalse((self.state / "graphicsVulkan.pid").exists())
         self.assertFalse((self.state / "graphicsD3d.pid").exists())
         self.assertFalse((self.state / "client.pid").exists())
+
+    def test_accepted_early_failure_clears_old_graphics_receipt_but_rejected_start_preserves_it(self):
+        receipt = self.state / "graphics-preflight.json"
+        old = json.dumps({"hardwarePreflightPassed": True, "sysmemRenderingQualification": {
+            "hardwareIdentityGatePassed": True, "selectedVulkanPresentationPassed": True}})
+        receipt.write_text(old)
+        runtime = MODULE.Runtime(self.settings(graphics=True, sysmem_rendering=True))
+        with mock.patch.object(runtime, "recover", side_effect=MODULE.BusyError("Prior client still alive")), \
+                self.assertRaises(MODULE.BusyError):
+            runtime.start()
+        self.assertEqual(receipt.read_text(), old)
+        process = self.launch("gate-fails", graphics=True, sysmem_rendering=True)
+        self.assertEqual(process.wait(timeout=5), 1)
+        failed = self.wait_status("failed")
+        self.assertEqual(failed["graphicsPreflight"], {})
+        self.assertFalse(receipt.exists())
+        for role in ("graphicsVulkan", "graphicsIdentity", "graphicsD3d", "client"):
+            self.assertFalse((self.state / (role + ".pid")).exists())
 
     def test_a740_session_requires_current_identity_and_selected_driver_presentation(self):
         for fault in (None, "wrong-chip", "variant-device", "stop"):
@@ -493,6 +520,190 @@ class ClientRuntimeTests(unittest.TestCase):
                 self.assertTrue(finished["cleanShutdown"])
                 self.assertFalse((self.state / "client.pid").exists())
                 self.assertFalse((self.state / "run/processes.json").exists())
+
+    def test_sysmem_cli_is_strict_default_off_and_software_scrubs_inherited_flags(self):
+        for arguments, enabled in (([], False), (["--sysmem-rendering"], True),
+                                   (["--sysmem-rendering", "--linear-presentation"], True)):
+            with self.subTest(arguments=arguments), mock.patch.object(MODULE, "Runtime") as constructor, \
+                    mock.patch.object(MODULE.signal, "signal"):
+                self.assertEqual(MODULE.main(["start", *arguments]), 0)
+                selected = constructor.call_args.args[0]
+                self.assertEqual(selected.sysmem_rendering, enabled)
+                self.assertEqual(selected.linear_presentation, "--linear-presentation" in arguments)
+                self.assertFalse(selected.a740_pc_mode)
+                self.assertEqual(selected.performance_profile, "responsive")
+        for argument in ("sysmem", "nocb,sysmem", "false"):
+            with self.subTest(argument=argument), mock.patch.object(MODULE, "Runtime") as constructor, \
+                    mock.patch("sys.stderr", new=io.StringIO()), self.assertRaises(SystemExit):
+                MODULE.main(["start", "--sysmem-rendering", argument])
+            constructor.assert_not_called()
+        for invalid in (1, "sysmem", None):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                MODULE.Runtime(MODULE.Settings(sysmem_rendering=invalid))
+        runtime = MODULE.Runtime(self.settings(sysmem_rendering=True, linear_presentation=True,
+                                              disable_concurrent_binning=True))
+        (self.state / "graphics-preflight.json").write_text('{"hardwarePreflightPassed":true}')
+        with mock.patch.dict(os.environ, TU_DEBUG="forcecb,sysmem", TU_DEBUG_FILE="/outside/options"), \
+                mock.patch.object(runtime, "wait_graphics") as helper:
+            report = runtime.run_graphics()
+            self.assertFalse(any(key.startswith("TU_") for key in runtime.environment()))
+        helper.assert_not_called()
+        self.assertTrue(report["optimizations"]["requestedSysmemRendering"])
+        self.assertFalse(report["optimizations"]["sysmemRendering"])
+        self.assertFalse(report["sysmemRenderingQualification"]["hardwareIdentityGatePassed"])
+        self.assertFalse((self.state / "graphics-preflight.json").exists())
+
+    def test_sysmem_current_identity_and_selected_environment_reach_helper_game_and_reset(self):
+        for linear, binning, lrcpc2 in ((False, False, False), (True, True, True)):
+            with self.subTest(linear=linear, binning=binning):
+                # SYS-only accepts exact native identity without linear-format metadata.
+                (self.state / "fixture-graphicsIdentity.json").write_text(json.dumps(
+                    linear_identity() if linear else a740_identity()))
+                with mock.patch.dict(os.environ, TU_DEBUG="gmem,forcecb", TU_DEBUG_FILE="/outside/options"):
+                    process = self.launch(graphics=True, sysmem_rendering=True, linear_presentation=linear,
+                                          disable_concurrent_binning=binning, disable_lrcpc2=lrcpc2)
+                running = self.wait_status("running")
+                selected_debug = "nocb,sysmem" if binning else "sysmem"
+                baseline_debug = "nocb" if binning else None
+                wsi = "sw,linear" if linear else "sw"
+                qualification = running["graphicsPreflight"]["sysmemRenderingQualification"]
+                for field in ("hardwareIdentityGatePassed", "selectedVulkanPresentationPassed",
+                              "nativeD3d11ShaderReadbackPassed", "visibleRfbFramesPassed"):
+                    self.assertTrue(qualification[field])
+                self.assertFalse(qualification["nativeEffectVerified"])
+                self.assertEqual(qualification["turnipDebug"], selected_debug)
+                self.assertEqual(qualification["originalDriver"], "turnip-26.0.0.so")
+                self.assertEqual(qualification["baselineVulkan"], vulkan_success())
+                self.assertTrue(running["optimizations"]["sysmemRendering"])
+                self.assertFalse(running["optimizations"]["a740PcMode"])
+                history = json.loads((self.state / "graphicsVulkan.environment-history.json").read_text())[-2:]
+                self.assertEqual([env["TU_DEBUG"] for env in history], [baseline_debug, selected_debug])
+                self.assertEqual([env["MESA_VK_WSI_DEBUG"] for env in history], ["sw", wsi])
+                identity_env = json.loads((self.state / "graphicsIdentity.environment.json").read_text())
+                self.assertEqual(identity_env["TU_DEBUG"], baseline_debug)
+                self.assertEqual(identity_env["MESA_VK_WSI_DEBUG"], "sw")
+                for role in ("graphicsD3d", "client"):
+                    env = json.loads((self.state / (role + ".environment.json")).read_text())
+                    self.assertEqual(env["TU_DEBUG"], selected_debug)
+                    self.assertEqual(env["MESA_VK_WSI_DEBUG"], wsi)
+                    self.assertEqual(env["FEX_HOSTFEATURES"], "disablelrcpc2" if lrcpc2 else None)
+                    self.assertEqual(env["MESA_SHADER_CACHE_DIR"], str(self.state / "cache/mesa-26.0.0"))
+                (self.state / "run/stop").write_text("stop")
+                self.assertEqual(process.wait(timeout=4), 0)
+                baseline = self.launch(graphics=True)
+                restarted = self.wait_status("running")
+                self.assertFalse(restarted["optimizations"]["requestedSysmemRendering"])
+                self.assertFalse(restarted["optimizations"]["sysmemRendering"])
+                fresh = restarted["graphicsPreflight"]["sysmemRenderingQualification"]
+                self.assertFalse(fresh["hardwareIdentityGatePassed"])
+                self.assertFalse(fresh["selectedVulkanPresentationPassed"])
+                self.assertFalse(fresh["nativeEffectVerified"])
+                self.assertNotIn("identity", fresh)
+                self.assertIsNone(json.loads((self.state / "client.environment.json").read_text())["TU_DEBUG"])
+                self.assertEqual(json.loads((self.state / "graphics-preflight.json").read_text())
+                                 ["sysmemRenderingQualification"], fresh)
+                (self.state / "run/stop").write_text("stop")
+                self.assertEqual(baseline.wait(timeout=4), 0)
+
+    def test_sysmem_failed_or_unknown_gates_discard_old_preflight_and_never_launch_game(self):
+        for behavior in ("graphicsVulkan-bad", "graphicsIdentity-bad", "graphicsIdentity-exit",
+                         "identity-unavailable", "identity-software", "identity-fixture", "identity-variant-device",
+                         "sysmem-vulkan-bad", "sysmem-vulkan-device", "sysmem-vulkan-exit",
+                         "graphicsD3d-bad", "graphicsD3d-display-bad", "graphicsD3d-policy-fifo"):
+            with self.subTest(behavior=behavior):
+                (self.state / "graphics-preflight.json").write_text(json.dumps({
+                    "hardwarePreflightPassed": True,
+                    "sysmemRenderingQualification": {"hardwareIdentityGatePassed": True,
+                                                     "selectedVulkanPresentationPassed": True}}))
+                process = self.launch(behavior, graphics=True, sysmem_rendering=True)
+                self.assertEqual(process.wait(timeout=5), 1)
+                failed = self.wait_status("failed")
+                self.assertFalse(failed["ready"])
+                self.assertFalse((self.state / "client.pid").exists())
+                self.assertFalse((self.state / "graphics-preflight.json").exists())
+                self.assertFalse((self.state / "run/processes.json").exists())
+                self.assertEqual((self.content / "keep-client-files").read_text(), "unchanged")
+
+    def test_stop_and_timeout_during_sysmem_identity_clean_helpers_without_game(self):
+        for stop in (True, False):
+            with self.subTest(stop=stop):
+                process = self.launch("graphicsIdentity-hangs", graphics=True, sysmem_rendering=True)
+                self.wait_role("graphicsIdentity")
+                if stop:
+                    (self.state / "run/stop").write_text("stop")
+                self.assertEqual(process.wait(timeout=5), 0 if stop else 1)
+                finished = self.wait_status("stopped" if stop else "failed")
+                self.assertTrue(finished["cleanShutdown"])
+                self.assertFalse((self.state / "client.pid").exists())
+                self.assertFalse((self.state / "graphics-preflight.json").exists())
+                self.assertFalse((self.state / "run/processes.json").exists())
+
+    def test_sysmem_a740_and_linear_combination_separates_original_driver_and_final_checks(self):
+        for a740, linear in ((False, False), (False, True), (True, False), (True, True)):
+            with self.subTest(a740=a740, linear=linear):
+                selected = self.settings(graphics=True, sysmem_rendering=True, linear_presentation=linear,
+                                         disable_concurrent_binning=True)
+                runtime = MODULE.Runtime(MODULE.Settings(**{**selected.__dict__, "a740_pc_mode": a740}))
+                runtime.run.mkdir(exist_ok=True)
+                runtime.logs.mkdir(exist_ok=True)
+                runtime.graphics_bundle = json.loads((self.state / "fixture-graphics.json").read_text())
+                stages = []
+
+                def qualification(role, command, env, timeout):
+                    stages.append((role, env.get("TU_DEBUG"), env["MESA_VK_WSI_DEBUG"]))
+                    if role == "graphicsVulkan":
+                        (runtime.logs / "client-graphicsVulkan.log").write_text(json.dumps(vulkan_success()))
+                    elif role == "graphicsIdentity":
+                        (runtime.logs / "client-graphicsIdentity.log").write_text(json.dumps(linear_identity()))
+                    else:
+                        (runtime.logs / "client-graphicsD3d-helper.log").write_text(json.dumps(d3d_success()))
+                        (runtime.run / "graphics-display.json").write_text(json.dumps(display_success()))
+                        (runtime.logs / "client-graphicsD3d-helper-errors.log").write_text(
+                            "info: dxgi.maxFrameRate = 30\ninfo: dxgi.maxFrameLatency = 1\n"
+                            "info: dxgi.syncInterval = 0\ninfo: Present mode: VK_PRESENT_MODE_IMMEDIATE_KHR\n")
+
+                with mock.patch.object(runtime, "wait_graphics", side_effect=qualification), \
+                        mock.patch.object(runtime, "status"), mock.patch.object(MODULE.client_graphics, "verify_mapped"), \
+                        mock.patch.object(MODULE.client_graphics, "select_driver", return_value={
+                            "a740PcMode": a740, "driver": MODULE.client_graphics.A740_DRIVER}) as driver:
+                    report = runtime.run_graphics()
+                wsi = "sw,linear" if linear else "sw"
+                expected = [("graphicsVulkan", "nocb", "sw"), ("graphicsIdentity", "nocb", "sw")]
+                if a740:
+                    expected.append(("graphicsVulkan", "nocb", "sw"))
+                expected.extend((("graphicsVulkan", "nocb,sysmem", wsi), ("graphicsD3d", "nocb,sysmem", wsi)))
+                self.assertEqual(stages, expected)
+                self.assertEqual(driver.call_count, 1 if a740 else 0)
+                self.assertTrue(report["sysmemRenderingQualification"]["selectedVulkanPresentationPassed"])
+                self.assertFalse(report["sysmemRenderingQualification"]["nativeEffectVerified"])
+                self.assertEqual(report["linearPresentationQualification"]["hardwareCapabilityGatePassed"], linear)
+
+    def test_sysmem_plus_linear_failed_capability_stops_before_selected_rendering(self):
+        for capability in (None, {"supported": False, "bgra8_unorm": True, "rgba8_unorm": True},
+                           {"supported": True, "bgra8_unorm": True, "rgba8_unorm": 1}):
+            with self.subTest(capability=capability):
+                runtime = MODULE.Runtime(self.settings(graphics=True, sysmem_rendering=True, linear_presentation=True))
+                runtime.run.mkdir(exist_ok=True)
+                runtime.logs.mkdir(exist_ok=True)
+                stages = []
+                (self.state / "graphics-preflight.json").write_text('{"hardwarePreflightPassed":true}')
+
+                def qualification(role, command, env, timeout):
+                    stages.append(role)
+                    self.assertNotIn("TU_DEBUG", env)
+                    self.assertEqual(env["MESA_VK_WSI_DEBUG"], "sw")
+                    report = vulkan_success() if role == "graphicsVulkan" else a740_identity()
+                    if role == "graphicsIdentity" and capability is not None:
+                        report["linear_presentation"] = capability
+                    (runtime.logs / ("client-" + role + ".log")).write_text(json.dumps(report))
+
+                with mock.patch.object(runtime, "wait_graphics", side_effect=qualification), \
+                        mock.patch.object(runtime, "status"), mock.patch.object(MODULE.client_graphics, "verify_mapped"), \
+                        mock.patch.object(MODULE.client_graphics, "select_driver") as driver, self.assertRaises(ValueError):
+                    runtime.run_graphics()
+                driver.assert_not_called()
+                self.assertEqual(stages, ["graphicsVulkan", "graphicsIdentity"])
+                self.assertFalse((self.state / "graphics-preflight.json").exists())
 
     def test_server_loss_after_graphics_prevents_eve(self):
         process = self.launch("graphics-server-lost", graphics=True)

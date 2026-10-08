@@ -32,7 +32,8 @@ final class RfbView extends View implements RfbClient.Screen {
         synchronized (lock) {
             if (image != null && image.getWidth() == width && image.getHeight() == height) return;
             if (image != null) image.recycle();
-            image = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            // RFB decoding makes every pixel opaque; untouched pixels should match the black background.
+            image = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888, false);
         }
         postInvalidate();
     }

@@ -19,6 +19,10 @@ qualification_status=0
 docker start -ai "$graphics_container" <<'QUALIFICATION' || qualification_status=$?
 set -Eeuo pipefail
 export DISPLAY=:21
+# Every fixture starts from an explicit baseline. Per-process experiment
+# assignments below must not leak into another trial or negative control.
+unset TU_DEBUG FEX_HOSTFEATURES
+export MESA_VK_WSI_DEBUG=sw
 display_pid=''
 responsive_display_pid=''
 cleanup_display() {
@@ -76,6 +80,21 @@ dxgi.maxFrameLatency = 2
 dxgi.syncInterval = 0
 CONFIG
 test -f "$VK_DRIVER_FILES"
+# Capture only this fixed graphics allowlist, never arbitrary CI environment
+# variables. These are the actual assignments inherited by each helper.
+cat > /graphics-out/capture-graphics-environment.py <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+keys = ('MESA_VK_WSI_DEBUG', 'TU_DEBUG', 'FEX_HOSTFEATURES',
+        'VK_DRIVER_FILES', 'VK_ICD_FILENAMES', 'DISPLAY', 'DXVK_CONFIG_FILE',
+        'DXVK_LOG_LEVEL', 'DXVK_LOG_PATH', 'DXVK_HUD', 'DXVK_STATE_CACHE_PATH',
+        'MESA_SHADER_CACHE_DIR', 'MESA_SHADER_CACHE_MAX_SIZE', 'WINEDLLOVERRIDES')
+Path('/graphics-out', sys.argv[1]).write_text(json.dumps(
+    {key: os.environ.get(key) for key in keys}, indent=2) + '\n')
+PY
+python3 /graphics-out/capture-graphics-environment.py d3d11-throughput-environment.json
 # This is an explicitly named software CI fixture. A successful result verifies
 # x64 -> native EC D3D11/DXGI -> Wine Vulkan -> Xvnc, not Thor GPU performance.
 /graphics-out/assets/vulkan-probe --allow-software \
@@ -120,8 +139,12 @@ dxgi.maxFrameRate = 30
 dxgi.maxFrameLatency = 1
 dxgi.syncInterval = 0
 CONFIG
-DISPLAY=:22 DXVK_CONFIG_FILE='Z:\graphics-out\dxvk-responsive.conf' \
-  python3 /graphics-tests/graphics_present.py --port 5992 \
+responsive_environment=(env -u TU_DEBUG -u FEX_HOSTFEATURES
+  MESA_VK_WSI_DEBUG=sw DISPLAY=:22
+  DXVK_CONFIG_FILE='Z:\graphics-out\dxvk-responsive.conf')
+"${responsive_environment[@]}" python3 /graphics-out/capture-graphics-environment.py \
+  d3d11-responsive-environment.json
+"${responsive_environment[@]}" python3 /graphics-tests/graphics_present.py --port 5992 \
   --report /graphics-out/d3d11-responsive-rfb-presentation.json \
   --stdout /graphics-out/d3d11-responsive-fixture.json --stderr /graphics-out/d3d11-responsive-fixture.log \
   -- /opt/wine/bin/wine /graphics-out/assets/eve-d3d11-probe.exe \
@@ -138,15 +161,8 @@ linear_environment=(env -u TU_DEBUG -u FEX_HOSTFEATURES
   DXVK_CONFIG_FILE='Z:\graphics-out\dxvk-responsive.conf')
 "${linear_environment[@]}" /graphics-out/assets/a740-driver-probe --fixture \
   > /graphics-out/linear-identity-cpu-fixture.json 2> /graphics-out/linear-identity-cpu-fixture.log
-"${linear_environment[@]}" python3 - <<'PY'
-import json
-import os
-from pathlib import Path
-keys = ('MESA_VK_WSI_DEBUG', 'VK_DRIVER_FILES', 'VK_ICD_FILENAMES', 'DISPLAY',
-        'DXVK_CONFIG_FILE', 'TU_DEBUG', 'FEX_HOSTFEATURES')
-Path('/graphics-out/linear-presentation-environment.json').write_text(json.dumps(
-    {key: os.environ.get(key) for key in keys}, indent=2) + '\n')
-PY
+"${linear_environment[@]}" python3 /graphics-out/capture-graphics-environment.py \
+  linear-presentation-environment.json
 "${linear_environment[@]}" python3 /graphics-tests/graphics_present.py --port 5992 \
   --report /graphics-out/d3d11-linear-rfb-presentation.json \
   --stdout /graphics-out/d3d11-linear-fixture.json --stderr /graphics-out/d3d11-linear-fixture.log \
@@ -155,6 +171,33 @@ PY
   'C:\windows\system32\dxgi.dll' "$dxgi_digest"
 timeout --kill-after=5 15 /opt/wine/bin/wineserver -k
 timeout --kill-after=5 15 /opt/wine/bin/wineserver -w
+# Exercise SYS alone and with linear presentation using the same fixed helper,
+# native EC DLLs and responsive 30 FPS / latency 1 / display 30 policy. Lavapipe
+# does not consume Turnip's TU_DEBUG: this qualifies option propagation and the
+# complete software integration path, never physical Adreno render mode or FPS.
+for trial in sysmem sysmem-linear; do
+  trial_wsi=sw
+  if [[ "$trial" == sysmem-linear ]]; then trial_wsi=sw,linear; fi
+  sysmem_environment=(env -u FEX_HOSTFEATURES
+    TU_DEBUG=sysmem "MESA_VK_WSI_DEBUG=$trial_wsi" DISPLAY=:22
+    DXVK_CONFIG_FILE='Z:\graphics-out\dxvk-responsive.conf')
+  "${sysmem_environment[@]}" python3 /graphics-out/capture-graphics-environment.py \
+    "d3d11-$trial-environment.json"
+  "${sysmem_environment[@]}" /graphics-out/assets/a740-driver-probe --fixture \
+    > "/graphics-out/d3d11-$trial-identity-cpu-fixture.json" \
+    2> "/graphics-out/d3d11-$trial-identity-cpu-fixture.log"
+  "${sysmem_environment[@]}" python3 /graphics-tests/graphics_present.py --port 5992 \
+    --report "/graphics-out/d3d11-$trial-rfb-presentation.json" \
+    --stdout "/graphics-out/d3d11-$trial-fixture.json" \
+    --stderr "/graphics-out/d3d11-$trial-fixture.log" \
+    -- /opt/wine/bin/wine /graphics-out/assets/eve-d3d11-probe.exe \
+    fixture 'C:\windows\system32\d3d11.dll' "$d3d11_digest" \
+    'C:\windows\system32\dxgi.dll' "$dxgi_digest"
+  timeout --kill-after=5 15 /opt/wine/bin/wineserver -k
+  timeout --kill-after=5 15 /opt/wine/bin/wineserver -w
+done
+unset TU_DEBUG FEX_HOSTFEATURES
+export MESA_VK_WSI_DEBUG=sw
 # Qualify each isolated profile and the allowlisted FEX instruction fallback
 # through the same native EC shaders/readback and three visible frames.
 for trial in render60 queue2 display60 fex-load; do
@@ -172,8 +215,10 @@ dxgi.maxFrameRate = $trial_rate
 dxgi.maxFrameLatency = $trial_latency
 dxgi.syncInterval = 0
 CONFIG
-  trial_environment=(env -u FEX_HOSTFEATURES)
+  trial_environment=(env -u TU_DEBUG -u FEX_HOSTFEATURES MESA_VK_WSI_DEBUG=sw)
   if [[ -n "$trial_features" ]]; then trial_environment+=("FEX_HOSTFEATURES=$trial_features"); fi
+  "${trial_environment[@]}" DISPLAY="$trial_display" DXVK_CONFIG_FILE="Z:\\graphics-out\\dxvk-$trial.conf" \
+    python3 /graphics-out/capture-graphics-environment.py "d3d11-$trial-environment.json"
   "${trial_environment[@]}" DISPLAY="$trial_display" DXVK_CONFIG_FILE="Z:\\graphics-out\\dxvk-$trial.conf" \
     python3 /graphics-tests/graphics_present.py --port "$trial_port" \
     --report "/graphics-out/d3d11-$trial-rfb-presentation.json" \
@@ -289,6 +334,12 @@ report = {'passed': True, 'qualification': 'native-arm64-ec-lavapipe-ci-only',
           'observedPresentModes': present_modes,
           'baselineRuntimeIdentity': json.loads((folder / 'qualified-runtime-identity.json').read_text()),
           'cpuHardwareGateRejected': True, 'turnipWithoutKgslRejected': True}
+baseline_environment = one_json('d3d11-throughput-environment.json')
+assert baseline_environment['MESA_VK_WSI_DEBUG'] == 'sw'
+assert baseline_environment['TU_DEBUG'] is None and baseline_environment['FEX_HOSTFEATURES'] is None
+assert baseline_environment['DISPLAY'] == ':21'
+assert baseline_environment['DXVK_CONFIG_FILE'] == 'Z:\\graphics-out\\dxvk.conf'
+report['effectiveEnvironment'] = baseline_environment
 identity_fixture = one_json('a740-identity-cpu-fixture.json')
 assert identity_fixture['helper'] == 'eve-a740-driver-probe-1'
 assert identity_fixture['mode'] == 'fixture' and identity_fixture['passed'] is True
@@ -315,6 +366,12 @@ report['responsiveProfile'] = {'d3d11': responsive, 'rfbPresentation': responsiv
                               'performance': {'requestedProfile': 'responsive', 'performanceProfile': 'responsive',
                                               'targetFrameRate': 30, 'maxFrameLatency': 1, 'displayFrameRate': 30,
                                               'diagnosticHud': False}}
+responsive_environment = one_json('d3d11-responsive-environment.json')
+assert responsive_environment['MESA_VK_WSI_DEBUG'] == 'sw'
+assert responsive_environment['TU_DEBUG'] is None and responsive_environment['FEX_HOSTFEATURES'] is None
+assert responsive_environment['DISPLAY'] == ':22'
+assert responsive_environment['DXVK_CONFIG_FILE'] == 'Z:\\graphics-out\\dxvk-responsive.conf'
+report['responsiveProfile']['effectiveEnvironment'] = responsive_environment
 linear_identity = one_json('linear-identity-cpu-fixture.json')
 assert linear_identity['helper'] == 'eve-a740-driver-probe-1'
 assert linear_identity['mode'] == 'fixture' and linear_identity['passed'] is True
@@ -355,6 +412,63 @@ report['linearPresentationExperiment'] = {
     'probeSourceSha256': manifest['a740PcModeExperiment']['probeSourceSha256'],
     'nativeEffectVerified': False, 'physicalThorQualified': False,
 }
+report['sysmemRenderingExperiments'] = {}
+for trial, linear_selected, expected_wsi in (
+        ('sysmem', False, 'sw'), ('sysmem-linear', True, 'sw,linear')):
+    environment = one_json('d3d11-' + trial + '-environment.json')
+    # These literal expectations are intentionally independent of the backend
+    # generator. A regression there must not redefine a passing native fixture.
+    assert set(environment) == set(responsive_environment)
+    assert environment['TU_DEBUG'] == 'sysmem'
+    assert environment['MESA_VK_WSI_DEBUG'] == expected_wsi
+    assert environment['FEX_HOSTFEATURES'] is None
+    for key in environment.keys() - {'TU_DEBUG', 'MESA_VK_WSI_DEBUG'}:
+        assert environment[key] == responsive_environment[key]
+    identity = one_json('d3d11-' + trial + '-identity-cpu-fixture.json')
+    assert identity['helper'] == 'eve-a740-driver-probe-1'
+    assert identity['mode'] == 'fixture' and identity['passed'] is True
+    assert identity['software'] is True and type(identity['device_id']) is int
+    observed = one_json('d3d11-' + trial + '-fixture.json')
+    assert observed['mode'] == 'fixture' and observed['passed'] is True
+    assert observed['feature_level'] >= 0xb000
+    assert observed['pixels_verified'] is True and observed['offscreen_pixels_verified'] is True
+    assert observed['present_count'] == 3
+    assert type(observed.get('requested_sync_interval')) is int and observed['requested_sync_interval'] == 1
+    for name in ('d3d11', 'dxgi'):
+        assert observed[name]['identity_verified'] is True
+        assert observed[name]['disk_machine'] == 0x8664 and observed[name]['native_ec_ranges'] > 0
+        assert observed[name]['sha256'] == d3d[name]['sha256']
+    display = one_json('d3d11-' + trial + '-rfb-presentation.json')
+    assert display['display_pixels_verified'] is True
+    assert display['matched_frames'] == [0, 1, 2] and display['center_pixels_verified'] is True
+    log = (folder / ('d3d11-' + trial + '-fixture.log')).read_text()
+    sync = re.findall(r'^info:[ \t]+dxgi\.syncInterval[ \t]*=[ \t]*(\S+)[ \t]*\r?$', log, re.MULTILINE)
+    modes = re.findall(r'^info:[ \t]+Present mode:[ \t]*(VK_PRESENT_MODE_[A-Z_]+)\b', log, re.MULTILINE)
+    assert sync and all(value == '0' for value in sync)
+    assert modes and all(value == 'VK_PRESENT_MODE_IMMEDIATE_KHR' for value in modes)
+    report['sysmemRenderingExperiments'][trial] = {
+        'qualification': 'native-arm64-ec-lavapipe-ci-only',
+        'requestedSysmemRendering': True, 'sysmemRendering': True,
+        'requestedLinearPresentation': linear_selected, 'linearPresentation': linear_selected,
+        'turnipDebug': 'sysmem', 'mesaWsiDebug': expected_wsi,
+        'effectiveEnvironment': environment, 'identityFixture': identity,
+        'd3d11': observed, 'rfbPresentation': display,
+        'performance': report['responsiveProfile']['performance'],
+        'requestedSyncInterval': 1, 'forcedSyncInterval': 0, 'observedPresentModes': modes,
+        'clientDriver': 'turnip-26.0.0.so',
+        'clientDriverSha256': manifest['files']['turnip-26.0.0.so']['sha256'],
+        'mesaSourceSha256': manifest['a740PcModeExperiment']['mesaSourceSha256'],
+        'probeSourceSha256': manifest['a740PcModeExperiment']['probeSourceSha256'],
+        'cpuHardwareGateRejected': True, 'nativeD3d11ShaderReadbackPassed': True,
+        'visibleRfbFramesPassed': True,
+        'softwareFixtureLimit': 'Lavapipe does not consume TU_DEBUG; this is not physical Adreno render-mode or performance proof',
+        'nativeEffectVerified': False, 'physicalThorQualified': False,
+    }
+report['shaderReadbackRfbFixtures'] = [
+    'throughput', 'responsive', 'linear', 'sysmem', 'sysmem-linear',
+    'render60', 'queue2', 'display60', 'fex-load']
+report['shaderReadbackRfbFixtureCount'] = len(report['shaderReadbackRfbFixtures'])
+assert report['shaderReadbackRfbFixtureCount'] == 9
 (folder / 'client-graphics-check.json').write_text(json.dumps(report, indent=2) + '\n')
 PY
 QUALIFICATION
@@ -432,6 +546,46 @@ except ValueError:
     pass
 else:
     raise SystemExit('Production hardware parser accepted the linear software fixture')
+assert report['shaderReadbackRfbFixtureCount'] == 9
+assert report['shaderReadbackRfbFixtures'] == [
+    'throughput', 'responsive', 'linear', 'sysmem', 'sysmem-linear',
+    'render60', 'queue2', 'display60', 'fex-load']
+for trial, linear_selected, expected_wsi in (
+        ('sysmem', False, 'sw'), ('sysmem-linear', True, 'sw,linear')):
+    selected = report['sysmemRenderingExperiments'][trial]
+    assert selected['physicalThorQualified'] is False and selected['nativeEffectVerified'] is False
+    assert selected['requestedSysmemRendering'] is True and selected['sysmemRendering'] is True
+    assert selected['linearPresentation'] is linear_selected
+    assert selected['clientDriverSha256'] == manifest['files']['turnip-26.0.0.so']['sha256']
+    assert selected['probeSourceSha256'] == client_graphics.A740_EXPERIMENT['probeSourceSha256']
+    selected['presentation'] = client_graphics.parse_performance_policy(
+        Path('out/d3d11-' + trial + '-fixture.log').read_text(), 'responsive')
+    assert selected['performance'] == client_graphics.performance_settings('turnip-dxvk', 'responsive')
+    assert selected['rfbPresentation'] == client_graphics.parse_display(
+        Path('out/d3d11-' + trial + '-rfb-presentation.json').read_text())
+    selected['optimizations'] = client_graphics.optimization_settings(
+        'turnip-dxvk', linear_presentation=linear_selected, sysmem_rendering=True)
+    for key in ('requestedSysmemRendering', 'sysmemRendering', 'requestedLinearPresentation',
+                'linearPresentation', 'turnipDebug', 'mesaWsiDebug', 'nativeEffectVerified'):
+        assert selected[key] == selected['optimizations'][key]
+    # Generate assignments through production code with deliberately inherited
+    # conflicting flags, and compare to independently literal native settings.
+    production_env = client_graphics.configure_environment(
+        {'TU_DEBUG': 'nocb', 'MESA_VK_WSI_DEBUG': 'invalid', 'FEX_HOSTFEATURES': 'disablelrcpc2'},
+        'turnip-dxvk', assets, Path('out'),
+        performance_profile='responsive', linear_presentation=linear_selected, sysmem_rendering=True)
+    assert production_env.get('TU_DEBUG') == 'sysmem'
+    assert production_env.get('MESA_VK_WSI_DEBUG') == expected_wsi
+    assert production_env.get('FEX_HOSTFEATURES') is None
+    for key in ('MESA_VK_WSI_DEBUG', 'TU_DEBUG', 'FEX_HOSTFEATURES'):
+        assert selected['effectiveEnvironment'][key] == production_env.get(key)
+    try:
+        client_graphics.parse_sysmem_rendering(
+            Path('out/d3d11-' + trial + '-identity-cpu-fixture.json').read_text(), report['vulkan'])
+    except ValueError:
+        pass
+    else:
+        raise SystemExit('Production SYSMEM hardware parser accepted the software fixture')
 report['isolatedTrials'] = {}
 for trial in ('render60', 'queue2', 'display60', 'fex-load'):
     profile = 'responsive' if trial == 'fex-load' else trial
@@ -441,14 +595,21 @@ for trial in ('render60', 'queue2', 'display60', 'fex-load'):
     assert d3d['present_count'] == 3 and d3d['requested_sync_interval'] == 1
     for name in ('d3d11', 'dxgi'):
         assert d3d[name]['identity_verified'] is True and d3d[name]['sha256'] == report['d3d11'][name]['sha256']
+    environment = json.loads(Path('out/d3d11-' + trial + '-environment.json').read_text())
+    assert environment['MESA_VK_WSI_DEBUG'] == 'sw' and environment['TU_DEBUG'] is None
+    assert environment['FEX_HOSTFEATURES'] == ('disablelrcpc2' if trial == 'fex-load' else None)
+    assert environment['DISPLAY'] == (':21' if trial == 'display60' else ':22')
+    assert environment['DXVK_CONFIG_FILE'] == 'Z:\\graphics-out\\dxvk-' + trial + '.conf'
     report['isolatedTrials'][trial] = {
         'd3d11': d3d,
         'rfbPresentation': client_graphics.parse_display(Path('out/d3d11-' + trial + '-rfb-presentation.json').read_text()),
         'presentation': client_graphics.parse_performance_policy(Path('out/d3d11-' + trial + '-fixture.log').read_text(), profile),
         'performance': client_graphics.performance_settings('turnip-dxvk', profile),
+        'effectiveEnvironment': environment,
         'fexHostFeatures': 'disablelrcpc2' if trial == 'fex-load' else None,
         'physicalThorQualified': False,
     }
+assert 3 + len(report['sysmemRenderingExperiments']) + len(report['isolatedTrials']) == 9
 Path('out/client-graphics-check.json').write_text(json.dumps(report, indent=2) + '\n')
 assert type(report['d3d11'].get('requested_sync_interval')) is int and report['d3d11']['requested_sync_interval'] == 1
 window = json.loads(Path('out/client-window-check.json').read_text())

@@ -25,7 +25,8 @@ selected-environment Vulkan, exact ARM64EC D3D11 shader/readback and three visib
 RFB frames qualify compatibility before EVE. Receipts distinguish requested,
 effective and independent gate results, retaining `nativeEffectVerified=false`:
 the helpers do not prove the physical render-mode choice or sustained benefit.
-A fresh qualification removes stale preflight output before starting. Baseline
+An accepted start removes stale preflight output before preparation/TLS; a
+rejected start preserves the previous session evidence. Baseline
 reset now clears all six experiments atomically and keeps renderer/HUD/data.
 
 The Android display bitmap remains ARGB_8888 with full 8-bit RGB. Since decoded
@@ -38,7 +39,43 @@ shader caches, prefix/world/account and fullscreen controls remain intact.
 
 [CLIENT-PERFORMANCE.md](CLIENT-PERFORMANCE.md) ranks the research and deferred
 transport work. [TESTING.md](TESTING.md) gives the next focused physical trial.
-Build qualification is recorded here after CI and APK inspection complete.
+### 0.1.17 build and delivery qualification
+
+Implementation `568d1416e3e13e448f71f006a3c93c42bb8a84a8` on
+`codex/wine-localhost-tls`. [Actions run 37860125710](https://github.com/Russianranger/eve-android-launcher/actions/runs/37860125710)
+completed successfully: backend/host regressions, immutable server reuse,
+native Wine trust/PRoot/graphics, Android release build/tests/lint, APK content
+checks and signing-anchor equality. Development release publication is skipped;
+main remains `b3880ff92049ce690b6ae0f6f23b6d8c84a7f292`.
+
+- Backend: 197 tests passed, plus server package, archive, display/controller,
+  graphics observer and native EC parser/mutation checks. Early accepted TLS
+  failure clears old qualification; rejected/busy starts retain its evidence.
+- Android: 86 cases passed across API 33 and 35, no failures/errors/skips:
+  display 12, performance settings 38, pressure 30, support export 6. New SYS
+  persistence/reset/launch behavior and opaque bitmap partial-update/resize/draw/
+  destruction tests pass on both APIs. Release lint has 36 warnings, no errors.
+- Native: all nine exact ARM64EC shader/readback/three-visible-RFB-frame fixtures
+  and software/no-KGSL hardware rejection controls passed. Actual SYS-only and
+  linear+SYS assignments match production; later trials clear them. Present(1)
+  is forced to IMMEDIATE. Driver/source/helper pins and Wine/FEX byte identities
+  match 0.1.16. These are 320×240 Lavapipe integration fixtures with
+  `nativeEffectVerified=false`, `physicalThorQualified=false`, not Adreno FPS proof.
+- Independent source/UI/native evidence reviews found no remaining issues.
+  Downloaded ZIP digests match GitHub artifact metadata and the implementation
+  SHA. Local APK checks pass; all ten tracked backend Python/shell assets match
+  source byte for byte, and the new UI/flag strings are packaged.
+
+Delivered **EVE-Android-Launcher-0.1.17.apk**, 10,764,017 bytes, versionCode 18,
+non-debuggable with shell profiling enabled. APK SHA-256:
+`d330fe8d1fd564135c57b352b3024d16891af62a2aa405ae77ebc53aea98c245`.
+The embedded APK v2 certificate fingerprint was independently checked against
+CI's full signature verification and the existing signing anchor SHA-256:
+`456c617128420fd315e1aa453d154e3d08f71a9b593d91966d21f75eed3a2c15`.
+Install in place with client/server stopped; preserve import/runtime/prefix,
+shader caches, world/account and mappings. No reimport or validation is needed.
+Test linear alone versus linear+SYS using TESTING.md. Sustained 30 FPS, heat
+benefit and physical geometry/input/export continuity remain Thor gates.
 
 ## Historical 0.1.16 continuation: export-time pressure stop and baseline clarity
 

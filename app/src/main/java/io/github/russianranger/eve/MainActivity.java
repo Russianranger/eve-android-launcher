@@ -146,6 +146,8 @@ public final class MainActivity extends Activity {
             performanceOption(performance, "Use alternate CPU load instructions (FEX experiment)", "disable-lrcpc2");
             performanceOption(performance, "Use A740 driver experiment", "a740-pc-mode");
             performance.addView(label("Optional A740 driver change. If vertices or shapes become corrupted, stop the client and turn it off.", 13, 0xffb9ced1));
+            performanceOption(performance, "Use newer Turnip driver (26.2.4 experiment)", "mesa262-driver");
+            performance.addView(label("Tries a newer GPU driver. This replaces the A740 and shared-memory driver experiments. FPS and heat may improve or worsen.", 13, 0xffb9ced1));
             performanceOption(performance, "Reduce GPU frame copies (experiment)", "linear-presentation");
             performance.addView(label("Tries to avoid an extra GPU frame copy. It can also slow rendering; compare it in the same scene.", 13, 0xffb9ced1));
             performanceOption(performance, "Use direct GPU rendering (experiment)", "sysmem-rendering");

@@ -80,6 +80,14 @@ above it. It retains the existing Wine/FEX/DXVK/Turnip source versions and game
 settings. [Test only the new surface](docs/TESTING.md); actual composition,
 FPS, heat, overlay controls and reopen behavior remain physical device checks.
 
+The [0.1.19 surface run](docs/DEVICE-20261009-SURFACE.md) verifies 6,364 successful
+surface posts but unchanged user-observed FPS and temperatures rising into the
+low/mid 70s Celsius. 0.1.20 adds default-off **Use newer Turnip driver (26.2.4
+experiment)**: a separate pristine KGSL driver/cache with fresh exact-version
+A740 and native shader/display gates. It retains the original driver and the
+accepted Wine/FEX/DXVK 2.4.1 synchronization path. Follow [one newer-driver test](docs/TESTING.md)
+with linear on, SHM/surface off; no old baseline rerun or game-quality tuning.
+
 ## Fullscreen controls in 0.1.11
 
 The display fills the screen; a top-right space-themed gear opens the controls

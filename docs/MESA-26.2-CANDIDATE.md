@@ -1,29 +1,29 @@
-# Mesa 26.2.4 candidate after the neutral shared-memory trial
+# Mesa 26.2.4 candidate after the neutral surface trial
 
-Research checkpoint: October 8, 2026. This is a future driver candidate, not an
-implemented or physically qualified optimization. The user accepts the latest
-0.1.18 linear+SHM result as neutral for FPS and temperature. No repeat of the
-original baseline, SYS, A740 PC mode, FEX or cap matrix is requested.
+Research checkpoint: October 8–9, 2026. 0.1.20 integrates this as a default-off
+separate pristine driver/cache after the physically activated 0.1.19 surface
+trial was neutral for FPS and did not improve heat. Build/ABI qualification and
+the next physical test remain required; no speedup is claimed. No repeat of the
+original baseline, SYS, A740 PC mode, FEX, SHM, surface or cap matrix is requested.
 
 ## Ranking and current decision
 
-1. **The current pass targets Android presentation using an optional software
-   Canvas SurfaceView.** The latest support evidence contains roughly 7.55 ms
-   of Android application-window GPU duration per reported frame, while sampled
-   Mesa-to-Xvnc SHM copying takes roughly 0.9–1.9 ms and its reply wait only
-   4–13 microseconds. These are different measurement domains, not additive EVE
-   frame costs or proof of a dominant bottleneck. They justify a bounded Android
-   presentation experiment before another native driver rebuild.
-2. **A separately selectable, source-pinned Mesa 26.2.4 KGSL driver** is the next
-   native-rendering candidate. It includes actual IR3 shader compiler and A7xx
+1. **A separately selectable, source-pinned Mesa 26.2.4 KGSL driver** is the
+   current native-rendering candidate. It includes actual IR3 shader compiler and A7xx
    state changes since 26.0.0. Preserve native DXVK 2.4.1 and its existing GPU
    completion fences. No source establishes a working EVE/Thor 30-FPS recipe.
-3. **A short, bounded Turnip GPU timing capture** can distinguish render passes,
+2. **A short, bounded Turnip GPU timing capture** can distinguish render passes,
    copies and GPU work when the preceding evidence remains ambiguous. It is
    diagnostic work, not an optimization, and tracing overhead must be reported.
-4. **Cached D3D11 constant buffers** remain deferred. The pinned DXVK option is
+3. **Cached D3D11 constant buffers** remain deferred. The pinned DXVK option is
    a CPU-read workaround which can regress GPU-bound rendering. There is no
    evidence that EVE reads its mapped constant buffers as the limiting operation.
+
+The completed optional Canvas SurfaceView really posted frames but had no
+user-observed FPS/heat gain; do not promote or repeat it. The earlier roughly
+7.55 ms app-window GPU average motivated that trial. Its new app-UI-only metrics
+exclude game presentation, so smaller totals do not establish GPU savings.
+See [the actual device evidence](DEVICE-20261009-SURFACE.md).
 
 ## Verified source pin
 
@@ -115,7 +115,7 @@ alone are insufficient in light of the old support-detection issue. The existing
 CPU WSI already requests cached coherent host memory where exposed, so another
 generic readback-cache knob duplicates selection rather than removing a copy.
 
-## Independent review of the current SurfaceView experiment
+## Independent review of the completed SurfaceView experiment
 
 [SurfaceView](https://developer.android.com/reference/android/view/SurfaceView)
 provides a separate drawing surface; normal ordering keeps launcher controls

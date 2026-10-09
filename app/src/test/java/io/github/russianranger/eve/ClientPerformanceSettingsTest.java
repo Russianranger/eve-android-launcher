@@ -21,6 +21,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.File;
+import java.nio.file.Files;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -46,6 +48,7 @@ import static org.junit.Assert.*;
 @Config(sdk = {33, 35})
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 public final class ClientPerformanceSettingsTest {
+    private static final String MESA262_LABEL = "Use newer Turnip driver (26.2.4 experiment)";
     private Context context;
     private SharedPreferences preferences;
 
@@ -133,11 +136,12 @@ public final class ClientPerformanceSettingsTest {
         assertFalse(runtime.linearPresentation());
         assertFalse(runtime.sysmemRendering());
         assertFalse(runtime.shmPresentation());
+        assertFalse(runtime.mesa262Driver());
         for (String profile : new String[]{"render60", "queue2", "display60", "throughput", "responsive"}) {
             runtime.setPerformanceProfile(profile);
             assertEquals(profile, new ClientRuntime(context).performanceProfile());
         }
-        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface"}) {
+        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface", "mesa262-driver"}) {
             runtime.setPerformanceOption(option, true);
             assertTrue(new ClientRuntime(context).performanceOption(option));
             RuntimeService.busy = true;
@@ -183,6 +187,51 @@ public final class ClientPerformanceSettingsTest {
         assertTrue(runtime.disableConcurrentBinning());
         runtime.setPerformanceOption("a740-pc-mode", true);
         assertTrue(new ClientRuntime(context).a740PcMode());
+    }
+
+    @Test public void mesa262DriverDefaultsOffPersistsAndOnlyRunsWithGpuRendering() throws Exception {
+        ClientRuntime runtime = new ClientRuntime(context);
+        assertFalse(runtime.mesa262Driver());
+        assertFalse(runtime.status().getBoolean("mesa262Driver"));
+        assertFalse(runtime.status().getBoolean("requestedMesa262Driver"));
+        assertFalse(runtime.launchCommand("turnip-dxvk", "responsive", false).contains("--mesa262-driver"));
+        runtime.setPerformanceProfile("render60"); runtime.setDiagnosticHud(true);
+        runtime.setPerformanceOption("linear-presentation", true);
+        runtime.setPerformanceOption("separate-display-surface", true);
+        runtime.setPerformanceOption("mesa262-driver", true);
+        ClientRuntime restored = new ClientRuntime(context);
+        assertTrue(restored.mesa262Driver());
+        assertTrue(restored.status().getBoolean("mesa262Driver"));
+        assertTrue(restored.status().getBoolean("requestedMesa262Driver"));
+        assertTrue(restored.launchCommand("turnip-dxvk", "render60", true).contains("--mesa262-driver"));
+        assertFalse(restored.launchCommand("software", "render60", true).contains("--mesa262-driver"));
+        assertTrue(restored.linearPresentation()); assertTrue(restored.separateDisplaySurface());
+        assertEquals("render60", restored.performanceProfile()); assertTrue(restored.diagnosticHud());
+        assertTrue(restored.performanceSummary().endsWith("Newer Turnip driver (26.2.4)"));
+        restored.useAdreno(false);
+        assertTrue(restored.performanceOption("mesa262-driver"));
+        assertFalse(restored.mesa262Driver());
+        assertFalse(restored.status().getBoolean("mesa262Driver"));
+        assertTrue(restored.status().getBoolean("requestedMesa262Driver"));
+        assertFalse(restored.launchCommand("software", "render60", true).contains("--mesa262-driver"));
+        assertTrue(restored.performanceSummary().endsWith("Newer Turnip driver (26.2.4) (inactive in software)"));
+        restored.useAdreno(true);
+        assertTrue(new ClientRuntime(context).mesa262Driver());
+        restored.setPerformanceOption("mesa262-driver", false);
+        assertFalse(new ClientRuntime(context).mesa262Driver());
+    }
+
+    @Test public void invalidMesa262PreferenceIsIgnoredWithoutChangingExistingSelections() throws Exception {
+        assertTrue(preferences.edit().putString("mesa262-driver", "true").putBoolean("shm-presentation", true)
+                .putBoolean("linear-presentation", true).putBoolean("separate-display-surface", true).commit());
+        ClientRuntime runtime = new ClientRuntime(context);
+        assertFalse(runtime.mesa262Driver());
+        assertFalse(runtime.status().getBoolean("requestedMesa262Driver"));
+        assertFalse(runtime.launchCommand("turnip-dxvk", "responsive", false).contains("--mesa262-driver"));
+        assertTrue(runtime.shmPresentation()); assertTrue(runtime.linearPresentation()); assertTrue(runtime.separateDisplaySurface());
+        runtime.setPerformanceOption("mesa262-driver", true);
+        assertTrue(new ClientRuntime(context).mesa262Driver());
+        assertFalse(runtime.shmPresentation());
     }
 
     @Test public void linearPresentationPersistsIndependentlyAndOnlyLaunchesWithGpuRendering() throws Exception {
@@ -320,33 +369,38 @@ public final class ClientPerformanceSettingsTest {
         assertFalse(new ClientRuntime(context).shmPresentation());
     }
 
-    @Test public void shmAndA740DriverChoicesAreMutuallyExclusiveInOnePreferenceTransaction() {
+    @Test public void threeDriverChoicesAreMutuallyExclusiveInOnePreferenceTransaction() {
         ClientRuntime runtime = new ClientRuntime(context);
         runtime.setPerformanceProfile("render60"); runtime.setDiagnosticHud(true);
         runtime.setPerformanceOption("linear-presentation", true);
         runtime.setPerformanceOption("sysmem-rendering", true);
+        runtime.setPerformanceOption("separate-display-surface", true);
         runtime.setPerformanceOption("a740-pc-mode", true);
         List<Map<String, ?>> snapshots = new ArrayList<>();
         SharedPreferences.OnSharedPreferenceChangeListener observe = (changed, key) -> snapshots.add(changed.getAll());
         preferences.registerOnSharedPreferenceChangeListener(observe);
         try {
-            for (String chosen : new String[]{"shm-presentation", "a740-pc-mode"}) {
-                String other = chosen.equals("shm-presentation") ? "a740-pc-mode" : "shm-presentation";
+            String[] driverOptions = {"shm-presentation", "mesa262-driver", "a740-pc-mode"};
+            for (String chosen : driverOptions) {
                 snapshots.clear();
                 runtime.setPerformanceOption(chosen, true); idle();
                 assertFalse("Driver choice publishes its changes", snapshots.isEmpty());
                 for (Map<String, ?> snapshot : snapshots) {
                     assertEquals(true, snapshot.get(chosen));
-                    assertEquals("Every notification sees the other driver disabled", false, snapshot.get(other));
+                    for (String driver : driverOptions)
+                        assertEquals("Every notification sees a single selected driver", driver.equals(chosen), snapshot.get(driver));
                     assertEquals(true, snapshot.get("linear-presentation"));
                     assertEquals(true, snapshot.get("sysmem-rendering"));
                     assertEquals("render60", snapshot.get("performance-profile-v2"));
                     assertEquals(true, snapshot.get("diagnostic-hud"));
+                    assertEquals(true, snapshot.get("separate-display-surface"));
                 }
                 ClientRuntime restored = new ClientRuntime(context);
-                assertTrue(restored.performanceOption(chosen)); assertFalse(restored.performanceOption(other));
-                runtime.setPerformanceOption(other, false);
-                assertTrue("Disabling the other option keeps the chosen driver", runtime.performanceOption(chosen));
+                for (String driver : driverOptions) assertEquals(driver.equals(chosen), restored.performanceOption(driver));
+                for (String other : driverOptions) if (!other.equals(chosen)) {
+                    runtime.setPerformanceOption(other, false);
+                    assertTrue("Disabling another option keeps the chosen driver", runtime.performanceOption(chosen));
+                }
             }
         } finally { preferences.unregisterOnSharedPreferenceChangeListener(observe); }
     }
@@ -364,7 +418,7 @@ public final class ClientPerformanceSettingsTest {
     }
 
     @Test public void explicitBaselineRestoreClearsEveryExperimentTogetherAndPreservesOtherSettings() {
-        String[] options = {"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface"};
+        String[] options = {"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface", "mesa262-driver"};
         for (boolean adreno : new boolean[]{true, false}) {
             SharedPreferences.Editor setup = preferences.edit().putString("performance-profile-v2", "throughput")
                     .putBoolean("use-adreno", adreno).putBoolean("diagnostic-hud", true).putString("unrelated-setting", "preserved");
@@ -412,7 +466,7 @@ public final class ClientPerformanceSettingsTest {
     @Test public void baselineCapsKeepExperimentsVisibleUntilExplicitRestoreUpdatesAllControls() {
         ClientRuntime runtime = new ClientRuntime(context);
         runtime.setPerformanceProfile("render60"); runtime.setDiagnosticHud(true);
-        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface"})
+        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface", "mesa262-driver"})
             runtime.setPerformanceOption(option, true);
         ActivityController<MainActivity> owned = Robolectric.buildActivity(MainActivity.class).create().start().resume().visible();
         try {
@@ -429,7 +483,7 @@ public final class ClientPerformanceSettingsTest {
             assertEquals(0, profile(root).getSelectedItemPosition());
             for (String label : new String[]{"Request next display frame early", "Disable concurrent binning (Adreno experiment)",
                     "Use alternate CPU load instructions (FEX experiment)", "Use A740 driver experiment", "Reduce GPU frame copies (experiment)",
-                    "Use direct GPU rendering (experiment)", "Use shared-memory frame transport (experiment)", "Use separate display surface (experiment)"})
+                    "Use direct GPU rendering (experiment)", "Use shared-memory frame transport (experiment)", "Use separate display surface (experiment)", MESA262_LABEL})
                 assertFalse("Reset immediately clears " + label, checkBox(root, label).isChecked());
             assertEquals("Baseline caps: render 30 FPS · queue 1 frame · display 30 FPS\nSelected experiments: none",
                     performanceSummary(root).getText().toString());
@@ -516,6 +570,121 @@ public final class ClientPerformanceSettingsTest {
         files.put("unqualified-probe", new JSONObject()); expectInvalidGraphicsAssets(manifest, false, true);
     }
 
+    @Test public void mesa262GraphicsAssetsRequireExactSourceAndHardwareProvenanceEvenWhenNotSelected() throws Exception {
+        JSONObject baseline = baselineGraphicsManifest();
+        expectInvalidGraphicsAssets(baseline, false, false, true);
+        JSONObject manifest = mesa262GraphicsManifest();
+        String[] names = ClientRuntime.graphicsAssetNames(manifest, false, false, true);
+        assertEquals(8, names.length);
+        assertTrue(Arrays.asList(names).containsAll(Arrays.asList(ClientRuntime.graphicsAssetNames(baseline, false))));
+        assertTrue(Arrays.asList(names).contains("turnip-26.2.4.so"));
+        assertTrue(Arrays.asList(names).contains("mesa262-driver-probe"));
+        assertTrue(Arrays.asList(names).contains("a740-driver-probe"));
+        assertArrayEquals(names, ClientRuntime.graphicsAssetNames(manifest, false, false, false));
+        Object[][] corrupt = {{"format", "1"}, {"format", 2}, {"name", "turnip-unqualified"},
+                {"driver", "turnip-26.0.0.so"}, {"identityProbe", "a740-driver-probe"}, {"mesa", "26.2.3"},
+                {"mesaSourceSha256", "unqualified-source"}, {"probeSourceSha256", "unqualified-probe-source"},
+                {"deviceId", "0x43050a01"}, {"deviceId", 0x43050a02}, {"pristine", "true"}, {"pristine", false},
+                {"extraField", true}};
+        for (Object[] change : corrupt) {
+            JSONObject damaged = mesa262GraphicsManifest();
+            damaged.getJSONObject("mesa262DriverExperiment").put((String) change[0], change[1]);
+            expectInvalidGraphicsAssets(damaged, false, false, true);
+            expectInvalidGraphicsAssets(damaged, false, false, false);
+        }
+        for (String field : new String[]{"format", "name", "driver", "identityProbe", "mesa", "mesaSourceSha256",
+                "probeSourceSha256", "deviceId", "pristine"}) {
+            JSONObject damaged = mesa262GraphicsManifest();
+            damaged.getJSONObject("mesa262DriverExperiment").remove(field);
+            expectInvalidGraphicsAssets(damaged, false, false, true);
+        }
+        for (String missing : new String[]{"turnip-26.0.0.so", "turnip-26.2.4.so", "mesa262-driver-probe", "a740-driver-probe"}) {
+            JSONObject damaged = mesa262GraphicsManifest();
+            damaged.getJSONObject("files").remove(missing);
+            expectInvalidGraphicsAssets(damaged, false, false, true);
+        }
+        manifest.getJSONObject("files").put("unqualified-driver.so", new JSONObject());
+        expectInvalidGraphicsAssets(manifest, false, false, true);
+    }
+
+    @Test public void mesa262AssetListRetainsBothExistingOptionalDriversAndSharedProbeExactlyOnce() throws Exception {
+        JSONObject manifest = mesa262GraphicsManifest();
+        manifest.put("a740PcModeExperiment", new JSONObject().put("format", 1).put("name", "turnip-a740-pc-mode-1")
+                .put("driver", "turnip-26.0.0-a740-pc-mode.so").put("identityProbe", "a740-driver-probe")
+                .put("upstreamCommit", "23f94c692cb1d41a2193a80fa531922d386e8d5d"));
+        manifest.put("shmPresentationExperiment", new JSONObject().put("format", 1).put("name", "turnip-x11-shm-staging-1")
+                .put("driver", "turnip-26.0.0-x11-shm.so")
+                .put("mesaSourceSha256", "2a44e98e64d5c36cec64633de2d0ec7eff64703ee25b35364ba8fcaa84f33f72"));
+        JSONObject files = manifest.getJSONObject("files");
+        for (String name : new String[]{"turnip-26.0.0-a740-pc-mode.so", "a740-driver-probe", "turnip-26.0.0-x11-shm.so"})
+            files.put(name, new JSONObject());
+        List<String> names = Arrays.asList(ClientRuntime.graphicsAssetNames(manifest, false, false, true));
+        assertEquals(10, names.size());
+        assertEquals(1, java.util.Collections.frequency(names, "a740-driver-probe"));
+        assertTrue(names.containsAll(Arrays.asList("turnip-26.0.0.so", "turnip-26.0.0-a740-pc-mode.so",
+                "turnip-26.0.0-x11-shm.so", "turnip-26.2.4.so", "mesa262-driver-probe")));
+    }
+
+    @Test public void graphicsAssetGuardRejectsChangedBytesSizesMissingFilesAndSymlinks() throws Exception {
+        File directory = Files.createTempDirectory("eve-graphics-identity-").toFile();
+        File driver = new File(directory, "turnip-26.2.4.so");
+        File link = new File(directory, "mesa262-driver-probe");
+        try {
+            RuntimeManager.text(driver, "verified-driver-fixture");
+            JSONObject identity = new JSONObject().put("sizeBytes", driver.length()).put("sha256", RuntimeManager.sha256(driver));
+            ClientRuntime.validateGraphicsAsset(driver, identity);
+            JSONObject wrongSize = new JSONObject(identity.toString()).put("sizeBytes", driver.length() + 1);
+            expectInvalidGraphicsAsset(driver, wrongSize);
+            RuntimeManager.text(driver, "modified-driver-fixture");
+            assertEquals("Corruption fixture keeps its size", identity.getLong("sizeBytes"), driver.length());
+            expectInvalidGraphicsAsset(driver, identity);
+            RuntimeManager.text(driver, "verified-driver-fixture");
+            Files.createSymbolicLink(link.toPath(), driver.toPath());
+            expectInvalidGraphicsAsset(link, identity);
+            assertTrue(driver.delete());
+            expectInvalidGraphicsAsset(driver, identity);
+        } finally { Files.deleteIfExists(link.toPath()); RuntimeManager.remove(directory); }
+    }
+
+    @Test public void runtimeExtractsPackagedMesa262AssetsAndMakesItsIdentityProbeExecutable() throws Exception {
+        RuntimeManager manager = RuntimeManager.get(context);
+        manager.assets();
+        JSONObject manifest = new JSONObject(RuntimeManager.read(new File(manager.backend, "client-graphics-bundle.json"), 131072));
+        String[] names = ClientRuntime.graphicsAssetNames(manifest, false, false, true);
+        assertEquals(10, names.length);
+        JSONObject files = manifest.getJSONObject("files");
+        for (String name : names) {
+            File extracted = new File(manager.backend, name);
+            ClientRuntime.validateGraphicsAsset(extracted, files.getJSONObject(name));
+        }
+        assertTrue(new File(manager.backend, "mesa262-driver-probe").canExecute());
+        assertFalse(Files.isSymbolicLink(new File(manager.backend, "turnip-26.2.4.so").toPath()));
+        String[] staged = manager.backend.list((directory, name) -> name.startsWith("asset-") && name.endsWith(".tmp"));
+        assertNotNull(staged); assertEquals(0, staged.length);
+    }
+
+    private static JSONObject mesa262GraphicsManifest() throws Exception {
+        JSONObject manifest = baselineGraphicsManifest();
+        manifest.put("mesa262DriverExperiment", new JSONObject().put("format", 1).put("name", "turnip-mesa-26.2.4-1")
+                .put("driver", "turnip-26.2.4.so").put("identityProbe", "mesa262-driver-probe").put("mesa", "26.2.4")
+                .put("mesaSourceSha256", "bce5f7fbebb934373b86c999a064d52fb5065878dc57f287f95346648ec832e9")
+                .put("probeSourceSha256", "bb96b8e0721e167d20d8b15e433d180b79447b0bdb8f85dfaa614aa867c09d37")
+                .put("deviceId", 0x43050a01).put("pristine", true));
+        manifest.getJSONObject("files").put("turnip-26.2.4.so", new JSONObject()).put("mesa262-driver-probe", new JSONObject())
+                .put("a740-driver-probe", new JSONObject());
+        return manifest;
+    }
+
+    private static void expectInvalidGraphicsAsset(File source, JSONObject identity) throws Exception {
+        try { ClientRuntime.validateGraphicsAsset(source, identity); fail("Damaged graphics asset accepted"); }
+        catch (IOException expected) { }
+    }
+
+    private static void expectInvalidGraphicsAssets(JSONObject manifest, boolean a740Enabled, boolean shmEnabled, boolean mesa262Enabled) throws Exception {
+        try { ClientRuntime.graphicsAssetNames(manifest, a740Enabled, shmEnabled, mesa262Enabled); fail("Invalid graphics asset selection accepted"); }
+        catch (IOException expected) { }
+    }
+
     private static JSONObject baselineGraphicsManifest() throws Exception {
         JSONObject files = new JSONObject();
         for (String name : new String[]{"turnip-26.0.0.so", "vulkan-probe", "dxvk-d3d11-arm64ec.dll", "dxvk-dxgi-arm64ec.dll", "eve-d3d11-probe.exe"})
@@ -546,12 +715,15 @@ public final class ClientPerformanceSettingsTest {
         catch (IllegalStateException expected) { }
         try { runtime.setPerformanceOption("shm-presentation", true); fail("Active client transport experiment changed"); }
         catch (IllegalStateException expected) { }
+        try { runtime.setPerformanceOption("mesa262-driver", true); fail("Active client newer driver changed"); }
+        catch (IllegalStateException expected) { }
         assertEquals("responsive", runtime.performanceProfile());
         assertFalse(runtime.diagnosticHud());
         assertFalse(runtime.a740PcMode());
         assertFalse(runtime.linearPresentation());
         assertFalse(runtime.sysmemRendering());
         assertFalse(runtime.shmPresentation());
+        assertFalse(runtime.mesa262Driver());
     }
 
     @Test public void busyAndLiveSessionsRejectChangesWithoutMutatingPreferences() {
@@ -617,9 +789,11 @@ public final class ClientPerformanceSettingsTest {
             checkBox(root, "Use A740 driver experiment").performClick();
             assertTrue(checkBox(root, "Use A740 driver experiment").isChecked());
             assertFalse(checkBox(root, "Use shared-memory frame transport (experiment)").isChecked());
+            assertFalse(checkBox(root, MESA262_LABEL).isChecked());
             checkBox(root, "Use shared-memory frame transport (experiment)").performClick();
             assertTrue(checkBox(root, "Use shared-memory frame transport (experiment)").isChecked());
             assertFalse(checkBox(root, "Use A740 driver experiment").isChecked());
+            assertFalse(checkBox(root, MESA262_LABEL).isChecked());
             assertTrue(checkBox(root, "Reduce GPU frame copies (experiment)").isChecked());
             assertTrue(checkBox(root, "Use direct GPU rendering (experiment)").isChecked());
             assertTrue(performanceSummary(root).getText().toString().endsWith(
@@ -628,13 +802,27 @@ public final class ClientPerformanceSettingsTest {
             button(root, "Client").performClick(); idle();
             assertTrue(checkBox(root, "Use shared-memory frame transport (experiment)").isChecked());
             assertFalse(checkBox(root, "Use A740 driver experiment").isChecked());
+            checkBox(root, MESA262_LABEL).performClick();
+            assertTrue(checkBox(root, MESA262_LABEL).isChecked());
+            assertFalse(checkBox(root, "Use A740 driver experiment").isChecked());
+            assertFalse(checkBox(root, "Use shared-memory frame transport (experiment)").isChecked());
+            assertTrue(checkBox(root, "Reduce GPU frame copies (experiment)").isChecked());
+            assertTrue(checkBox(root, "Use direct GPU rendering (experiment)").isChecked());
+            assertTrue(performanceSummary(root).getText().toString().endsWith(
+                    "Selected experiments: Reduce GPU frame copies, Direct GPU rendering, Newer Turnip driver (26.2.4)"));
+            button(root, "Server").performClick(); idle();
+            button(root, "Client").performClick(); idle();
+            assertTrue(checkBox(root, MESA262_LABEL).isChecked());
+            assertTrue(new ClientRuntime(context).mesa262Driver());
             checkBox(root, "Use A740 driver experiment").performClick();
             assertTrue(checkBox(root, "Use A740 driver experiment").isChecked());
             assertFalse(checkBox(root, "Use shared-memory frame transport (experiment)").isChecked());
+            assertFalse(checkBox(root, MESA262_LABEL).isChecked());
             assertTrue(performanceSummary(root).getText().toString().endsWith(
                     "Selected experiments: A740 driver, Reduce GPU frame copies, Direct GPU rendering"));
             assertFalse(new ClientRuntime(context).shmPresentation());
             assertTrue(new ClientRuntime(context).a740PcMode());
+            assertFalse(new ClientRuntime(context).mesa262Driver());
         } finally { owned.pause().stop().destroy(); }
     }
 
@@ -648,6 +836,7 @@ public final class ClientPerformanceSettingsTest {
             assertTrue(button(root, "Restore baseline settings").isEnabled());
             assertTrue(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
             assertTrue(checkBox(root, "Use shared-memory frame transport (experiment)").isEnabled());
+            assertTrue(checkBox(root, MESA262_LABEL).isEnabled());
             RuntimeService.busy = true; refresh();
             assertFalse(profile(root).isEnabled());
             assertFalse(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
@@ -658,6 +847,7 @@ public final class ClientPerformanceSettingsTest {
             assertFalse(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
             assertFalse(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
             assertFalse(checkBox(root, "Use shared-memory frame transport (experiment)").isEnabled());
+            assertFalse(checkBox(root, MESA262_LABEL).isEnabled());
             assertFalse(button(root, "Restore baseline settings").isEnabled());
             RuntimeService.busy = false;
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", new LiveProcess());
@@ -668,6 +858,7 @@ public final class ClientPerformanceSettingsTest {
             assertFalse(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
             assertFalse(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
             assertFalse(checkBox(root, "Use shared-memory frame transport (experiment)").isEnabled());
+            assertFalse(checkBox(root, MESA262_LABEL).isEnabled());
             assertFalse(button(root, "Restore baseline settings").isEnabled());
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", null); refresh();
             checkBox(root, "Use Adreno GPU rendering").performClick();
@@ -678,6 +869,7 @@ public final class ClientPerformanceSettingsTest {
             assertFalse(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
             assertFalse(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
             assertFalse(checkBox(root, "Use shared-memory frame transport (experiment)").isEnabled());
+            assertFalse(checkBox(root, MESA262_LABEL).isEnabled());
             assertFalse(button(root, "Restore baseline settings").isEnabled());
             checkBox(root, "Use Adreno GPU rendering").performClick();
             assertTrue(profile(root).isEnabled());
@@ -686,6 +878,7 @@ public final class ClientPerformanceSettingsTest {
             assertTrue(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
             assertTrue(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
             assertTrue(checkBox(root, "Use shared-memory frame transport (experiment)").isEnabled());
+            assertTrue(checkBox(root, MESA262_LABEL).isEnabled());
             assertTrue(button(root, "Restore baseline settings").isEnabled());
         } finally {
             RuntimeService.busy = false;

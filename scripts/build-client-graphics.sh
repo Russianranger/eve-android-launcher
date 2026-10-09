@@ -156,6 +156,16 @@ if /graphics-out/assets/a740-driver-probe \
   echo 'A740 identity gate incorrectly accepted the CI software adapter' >&2
   exit 1
 fi
+# The new release identity helper uses the same native Vulkan ABI but has a
+# distinct retail 26.2.4 gate. Its CPU fixture is metadata only, and retail
+# hardware mode must reject that fixture before selecting a driver.
+/graphics-out/assets/mesa262-driver-probe --fixture \
+  > /graphics-out/mesa262-identity-cpu-fixture.json 2> /graphics-out/mesa262-identity-cpu-fixture.log
+if /graphics-out/assets/mesa262-driver-probe \
+    > /graphics-out/mesa262-identity-hardware-rejection.json 2> /graphics-out/mesa262-identity-hardware-rejection.log; then
+  echo 'Mesa 26.2.4 identity gate incorrectly accepted the CI software adapter' >&2
+  exit 1
+fi
 python3 /graphics-tests/graphics_present.py --port 5991 \
   --report /graphics-out/d3d11-rfb-presentation.json \
   --stdout /graphics-out/d3d11-fixture.json --stderr /graphics-out/d3d11-fixture.log \
@@ -341,6 +351,27 @@ if EVE_X11_SHM_STAGING=1 /graphics-out/assets/vulkan-probe --allow-software \
   echo 'Optional SHM driver unexpectedly rendered without KGSL' >&2
   exit 1
 fi
+# Load the exact newly built pristine release through a forced ICD. No KGSL
+# means no physical Turnip device; success would reveal an unintended software
+# fallback. Existing nine EC/RFB software fixtures stay on their original ICD.
+python3 - <<'PY'
+import json
+from pathlib import Path
+Path('/graphics-out/turnip-mesa262-icd.json').write_text(json.dumps({
+  'file_format_version': '1.0.0', 'ICD': {
+    'library_path': '/graphics-out/assets/turnip-26.2.4.so', 'api_version': '1.3.0'}}))
+PY
+export VK_DRIVER_FILES=/graphics-out/turnip-mesa262-icd.json VK_ICD_FILENAMES=/graphics-out/turnip-mesa262-icd.json
+if /graphics-out/assets/mesa262-driver-probe --fixture \
+    > /graphics-out/mesa262-identity-no-kgsl.json 2> /graphics-out/mesa262-identity-no-kgsl.log; then
+  echo 'Pristine Mesa 26.2.4 driver incorrectly accepted a software fallback without KGSL' >&2
+  exit 1
+fi
+if /graphics-out/assets/vulkan-probe --allow-software \
+    > /graphics-out/turnip-mesa262-no-kgsl.json 2> /graphics-out/turnip-mesa262-no-kgsl.log; then
+  echo 'Pristine Mesa 26.2.4 driver unexpectedly rendered without KGSL' >&2
+  exit 1
+fi
 python3 - <<'PY'
 import json
 import re
@@ -438,6 +469,28 @@ report['shmPresentationExperiment'] = {
     'clientDriver': 'turnip-26.0.0-x11-shm.so',
     'clientDriverSha256': json.loads((folder / 'assets/client-graphics-bundle.json').read_text())['files']['turnip-26.0.0-x11-shm.so']['sha256'],
     'driverWithoutKgslRejected': True,
+    'nativeEffectVerified': False, 'physicalThorQualified': False,
+}
+mesa262_identity = one_json('mesa262-identity-cpu-fixture.json')
+assert mesa262_identity['helper'] == 'eve-mesa262-driver-probe-1'
+assert mesa262_identity['mode'] == 'fixture' and mesa262_identity['passed'] is True
+assert mesa262_identity['software'] is True and type(mesa262_identity['device_id']) is int
+assert mesa262_identity['linear_presentation'] == {
+    'supported': True, 'bgra8_unorm': True, 'rgba8_unorm': True}
+graphics_manifest = one_json('assets/client-graphics-bundle.json')
+mesa262_metadata = graphics_manifest['mesa262DriverExperiment']
+assert mesa262_metadata['mesa'] == '26.2.4' and mesa262_metadata['pristine'] is True
+assert mesa262_metadata['deviceId'] == 0x43050a01
+report['mesa262DriverExperiment'] = {
+    'qualification': 'native-arm64-pristine-release-abi-and-kgsl-negative-ci-only',
+    'identityFixture': mesa262_identity, 'cpuHardwareGateRejected': True,
+    'driverWithoutKgslRejected': True,
+    'sourceProvenance': mesa262_metadata,
+    'linkCompatibility': one_json('mesa262-link-compatibility.json'),
+    'clientDriver': 'turnip-26.2.4.so',
+    'clientDriverSha256': graphics_manifest['files']['turnip-26.2.4.so']['sha256'],
+    'upstreamNotices': one_json('mesa262-notices-provenance.json'),
+    'newReleaseRenderingVerified': False,
     'nativeEffectVerified': False, 'physicalThorQualified': False,
 }
 report['performance'] = {'requestedProfile': 'throughput', 'performanceProfile': 'throughput',
@@ -580,6 +633,7 @@ fi
 
 # Copy only the manifest-listed graphics components into APK assets.
 python3 - <<'PYVALIDATE'
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -596,6 +650,23 @@ manifest = json.loads((assets / 'client-graphics-bundle.json').read_text())
 for name in (*manifest['files'], 'client-graphics-bundle.json'):
     shutil.copyfile(assets / name, Path('backend') / name)
 client_graphics.verify_bundle(Path('backend'))
+# The new release has its own current upstream notice inventory. The original
+# 26.0.0 notices remain packaged separately, and are not reused for this source.
+mesa262_notices = Path('out/mesa-26.2.4-notices.txt').read_bytes()
+mesa262_notices_provenance = json.loads(Path('out/mesa262-notices-provenance.json').read_text())
+assert mesa262_notices_provenance['file'] == 'mesa-26.2.4-notices.txt'
+assert mesa262_notices_provenance['sha256'] == hashlib.sha256(mesa262_notices).hexdigest()
+assert type(mesa262_notices_provenance['sizeBytes']) is int and mesa262_notices_provenance['sizeBytes'] == len(mesa262_notices)
+assert mesa262_notices_provenance['sourceArchiveSha256'] == client_graphics.MESA262_EXPERIMENT['mesaSourceSha256']
+assert type(mesa262_notices_provenance['upstreamLicenseDocuments']) is int and mesa262_notices_provenance['upstreamLicenseDocuments'] >= 2
+assert type(mesa262_notices_provenance['uniqueSourceNoticeComments']) is int and mesa262_notices_provenance['uniqueSourceNoticeComments'] > 0
+assert mesa262_notices.startswith(b'Mesa 26.2.4 upstream license and copyright notices\n')
+assert client_graphics.MESA262_EXPERIMENT['mesaSourceSha256'].encode('ascii') in mesa262_notices
+assert b'===== docs/license.rst =====' in mesa262_notices
+assert b'===== licenses/MIT =====' in mesa262_notices
+assert b'src/freedreno/' in mesa262_notices
+assert b'SPDX-License-Identifier' in mesa262_notices
+shutil.copyfile('out/mesa-26.2.4-notices.txt', 'backend/mesa-26.2.4-notices.txt')
 # Exercise the production reader on the observer's actual formatted receipt,
 # rather than qualifying only the independent CI summary reader.
 client_graphics.parse_display(Path('out/d3d11-rfb-presentation.json').read_text())
@@ -603,6 +674,42 @@ report = json.loads(Path('out/client-graphics-check.json').read_text())
 assert report['passed'] is True and report['physicalThorQualified'] is False
 assert report['a740PcModeExperiment']['sourceProvenance'] == client_graphics.A740_EXPERIMENT
 assert report['a740PcModeExperiment']['physicalThorQualified'] is False
+mesa262 = report['mesa262DriverExperiment']
+assert mesa262['upstreamNotices'] == mesa262_notices_provenance
+assert mesa262['sourceProvenance'] == client_graphics.MESA262_EXPERIMENT
+assert mesa262['sourceProvenance'] == manifest['mesa262DriverExperiment']
+assert mesa262['clientDriver'] == client_graphics.MESA262_DRIVER
+assert mesa262['clientDriverSha256'] == manifest['files'][client_graphics.MESA262_DRIVER]['sha256']
+assert mesa262['newReleaseRenderingVerified'] is False
+assert mesa262['nativeEffectVerified'] is False and mesa262['physicalThorQualified'] is False
+assert mesa262['cpuHardwareGateRejected'] is True and mesa262['driverWithoutKgslRejected'] is True
+assert mesa262['linkCompatibility'][client_graphics.MESA262_DRIVER]['icdEntryPoint'] == 'vk_icdGetInstanceProcAddr'
+try:
+    client_graphics.parse_mesa262_identity(Path('out/mesa262-identity-cpu-fixture.json').read_text())
+except ValueError:
+    pass
+else:
+    raise SystemExit('Production Mesa 26.2.4 identity parser accepted the software fixture')
+# Independently pin the settings for the next physical trial. Inherited old
+# flags must not enable SHM/SYS/FEX in the separate release/cache selection.
+mesa262['productionEnvironment'] = {
+    key: value for key, value in client_graphics.configure_environment(
+        {'EVE_X11_SHM_STAGING': '1', 'TU_DEBUG': 'sysmem', 'FEX_HOSTFEATURES': 'disablelrcpc2',
+         'MESA_VK_WSI_DEBUG': 'invalid', 'MESA_SHADER_CACHE_DIR': '/old/cache'},
+        'turnip-dxvk', assets, Path('out'), mesa262_driver=True, linear_presentation=True).items()
+    if key in ('EVE_X11_SHM_STAGING', 'MESA_VK_WSI_DEBUG', 'TU_DEBUG', 'FEX_HOSTFEATURES',
+               'MESA_SHADER_CACHE_DIR')}
+assert mesa262['productionEnvironment'] == {
+    'MESA_VK_WSI_DEBUG': 'sw,linear', 'MESA_SHADER_CACHE_DIR': str(Path('out/cache/mesa-26.2.4'))}
+mesa262['productionOptimizations'] = client_graphics.optimization_settings(
+    'turnip-dxvk', mesa262_driver=True, linear_presentation=True)
+assert mesa262['productionOptimizations']['mesa262Driver'] is True
+assert mesa262['productionOptimizations']['selectedMesaVersion'] == '26.2.4'
+assert mesa262['productionOptimizations']['linearPresentation'] is True
+assert mesa262['productionOptimizations']['shmPresentation'] is False
+assert mesa262['productionOptimizations']['a740PcMode'] is False
+assert mesa262['productionOptimizations']['sysmemRendering'] is False
+assert mesa262['productionOptimizations']['nativeEffectVerified'] is False
 shm = report['shmPresentationExperiment']
 assert shm['sourceProvenance'] == client_graphics.SHM_EXPERIMENT
 assert shm['sourceProvenance'] == manifest['shmPresentationExperiment']

@@ -14,6 +14,7 @@ RUN test "$(uname -m)" = aarch64 \
 COPY client-runtime/graphics/fetch-sources.py /graphics-recipe/fetch-sources.py
 COPY client-runtime/graphics/arm64ec.txt /graphics-recipe/arm64ec.txt
 COPY client-runtime/graphics/a740-pc-mode.patch native/a740-driver-probe.c /graphics-recipe/
+COPY native/mesa262-driver-probe.c /graphics-recipe/
 COPY client-runtime/graphics/x11-shm-staging.patch native/eve-x11-shm-staging.h \
      native/eve-x11-shm-probe.c /graphics-recipe/
 COPY backend/pe_image.py /graphics-recipe/
@@ -61,6 +62,24 @@ RUN /usr/local/bin/meson setup /graphics-mesa-shm-build /graphics-src/mesa-shm/m
       /graphics-out/assets/turnip-26.0.0-x11-shm.so \
  && /usr/bin/strip /graphics-out/assets/turnip-26.0.0-x11-shm.so \
  && ldd /graphics-out/assets/turnip-26.0.0-x11-shm.so
+# Keep the unmodified release candidate in its own source/build tree. No local
+# A740 or SHM patches enter this driver, and the baseline ELF remains immutable.
+# Disable optional SPIRV-Tools so an incidental build dependency cannot add a
+# new runtime SONAME. Turnip alone needs neither Rust nor Mesa CLC/LLVM.
+RUN /usr/local/bin/meson setup /graphics-mesa262-build /graphics-src/mesa262/mesa-26.2.4 \
+      --buildtype=release -Dplatforms=x11 -Dvulkan-drivers=freedreno -Dfreedreno-kmds=kgsl \
+      -Dgallium-drivers= -Dglx=disabled -Degl=disabled -Dgbm=disabled \
+      -Dopengl=false -Dgles1=disabled -Dgles2=disabled -Dllvm=disabled \
+      -Dvideo-codecs= -Dbuild-tests=false -Dspirv-tools=disabled \
+ && ninja -C /graphics-mesa262-build -j2 \
+ && cp /graphics-mesa262-build/src/freedreno/vulkan/libvulkan_freedreno.so \
+      /graphics-out/assets/turnip-26.2.4.so \
+ && /usr/bin/strip /graphics-out/assets/turnip-26.2.4.so \
+ && /usr/bin/cc -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror \
+      /graphics-recipe/mesa262-driver-probe.c -lvulkan -o /graphics-out/assets/mesa262-driver-probe \
+ && /usr/bin/strip /graphics-out/assets/mesa262-driver-probe \
+ && ldd /graphics-out/assets/turnip-26.2.4.so \
+ && ldd /graphics-out/assets/mesa262-driver-probe
 # Runtime bundle manifest validation/hashes are a separate Python step shared
 # with APK validation; linked ARM64EC uses AMD64+CHPE metadata, NOT machineA641.
 COPY native/eve-d3d11-probe.c /graphics-tests/native/
@@ -70,6 +89,7 @@ RUN bash /graphics-tests/scripts/build-client-graphics-probe.sh /graphics-out/as
  && cp /graphics-out/assets/client-graphics-bundle.json /graphics-src/provenance-build.json \
  && cp /graphics-out/a740-link-compatibility.json /graphics-src/ \
  && cp /graphics-out/shm-link-compatibility.json /graphics-src/ \
+ && cp /graphics-out/mesa262-link-compatibility.json /graphics-src/ \
  && python3 /graphics-recipe/fetch-sources.py runtime-identity /graphics-out/qualified-runtime-identity.json \
  && cp /graphics-out/qualified-runtime-identity.json /graphics-src/
 COPY backend/graphics_present.py /graphics-tests/graphics_present.py
@@ -91,6 +111,7 @@ RUN cp -R /graphics-recipe /graphics-src/recipe \
  && cp /graphics-build/meson-logs/meson-log.txt /graphics-src/recipe/ \
  && cp /graphics-mesa-a740-build/meson-logs/meson-log.txt /graphics-src/recipe/mesa-a740-meson-log.txt \
  && cp /graphics-mesa-shm-build/meson-logs/meson-log.txt /graphics-src/recipe/mesa-shm-meson-log.txt \
+ && cp /graphics-mesa262-build/meson-logs/meson-log.txt /graphics-src/recipe/mesa262-meson-log.txt \
  && cp /graphics-tests/scripts/check-x11-shm-host.sh /graphics-tests/tests/check_x11_shm_rfb.py /graphics-src/recipe/ \
  && mkdir -p /graphics-tests/native-proot /graphics-tests/native \
  && cp /graphics-recipe/eve-x11-shm-staging.h /graphics-recipe/eve-x11-shm-probe.c /graphics-tests/native/ \

@@ -143,6 +143,19 @@ def linear_identity() -> dict:
     return value
 
 
+def mesa262_vulkan() -> dict:
+    value = vulkan_success()
+    value.update(driver_info="Mesa 26.2.4", driver_version=(26 << 22) | (2 << 12) | 4)
+    return value
+
+
+def mesa262_identity() -> dict:
+    value = linear_identity()
+    value.update(helper="eve-mesa262-driver-probe-1", driver_info="Mesa 26.2.4",
+                 driver_version=(26 << 22) | (2 << 12) | 4)
+    return value
+
+
 def shm_report(stage_id=1, completed=1) -> dict:
     return {"format": "eve-x11-shm-1", "mode": "active", "stageId": stage_id,
             "width": 160, "height": 160, "rowPitch": 640, "sizeBytes": 102400,
@@ -436,6 +449,152 @@ class GraphicsTests(unittest.TestCase):
             (self.folder / name).write_bytes(image)
             self.manifest["files"][name] = {"sha256": digest(image), "sizeBytes": len(image), "machine": 183}
         self.write_manifest()
+
+    def add_mesa262_experiment(self):
+        self.manifest["mesa262DriverExperiment"] = copy.deepcopy(graphics.MESA262_EXPERIMENT)
+        for name in graphics.MESA262_FILES:
+            image = elf_image() + name.encode("ascii")
+            (self.folder / name).write_bytes(image)
+            self.manifest["files"][name] = {"sha256": digest(image), "sizeBytes": len(image), "machine": 183}
+        self.write_manifest()
+
+    def test_mesa262_optional_manifest_is_exact_pristine_and_native_with_old_pins_retained(self):
+        self.add_mesa262_experiment()
+        accepted = copy.deepcopy(self.manifest)
+        self.assertEqual(set(graphics.verify_bundle(self.folder)["files"]), graphics.FILES | graphics.MESA262_FILES)
+        for field in graphics.MESA262_EXPERIMENT:
+            value = modified(accepted, ("mesa262DriverExperiment", field),
+                             1 if field == "pristine" else True if field in ("format", "deviceId") else "unverified")
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.write_manifest(value)
+                graphics.verify_bundle(self.folder)
+        for name in graphics.MESA262_FILES:
+            for fault in ("missing", "wrong-machine", "float-machine", "damaged"):
+                value = copy.deepcopy(accepted)
+                path = self.folder / name
+                original = path.read_bytes()
+                if fault == "missing": value["files"].pop(name)
+                elif fault == "float-machine": value["files"][name]["machine"] = 183.0
+                else:
+                    image = mutate(original, offset=18, format="<H", value=62) if fault == "wrong-machine" else original + b"damaged"
+                    path.write_bytes(image)
+                    if fault == "wrong-machine": value["files"][name].update(sha256=digest(image), machine=62)
+                with self.subTest(name=name, fault=fault), self.assertRaises(ValueError):
+                    self.write_manifest(value)
+                    graphics.verify_bundle(self.folder)
+                path.write_bytes(original)
+        value = copy.deepcopy(accepted)
+        value.pop("mesa262DriverExperiment")
+        with self.assertRaises(ValueError):
+            self.write_manifest(value)
+            graphics.verify_bundle(self.folder)
+        self.write_manifest(accepted)
+        self.add_shm_experiment()
+        self.add_a740_experiment()
+        self.assertEqual(set(graphics.verify_bundle(self.folder)["files"]),
+                         graphics.FILES | graphics.MESA262_FILES | graphics.SHM_FILES | graphics.A740_FILES)
+        self.assertEqual(graphics.verify_bundle(self.folder)["sourceProvenance"], BASE_MANIFEST["sourceProvenance"])
+
+    def test_mesa262_selection_requires_fresh_original_gate_preserves_caches_and_restores_original(self):
+        icd = self.prepare_driver_selection()
+        baseline = icd.read_bytes()
+        with self.assertRaises(ValueError):
+            graphics.select_driver(self.folder, self.state, False, vulkan_success(), a740_identity(), mesa262_driver=True)
+        self.add_mesa262_experiment()
+        protected = {self.folder / "turnip-26.0.0.so": (self.folder / "turnip-26.0.0.so").read_bytes(),
+                     self.state / "cache/mesa-26.0.0/warm": b"old warm cache",
+                     self.state / "cache/dxvk-2.4.1-arm64ec/keep.dxvk-cache": b"DXVK warm cache"}
+        for path, data in protected.items(): path.write_bytes(data)
+        selected = graphics.select_driver(self.folder, self.state, False, vulkan_success(), a740_identity(), mesa262_driver=True)
+        self.assertTrue(selected["mesa262Driver"])
+        self.assertEqual(selected["mesaVersion"], "26.2.4")
+        self.assertEqual(selected["mesaSourceSha256"], graphics.MESA262_EXPERIMENT["mesaSourceSha256"])
+        self.assertEqual(selected["driverSha256"], self.manifest["files"][graphics.MESA262_DRIVER]["sha256"])
+        self.assertFalse(selected["physicalBenefitVerified"])
+        self.assertEqual(selected["mesaShaderCache"], str(self.state / "cache/mesa-26.2.4"))
+        self.assertEqual(json.loads(icd.read_text())["ICD"]["library_path"], str(self.folder / graphics.MESA262_DRIVER))
+        (self.state / "cache/mesa-26.2.4/warm").write_bytes(b"new warm cache")
+        graphics.select_driver(self.folder, self.state, False)
+        self.assertEqual(icd.read_bytes(), baseline)
+        self.assertEqual(protected, {path: path.read_bytes() for path in protected})
+        self.assertEqual((self.state / "cache/mesa-26.2.4/warm").read_bytes(), b"new warm cache")
+        for original in (None, {}, mesa262_identity(), modified(a740_identity(), ("device_id",), 0x740)):
+            with self.subTest(original=original), self.assertRaises(ValueError):
+                graphics.select_driver(self.folder, self.state, False, vulkan_success(), original, mesa262_driver=True)
+            self.assertEqual(icd.read_bytes(), baseline)
+        for baseline_report in (None, {}, mesa262_vulkan(), modified(vulkan_success(), ("software",), True)):
+            with self.subTest(baseline=baseline_report), self.assertRaises(ValueError):
+                graphics.select_driver(self.folder, self.state, False, baseline_report, a740_identity(), mesa262_driver=True)
+            self.assertEqual(icd.read_bytes(), baseline)
+        (self.state / "cache/mesa-26.2.4/warm").unlink()
+        (self.state / "cache/mesa-26.2.4").rmdir()
+        (self.state / "cache/mesa-26.2.4").symlink_to(self.root, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            graphics.select_driver(self.folder, self.state, False, vulkan_success(), a740_identity(), mesa262_driver=True)
+        self.assertEqual(icd.read_bytes(), baseline)
+
+    def test_three_driver_choices_are_strict_exclusive_and_software_ignored_with_linear_independent(self):
+        for flags in ({"a740_pc_mode": True, "mesa262_driver": True},
+                      {"shm_presentation": True, "mesa262_driver": True},
+                      {"a740_pc_mode": True, "shm_presentation": True, "mesa262_driver": True}):
+            for mode in graphics.MODES:
+                with self.subTest(flags=flags, mode=mode), self.assertRaises(ValueError):
+                    graphics.optimization_settings(mode, **flags)
+            with self.assertRaises(ValueError): graphics.cache_directories(self.state, **flags)
+        for invalid in (1, "true", None):
+            with self.subTest(value=invalid), self.assertRaises(ValueError):
+                graphics.optimization_settings("turnip-dxvk", mesa262_driver=invalid)
+            with self.assertRaises(ValueError): graphics.cache_directories(self.state, mesa262_driver=invalid)
+            with self.assertRaises(ValueError): graphics.select_driver(self.folder, self.state, False, mesa262_driver=invalid)
+        base = graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state)
+        selected = graphics.configure_environment(base, "turnip-dxvk", self.folder, self.state,
+                                                  mesa262_driver=True, linear_presentation=True)
+        self.assertEqual(selected["MESA_SHADER_CACHE_DIR"], str(self.state / "cache/mesa-26.2.4"))
+        self.assertEqual(selected["MESA_VK_WSI_DEBUG"], "sw,linear")
+        self.assertNotIn("EVE_X11_SHM_STAGING", selected)
+        self.assertEqual(graphics.configure_environment(selected, "turnip-dxvk", self.folder, self.state), base)
+        software = graphics.configure_environment(selected, "software", self.folder, self.state, mesa262_driver=True)
+        self.assertFalse(any(key.startswith(("MESA_", "VK_", "TU_", "DXVK_")) for key in software))
+        receipt = graphics.optimization_settings("software", mesa262_driver=True)
+        self.assertTrue(receipt["requestedMesa262Driver"])
+        self.assertFalse(receipt["mesa262Driver"])
+        self.assertIsNone(receipt["selectedMesaVersion"])
+
+    def test_mesa_version_parsers_are_exact_by_default_and_new_identity_requires_same_chip(self):
+        new = mesa262_vulkan()
+        self.assertEqual(graphics.parse_vulkan(json.dumps(new), "26.2.4"), new)
+        with self.assertRaises(ValueError): graphics.parse_vulkan(json.dumps(new))
+        with self.assertRaises(ValueError): graphics.parse_vulkan(json.dumps(vulkan_success()), "26.2.4")
+        for invalid in (None, True, 26, "26.2.3", "26.2.40"):
+            with self.subTest(expected=invalid), self.assertRaises(ValueError):
+                graphics.parse_vulkan(json.dumps(new), invalid)
+        upgraded_api = modified(new, ("api_version",), (1 << 22) | (4 << 12))
+        upgraded_identity = modified(mesa262_identity(), ("api_version",), upgraded_api["api_version"])
+        self.assertEqual(graphics.qualify_mesa262_identity(json.dumps(upgraded_identity), vulkan_success(),
+                                                        a740_identity(), upgraded_api), upgraded_identity)
+        changes = (("mode", "fixture"), ("helper", "eve-a740-driver-probe-1"), ("passed", 1),
+                   ("device_id", 0x740), ("device_id", float(graphics.A740_DEVICE_ID)),
+                   ("software", 0), ("driver_version", 26 << 22),
+                   ("driver_version", (26 << 22) | (2 << 12) | 3),
+                   ("driver_info", "Mesa 26.2.40"), ("device", "Adreno other device"),
+                   ("vendor_id", 0x10de), ("driver_id", 13))
+        for field, replacement in changes:
+            value = modified(mesa262_identity(), (field,), replacement)
+            with self.subTest(field=field, replacement=replacement), self.assertRaises(ValueError):
+                graphics.qualify_mesa262_identity(json.dumps(value), vulkan_success(), a740_identity(), new)
+        with self.assertRaises(ValueError): graphics.parse_a740_identity(json.dumps(mesa262_identity()))
+
+    def test_mesa262_linear_capability_comes_from_the_selected_driver(self):
+        qualification = graphics.parse_linear_presentation(json.dumps(mesa262_identity()), mesa262_vulkan(), "26.2.4")
+        self.assertEqual(qualification["originalDriver"], graphics.MESA262_DRIVER)
+        self.assertTrue(qualification["hardwareCapabilityGatePassed"])
+        with self.assertRaises(ValueError):
+            graphics.parse_linear_presentation(json.dumps(linear_identity()), mesa262_vulkan(), "26.2.4")
+        for field in ("supported", "bgra8_unorm", "rgba8_unorm"):
+            for invalid in (False, 1, None):
+                value = modified(mesa262_identity(), ("linear_presentation", field), invalid)
+                with self.subTest(field=field, value=invalid), self.assertRaises(ValueError):
+                    graphics.parse_linear_presentation(json.dumps(value), mesa262_vulkan(), "26.2.4")
 
     def prepare_driver_selection(self):
         self.map_dlls()

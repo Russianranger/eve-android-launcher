@@ -30,7 +30,9 @@ final class ClientRuntime {
     private static final long MAX_ARCHIVE = 160L * 1024 * 1024 * 1024;
     private static final long MIN_FREE_MEMORY = 1024L * 1024 * 1024;
     private static final List<String> PERFORMANCE_OPTIONS = Arrays.asList("early-display-requests", "disable-concurrent-binning",
-            "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface");
+            "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface", "mesa262-driver");
+    private static final List<String> DRIVER_OPTIONS = Arrays.asList("a740-pc-mode", "shm-presentation", "mesa262-driver");
+    private static final String MESA262_PROBE_SOURCE_SHA256 = "bb96b8e0721e167d20d8b15e433d180b79447b0bdb8f85dfaa614aa867c09d37";
     private final Context context;
     private final RuntimeManager manager;
     private static volatile Process session;
@@ -73,6 +75,7 @@ final class ClientRuntime {
     boolean sysmemRendering() { return renderer().equals("turnip-dxvk") && performanceOption("sysmem-rendering"); }
     boolean shmPresentation() { return renderer().equals("turnip-dxvk") && performanceOption("shm-presentation"); }
     boolean separateDisplaySurface() { return performanceOption("separate-display-surface"); }
+    boolean mesa262Driver() { return renderer().equals("turnip-dxvk") && performanceOption("mesa262-driver"); }
 
     boolean performanceOption(String key) {
         try { return context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).getBoolean(key, false); }
@@ -85,8 +88,8 @@ final class ClientRuntime {
         if (alive() || RuntimeService.busy) throw new IllegalStateException("Stop the client before changing its performance settings");
         android.content.SharedPreferences.Editor edit = context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE)
                 .edit().putBoolean(key, enabled);
-        if (enabled && key.equals("shm-presentation")) edit.putBoolean("a740-pc-mode", false);
-        if (enabled && key.equals("a740-pc-mode")) edit.putBoolean("shm-presentation", false);
+        if (enabled && DRIVER_OPTIONS.contains(key))
+            for (String driver : DRIVER_OPTIONS) if (!driver.equals(key)) edit.putBoolean(driver, false);
         edit.apply();
     }
 
@@ -107,7 +110,7 @@ final class ClientRuntime {
         String caps = (software ? "Saved GPU caps: " : profile.equals("responsive") ? "Baseline caps: " : "Selected caps: ")
                 + "render " + render + " FPS · queue " + queue + (queue == 1 ? " frame" : " frames") + " · display " + display + " FPS";
         String[] labels = {"Early display requests", "Concurrent binning disabled", "Alternate CPU load instructions",
-                "A740 driver", "Reduce GPU frame copies", "Direct GPU rendering", "Shared-memory frame transport", "Separate display surface"};
+                "A740 driver", "Reduce GPU frame copies", "Direct GPU rendering", "Shared-memory frame transport", "Separate display surface", "Newer Turnip driver (26.2.4)"};
         List<String> selected = new ArrayList<>();
         for (int index = 0; index < PERFORMANCE_OPTIONS.size(); index++) {
             String key = PERFORMANCE_OPTIONS.get(index);
@@ -148,6 +151,7 @@ final class ClientRuntime {
                 .put("sysmemRendering", sysmemRendering()).put("requestedSysmemRendering", performanceOption("sysmem-rendering"))
                 .put("shmPresentation", shmPresentation()).put("requestedShmPresentation", performanceOption("shm-presentation"))
                 .put("separateDisplaySurface", separateDisplaySurface())
+                .put("mesa262Driver", mesa262Driver()).put("requestedMesa262Driver", performanceOption("mesa262-driver"))
                 .put("supported_build", 3396210).put("client_launch_qualified", false)
                 .put("phase", "missing_client").put("message", "Import the complete EVE build 3396210 shared cache first");
         File status = new File(manager.clientState, "status.json");
@@ -362,6 +366,7 @@ final class ClientRuntime {
                 .put("sysmemRendering", sysmemRendering()).put("requestedSysmemRendering", performanceOption("sysmem-rendering"))
                 .put("shmPresentation", shmPresentation()).put("requestedShmPresentation", performanceOption("shm-presentation"))
                 .put("separateDisplaySurface", separateDisplaySurface())
+                .put("mesa262Driver", mesa262Driver()).put("requestedMesa262Driver", performanceOption("mesa262-driver"))
                 .put("login_qualified", false).put("graphics_qualified", false);
         RuntimeManager.text(new File(manager.clientState, "run/status.json"), pending.toString());
         List<String> launch = launchCommand(graphicsMode, performanceProfile, diagnosticHud);
@@ -398,6 +403,7 @@ final class ClientRuntime {
         if (graphicsMode.equals("turnip-dxvk") && linearPresentation()) launch.add("--linear-presentation");
         if (graphicsMode.equals("turnip-dxvk") && sysmemRendering()) launch.add("--sysmem-rendering");
         if (graphicsMode.equals("turnip-dxvk") && shmPresentation()) launch.add("--shm-presentation");
+        if (graphicsMode.equals("turnip-dxvk") && mesa262Driver()) launch.add("--mesa262-driver");
         return launch;
     }
 
@@ -500,13 +506,11 @@ final class ClientRuntime {
                 || !manifest.optString("mesa").equals("26.0.0") || !manifest.optString("dxvk").equals("2.4.1"))
             throw new IOException("GPU assets do not match the pinned runtime");
         JSONObject files = manifest.getJSONObject("files");
-        String[] names = graphicsAssetNames(manifest, a740PcMode(), shmPresentation());
+        String[] names = graphicsAssetNames(manifest, a740PcMode(), shmPresentation(), mesa262Driver());
         for (String name : names) {
             File source = new File(manager.backend, name);
             JSONObject item = files.getJSONObject(name);
-            if (!source.isFile() || Files.isSymbolicLink(source.toPath()) || source.length() != item.getLong("sizeBytes")
-                    || !RuntimeManager.sha256(source).equals(item.getString("sha256")))
-                throw new IOException("Missing or damaged GPU asset: " + name);
+            validateGraphicsAsset(source, item);
             if (name.startsWith("dxvk-")) {
                 String dll = name.equals("dxvk-d3d11-arm64ec.dll") ? "d3d11" : "dxgi";
                 // Avoid following the old prefix's Wine builtin symlink. The
@@ -517,11 +521,21 @@ final class ClientRuntime {
         return result;
     }
 
+    static void validateGraphicsAsset(File source, JSONObject item) throws Exception {
+        if (!source.isFile() || Files.isSymbolicLink(source.toPath()) || source.length() != item.getLong("sizeBytes")
+                || !RuntimeManager.sha256(source).equals(item.getString("sha256")))
+            throw new IOException("Missing or damaged GPU asset: " + source.getName());
+    }
+
     static String[] graphicsAssetNames(JSONObject manifest, boolean experimentEnabled) throws Exception {
         return graphicsAssetNames(manifest, experimentEnabled, false);
     }
 
     static String[] graphicsAssetNames(JSONObject manifest, boolean a740Enabled, boolean shmEnabled) throws Exception {
+        return graphicsAssetNames(manifest, a740Enabled, shmEnabled, false);
+    }
+
+    static String[] graphicsAssetNames(JSONObject manifest, boolean a740Enabled, boolean shmEnabled, boolean mesa262Enabled) throws Exception {
         List<String> names = new ArrayList<>(Arrays.asList("turnip-26.0.0.so", "vulkan-probe", "dxvk-d3d11-arm64ec.dll",
                 "dxvk-dxgi-arm64ec.dll", "eve-d3d11-probe.exe"));
         if (manifest.has("a740PcModeExperiment")) {
@@ -545,6 +559,22 @@ final class ClientRuntime {
             names.add("turnip-26.0.0-x11-shm.so");
             if (!names.contains("a740-driver-probe")) names.add("a740-driver-probe");
         } else if (shmEnabled) throw new IOException("GPU bundle does not contain the shared-memory frame transport experiment");
+        if (manifest.has("mesa262DriverExperiment")) {
+            JSONObject experiment = manifest.optJSONObject("mesa262DriverExperiment");
+            if (experiment == null || experiment.length() != 9 || !Integer.valueOf(1).equals(experiment.opt("format"))
+                    || !"turnip-mesa-26.2.4-1".equals(experiment.opt("name"))
+                    || !"turnip-26.2.4.so".equals(experiment.opt("driver"))
+                    || !"mesa262-driver-probe".equals(experiment.opt("identityProbe"))
+                    || !"26.2.4".equals(experiment.opt("mesa"))
+                    || !"bce5f7fbebb934373b86c999a064d52fb5065878dc57f287f95346648ec832e9".equals(experiment.opt("mesaSourceSha256"))
+                    || !MESA262_PROBE_SOURCE_SHA256.equals(experiment.opt("probeSourceSha256"))
+                    || !Integer.valueOf(0x43050a01).equals(experiment.opt("deviceId"))
+                    || !Boolean.TRUE.equals(experiment.opt("pristine")))
+                throw new IOException("Newer Turnip driver experiment does not match the pinned source and hardware");
+            names.add("turnip-26.2.4.so");
+            names.add("mesa262-driver-probe");
+            if (!names.contains("a740-driver-probe")) names.add("a740-driver-probe");
+        } else if (mesa262Enabled) throw new IOException("GPU bundle does not contain the newer Turnip driver experiment");
         JSONObject files = manifest.getJSONObject("files");
         if (files.length() != names.size()) throw new IOException("Incomplete GPU bundle");
         for (String name : names) if (!files.has(name)) throw new IOException("Missing GPU asset: " + name);

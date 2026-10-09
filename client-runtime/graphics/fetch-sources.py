@@ -61,6 +61,15 @@ SHM_EXPERIMENT = {
     "sourceFileSha256": "92831b74c892f1795c489fc14f1c05afa362ad857b4959e1e28c13932cba52e5",
     "patchedSourceFileSha256": "18281444fd6639f4a6a672d543685f99ba282cdba25ba204e0c5a52062cc74fd",
 }
+MESA262_SOURCE_NAME = "mesa-26.2.4.tar.xz"
+MESA262_SOURCE_URL = "https://archive.mesa3d.org/" + MESA262_SOURCE_NAME
+MESA262_EXPERIMENT = {
+    "format": 1, "name": "turnip-mesa-26.2.4-1", "driver": "turnip-26.2.4.so",
+    "identityProbe": "mesa262-driver-probe", "mesa": "26.2.4",
+    "mesaSourceSha256": "bce5f7fbebb934373b86c999a064d52fb5065878dc57f287f95346648ec832e9",
+    "probeSourceSha256": "bb96b8e0721e167d20d8b15e433d180b79447b0bdb8f85dfaa614aa867c09d37",
+    "deviceId": 0x43050a01, "pristine": True,
+}
 
 
 def checked(data: bytes, digest: str, name: str) -> bytes:
@@ -69,11 +78,11 @@ def checked(data: bytes, digest: str, name: str) -> bytes:
     return data
 
 
-def download(name: str, digest: str, cache: Path) -> Path:
+def download(name: str, digest: str, cache: Path, url: str | None = None) -> Path:
     path = cache / name
     if path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == digest:
         return path
-    request = urllib.request.Request(RELEASE + name, headers={"User-Agent": "EVE-Android-Graphics-Build/1"})
+    request = urllib.request.Request(url or RELEASE + name, headers={"User-Agent": "EVE-Android-Graphics-Build/1"})
     temporary = path.with_suffix(path.suffix + ".new")
     with urllib.request.urlopen(request, timeout=180) as source, temporary.open("wb") as target:
         shutil.copyfileobj(source, target)
@@ -162,6 +171,88 @@ def prepare_shm_sources(source: Path, recipe: Path) -> None:
         json.dumps(SHM_EXPERIMENT, indent=2) + "\n")
 
 
+def write_mesa262_notices(checkout: Path, output: Path) -> dict:
+    """Inventory upstream license text and complete source notice comments."""
+    license_document = checkout / "docs/license.rst"
+    license_files = sorted(path for path in (checkout / "licenses").rglob("*") if path.is_file())
+    if not license_document.is_file() or not license_files:
+        raise ValueError("Pinned Mesa 26.2.4 source is missing its upstream license inventory")
+    header = (
+        "Mesa 26.2.4 upstream license and copyright notices\n\n"
+        "Extracted from the unchanged official Mesa 26.2.4 source archive\n"
+        "(SHA-256 " + MESA262_EXPERIMENT["mesaSourceSha256"] + ").\n"
+        "This inventory covers the complete source distribution and is broader\n"
+        "than the selected Turnip binary. Individual source licenses apply.\n"
+        "The exact archive, extracted source and build recipe accompany the APK\n"
+        "in client-graphics-corresponding-source.tar.gz.\n\n")
+    full_documents = {license_document, *license_files}
+    notices: dict[bytes, list[str]] = {}
+    # Preserve complete comment bytes, including each full permissive license,
+    # rather than keeping only a copyright/SPDX line from a longer notice.
+    comments = re.compile(rb"/\*.*?\*/|<!--.*?-->|(?:(?m:^[ \t]*(?:\#|//|;)[^\n]*(?:\n|$)))+", re.DOTALL)
+    legal = re.compile(rb"copyright|spdx-license-identifier|permission is hereby|redistribution and use|gnu (?:general|lesser general) public", re.IGNORECASE)
+    for path in sorted(checkout.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(checkout).as_posix()
+        if re.search(r"(?:license|copying|copyright|notice)", path.name, re.IGNORECASE):
+            full_documents.add(path)
+        if path in full_documents:
+            continue
+        data = path.read_bytes()
+        if b"\0" in data:
+            continue
+        for match in comments.finditer(data):
+            notice = match.group()
+            if legal.search(notice):
+                origins = notices.setdefault(notice, [])
+                if relative not in origins:
+                    origins.append(relative)
+    if not any(any(path.startswith("src/freedreno/") for path in paths) for paths in notices.values()):
+        raise ValueError("Mesa 26.2.4 notices omit the selected Freedreno source copyright headers")
+    parts = [header.encode("utf-8")]
+    for path in sorted(full_documents):
+        relative = path.relative_to(checkout).as_posix()
+        parts.append(("\n===== " + relative + " =====\n\n").encode("utf-8"))
+        parts.append(path.read_bytes())
+        parts.append(b"\n")
+    for notice, paths in notices.items():
+        parts.append(("\n===== Source notice: " + ", ".join(paths) + " =====\n\n").encode("utf-8"))
+        parts.extend((notice, b"\n"))
+    data = b"".join(parts)
+    path = output / "mesa-26.2.4-notices.txt"
+    path.write_bytes(data)
+    return {"file": path.name, "sha256": hashlib.sha256(data).hexdigest(), "sizeBytes": len(data),
+            "sourceArchiveSha256": MESA262_EXPERIMENT["mesaSourceSha256"],
+            "upstreamLicenseDocuments": len(full_documents), "uniqueSourceNoticeComments": len(notices)}
+
+
+def prepare_mesa262_sources(source: Path, recipe: Path, cache: Path, output: Path) -> dict:
+    """Retain and extract the checksum-pinned upstream release without patches."""
+    probe = recipe / "mesa262-driver-probe.c"
+    checked(probe.read_bytes(), MESA262_EXPERIMENT["probeSourceSha256"], probe.name)
+    archive = download(MESA262_SOURCE_NAME, MESA262_EXPERIMENT["mesaSourceSha256"],
+                       cache, MESA262_SOURCE_URL)
+    original = source / "mesa262-original-source"
+    original.mkdir()
+    shutil.copyfile(archive, original / MESA262_SOURCE_NAME)
+    mesa = source / "mesa262"
+    mesa.mkdir()
+    subprocess.run(["tar", "--no-same-owner", "--no-same-permissions", "-xf",
+                    str(archive), "-C", str(mesa)], check=True)
+    checkout = mesa / "mesa-26.2.4"
+    if (checkout / "VERSION").read_text().strip() != "26.2.4":
+        raise ValueError("Optional Mesa release version does not match its pinned archive")
+    (source / "mesa262-driver-experiment.json").write_text(
+        json.dumps(MESA262_EXPERIMENT, indent=2) + "\n")
+    notices = write_mesa262_notices(checkout, output)
+    shutil.copyfile(output / notices["file"], original / notices["file"])
+    notices_provenance = json.dumps(notices, indent=2) + "\n"
+    (source / "mesa262-notices-provenance.json").write_text(notices_provenance)
+    (output / "mesa262-notices-provenance.json").write_text(notices_provenance)
+    return notices
+
+
 def fetch_sources(source: Path, output: Path) -> None:
     source.mkdir(parents=True, exist_ok=True)
     (output / "assets").mkdir(parents=True, exist_ok=True)
@@ -199,6 +290,7 @@ def fetch_sources(source: Path, output: Path) -> None:
             (turnip_sources / Path(name).name).write_bytes(content)
     prepare_a740_sources(source, Path("/graphics-recipe"))
     prepare_shm_sources(source, Path("/graphics-recipe"))
+    mesa262_notices = prepare_mesa262_sources(source, Path("/graphics-recipe"), cache, output)
     checkout = source / "dxvk"
     git("init", str(checkout))
     git("remote", "add", "origin", "https://github.com/doitsujin/dxvk.git", cwd=checkout)
@@ -224,11 +316,14 @@ def fetch_sources(source: Path, output: Path) -> None:
         "turnipOriginalCorrespondingSourcesSha256": SOURCES_HASH,
         "a740PcModeExperiment": A740_EXPERIMENT,
         "shmPresentationExperiment": SHM_EXPERIMENT,
+        "mesa262DriverExperiment": MESA262_EXPERIMENT,
+        "mesa262SourceUrl": MESA262_SOURCE_URL,
+        "mesa262Notices": mesa262_notices,
         "licenses": {"dxvk": "Zlib", "mesa": "MIT and source component notices",
                      "vulkanProbe": "Original project probe source and accompanying notices retained"},
     }
     (source / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
-    print("Verified Turnip/probe bytes, exact corresponding source and native ARM64EC DXVK source.", flush=True)
+    print("Verified original Turnip/probe bytes, pristine Mesa 26.2.4, corresponding sources and native ARM64EC DXVK source.", flush=True)
 
 
 def machine(data, kind):
@@ -350,11 +445,48 @@ def verify_shm_link_compatibility(assets: Path) -> dict:
                       "newDynamicDependencies": False, "newRuntimeAbiRequired": False}}
 
 
+def verify_mesa262_link_compatibility(assets: Path) -> dict:
+    """The separate release candidate must load in the existing glibc runtime."""
+    pairs = (("turnip-26.0.0.so", MESA262_EXPERIMENT["driver"]),
+             ("vulkan-probe", MESA262_EXPERIMENT["identityProbe"]))
+    report = {}
+    for original, variant in pairs:
+        baseline = native_link_requirements(assets / original)
+        selected = native_link_requirements(assets / variant)
+        if not set(selected["needed"]).issubset(baseline["needed"]):
+            raise ValueError("Optional Mesa 26.2.4 component adds a dynamic library requirement: " + variant)
+        for family, version in selected["versionRequirements"].items():
+            if version > baseline["versionRequirements"].get(family, (0,)):
+                raise ValueError("Optional Mesa 26.2.4 component requires a newer runtime ABI: " + variant + " " + family)
+        linked = subprocess.check_output(["ldd", str(assets / variant)], text=True, stderr=subprocess.STDOUT)
+        if "not found" in linked:
+            raise ValueError("Optional Mesa 26.2.4 component has unresolved runtime dependencies: " + variant)
+        report[variant] = {"baseline": original, "requirements": selected,
+                           "newDynamicDependencies": False, "newRuntimeAbiRequired": False}
+    symbols = subprocess.check_output([
+        "readelf", "--dyn-syms", "--wide", str(assets / MESA262_EXPERIMENT["driver"])], text=True)
+    # Only a defined, externally visible dynamic function can be called by the
+    # Vulkan loader. A filename, string marker or undefined import is no proof.
+    exported = False
+    for line in symbols.splitlines():
+        fields = line.split()
+        if (len(fields) >= 8 and fields[3:6] == ["FUNC", "GLOBAL", "DEFAULT"]
+                and fields[6] != "UND"
+                and fields[7].split("@", 1)[0] == "vk_icdGetInstanceProcAddr"):
+            exported = True
+            break
+    if not exported:
+        raise ValueError("Optional Mesa 26.2.4 ELF does not export the Vulkan ICD entry point")
+    report[MESA262_EXPERIMENT["driver"]]["icdEntryPoint"] = "vk_icdGetInstanceProcAddr"
+    return report
+
+
 def make_manifest(assets):
     names = {
         'turnip-26.0.0.so': 'elf', 'vulkan-probe': 'elf',
         'turnip-26.0.0-a740-pc-mode.so': 'elf', 'a740-driver-probe': 'elf',
         'turnip-26.0.0-x11-shm.so': 'elf',
+        'turnip-26.2.4.so': 'elf', 'mesa262-driver-probe': 'elf',
         'dxvk-d3d11-arm64ec.dll': 'ec', 'dxvk-dxgi-arm64ec.dll': 'ec',
         'eve-d3d11-probe.exe': 'x64',
     }
@@ -362,10 +494,18 @@ def make_manifest(assets):
     (assets.parent / 'a740-link-compatibility.json').write_text(json.dumps(compatibility, indent=2) + '\n')
     (assets.parent / 'shm-link-compatibility.json').write_text(
         json.dumps(verify_shm_link_compatibility(assets), indent=2) + '\n')
+    (assets.parent / 'mesa262-link-compatibility.json').write_text(
+        json.dumps(verify_mesa262_link_compatibility(assets), indent=2) + '\n')
     candidate = (assets / SHM_EXPERIMENT['driver']).read_bytes()
     for marker in (b'EVE_X11_SHM_STAGING', b'EVE_X11_SHM {', b'eve-x11-shm-1'):
         if marker not in candidate:
             raise ValueError('Optional SHM driver lacks its compiled transport marker')
+    mesa262 = (assets / MESA262_EXPERIMENT['driver']).read_bytes()
+    if b'Mesa 26.2.4' not in mesa262:
+        raise ValueError('Optional Mesa driver lacks its exact compiled release identity')
+    for marker in (b'EVE_X11_SHM_STAGING', b'EVE_X11_SHM {', b'eve-x11-shm-1'):
+        if marker in mesa262:
+            raise ValueError('Pristine Mesa 26.2.4 driver unexpectedly contains the local SHM transport')
     files = {}
     for name, kind in names.items():
         data = (assets / name).read_bytes()
@@ -394,6 +534,7 @@ def make_manifest(assets):
         'architecture': 'arm64ec-and-arm64-glibc', 'kmd': 'kgsl', 'files': files,
         'a740PcModeExperiment': A740_EXPERIMENT,
         'shmPresentationExperiment': SHM_EXPERIMENT,
+        'mesa262DriverExperiment': MESA262_EXPERIMENT,
         'baselineRuntimeSha256': 'f036c00a290abb953bec26be80c4d8fe492fd986e7a589c51008124432c8641e',
         'toolchain': {'name': 'llvm-mingw-20250920-ucrt-ubuntu-22.04-aarch64',
                       'sha256': 'bce5cc755c613515fd44e1ee9523123d854103abae147571adb645450036274d'},
@@ -406,7 +547,7 @@ def make_manifest(assets):
                              'reusedCorrespondingSourcesSha256': SOURCES_HASH},
     }
     (assets / 'client-graphics-bundle.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    print('Validated native EC code ranges, original graphics bytes and optional A740/SHM drivers.', flush=True)
+    print('Validated native EC code ranges, original graphics bytes and optional A740/SHM/Mesa 26.2.4 drivers.', flush=True)
 
 
 def runtime_identity(output):

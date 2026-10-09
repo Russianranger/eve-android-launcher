@@ -20,7 +20,8 @@ import threading
 import time
 import unittest
 from unittest import mock
-from test_client_graphics import a740_identity, d3d_success, display_success, linear_identity, shm_report, vulkan_success
+from test_client_graphics import (a740_identity, d3d_success, display_success, linear_identity,
+                                  mesa262_identity, mesa262_vulkan, shm_report, vulkan_success)
 
 BACKEND = Path(__file__).resolve().parents[1] / "backend/client_runtime.py"
 sys.path.insert(0, str(BACKEND.parent))
@@ -48,7 +49,10 @@ history_file = state / (mode + '.environment-history.json')
 history = json.loads(history_file.read_text()) if history_file.exists() else []
 history_file.write_text(json.dumps(history + [environment]))
 if mode in ('graphicsVulkan', 'graphicsD3d', 'graphicsIdentity'):
-    if behavior == mode + '-hangs' or (mode == 'graphicsVulkan' and behavior == 'shm-selected-hangs' and environment['EVE_X11_SHM_STAGING'] == '1'):
+    mesa262 = bool(environment['driverLibrary'] and environment['driverLibrary'].endswith('turnip-26.2.4.so'))
+    if (behavior == mode + '-hangs'
+            or (mode == 'graphicsVulkan' and behavior == 'shm-selected-hangs' and environment['EVE_X11_SHM_STAGING'] == '1')
+            or (mesa262 and behavior == 'mesa262-selected-' + mode + '-hangs')):
         def finish_graphics(*args):
             (state / (mode + '.stopped')).write_text('graceful')
             sys.exit(0)
@@ -58,6 +62,18 @@ if mode in ('graphicsVulkan', 'graphicsD3d', 'graphicsIdentity'):
         subprocess.Popen([sys.executable, __file__, 'orphan', str(state), str(port), behavior])
         time.sleep(.15)
     report = json.loads((state / ('fixture-' + mode + '.json')).read_text())
+    if mesa262 and mode in ('graphicsVulkan', 'graphicsIdentity'):
+        report = json.loads((state / ('fixture-mesa262-' + mode + '.json')).read_text())
+        if behavior == 'mesa262-wrong-version': report['driver_version'] = 26 << 22
+        if behavior == 'mesa262-wrong-device': report['device'] += ' other adapter'
+        if behavior == 'mesa262-software': report['software'] = True
+        if mode == 'graphicsIdentity':
+            if behavior == 'mesa262-wrong-chip': report['device_id'] = 0x740
+            if behavior == 'mesa262-fixture': report['mode'] = 'fixture'
+            if behavior == 'mesa262-old-probe': report['helper'] = 'eve-a740-driver-probe-1'
+            if behavior == 'mesa262-wrong-info': report['driver_info'] = 'Mesa 26.2.40'
+            if behavior == 'mesa262-linear-unsupported': report['linear_presentation']['supported'] = False
+        if mode == 'graphicsVulkan' and behavior == 'mesa262-final-bad' and os.environ.get('MESA_VK_WSI_DEBUG') == 'sw,linear': report['software'] = True
     if behavior == mode + '-bad':
         if mode == 'graphicsVulkan': report['software'] = True
         elif mode == 'graphicsIdentity': report['device_id'] = 0x740
@@ -184,6 +200,8 @@ class ClientRuntimeTests(unittest.TestCase):
         self.addCleanup(self.cleanup_processes)
         (self.state / 'fixture-graphicsVulkan.json').write_text(json.dumps(vulkan_success()))
         (self.state / 'fixture-graphicsIdentity.json').write_text(json.dumps(linear_identity()))
+        (self.state / 'fixture-mesa262-graphicsVulkan.json').write_text(json.dumps(mesa262_vulkan()))
+        (self.state / 'fixture-mesa262-graphicsIdentity.json').write_text(json.dumps(mesa262_identity()))
         (self.state / 'fixture-graphicsD3d.json').write_text(json.dumps(d3d_success()))
         (self.state / 'fixture-display.json').write_text(json.dumps(display_success()))
         (self.state / 'fixture-shm.json').write_text(json.dumps([shm_report(stage_id=n) for n in (1, 2, 3)]))
@@ -191,12 +209,14 @@ class ClientRuntimeTests(unittest.TestCase):
             'dxvk-d3d11-arm64ec.dll': {'sha256': '1' * 64},
             'dxvk-dxgi-arm64ec.dll': {'sha256': '2' * 64},
             'turnip-26.0.0.so': {'sha256': '3' * 64},
-            'turnip-26.0.0-x11-shm.so': {'sha256': '4' * 64}},
-            'shmPresentationExperiment': MODULE.client_graphics.SHM_EXPERIMENT}))
+            'turnip-26.0.0-x11-shm.so': {'sha256': '4' * 64},
+            'turnip-26.2.4.so': {'sha256': '5' * 64}},
+            'shmPresentationExperiment': MODULE.client_graphics.SHM_EXPERIMENT,
+            'mesa262DriverExperiment': MODULE.client_graphics.MESA262_EXPERIMENT}))
 
     def settings(self, behavior="normal", graphics=False, performance_profile="responsive", diagnostic_hud=False,
                  disable_concurrent_binning=False, disable_lrcpc2=False, linear_presentation=False, sysmem_rendering=False,
-                 shm_presentation=False):
+                 shm_presentation=False, mesa262_driver=False):
         def command(role):
             return (sys.executable, str(self.fixture), role, str(self.state), str(self.port), behavior)
         return MODULE.Settings(content=self.content, state=self.state, server_state=self.server,
@@ -208,7 +228,7 @@ class ClientRuntimeTests(unittest.TestCase):
                                performance_profile=performance_profile, diagnostic_hud=diagnostic_hud,
                                disable_concurrent_binning=disable_concurrent_binning, disable_lrcpc2=disable_lrcpc2,
                                linear_presentation=linear_presentation, sysmem_rendering=sysmem_rendering,
-                               shm_presentation=shm_presentation,
+                               shm_presentation=shm_presentation, mesa262_driver=mesa262_driver,
                                vulkan_command=command("graphicsVulkan") if graphics else None,
                                d3d_command=command("graphicsD3d") if graphics else None,
                                graphics_timeout=.5,
@@ -216,11 +236,12 @@ class ClientRuntimeTests(unittest.TestCase):
 
     def launch(self, behavior="normal", clear_stop=True, graphics=False, performance_profile="responsive", diagnostic_hud=False,
                disable_concurrent_binning=False, disable_lrcpc2=False, linear_presentation=False, sysmem_rendering=False,
-               shm_presentation=False):
+               shm_presentation=False, mesa262_driver=False):
         if clear_stop:
             (self.state / "run/stop").unlink(missing_ok=True)
         selected = self.settings(behavior, graphics, performance_profile, diagnostic_hud,
-                                 disable_concurrent_binning, disable_lrcpc2, linear_presentation, sysmem_rendering, shm_presentation)
+                                 disable_concurrent_binning, disable_lrcpc2, linear_presentation, sysmem_rendering,
+                                 shm_presentation, mesa262_driver)
         (self.state / 'fixture-performance.json').write_text(json.dumps(MODULE.client_graphics.performance_settings(
             "turnip-dxvk", performance_profile)))
         values = {key: str(value) if isinstance(value, Path) else value for key, value in selected.__dict__.items()}
@@ -239,6 +260,7 @@ class ClientRuntimeTests(unittest.TestCase):
             "  if self.s.graphics_mode=='turnip-dxvk': (self.s.state/'cache').mkdir(exist_ok=True)\n"
             "  if self.s.graphics_mode=='turnip-dxvk': module.client_graphics.select_driver(self.s.graphics_folder,self.s.state,False)\n"
             "  if self.s.graphics_mode=='turnip-dxvk': module.client_graphics.a740_identity_command=lambda folder: (*self.s.vulkan_command[:2],'graphicsIdentity',*self.s.vulkan_command[3:])\n"
+            "  if self.s.graphics_mode=='turnip-dxvk': module.client_graphics.mesa262_identity_command=lambda folder: (*self.s.vulkan_command[:2],'graphicsIdentity',*self.s.vulkan_command[3:])\n"
             "  return {'contentBuild':3396210}\n"
             " def require_server(self):\n"
             "  if (self.s.state/'server-lost').exists(): raise module.RuntimeErrorDetail('server session exited')\n"
@@ -731,6 +753,148 @@ class ClientRuntimeTests(unittest.TestCase):
                 driver.assert_not_called()
                 self.assertEqual(stages, ["graphicsVulkan", "graphicsIdentity"])
                 self.assertFalse((self.state / "graphics-preflight.json").exists())
+
+    def test_mesa262_cli_is_strict_default_off_exclusive_and_software_records_ignored_request(self):
+        for arguments, enabled in (([], False), (["--mesa262-driver"], True),
+                                   (["--mesa262-driver", "--linear-presentation"], True)):
+            with self.subTest(arguments=arguments), mock.patch.object(MODULE, "Runtime") as constructor, \
+                    mock.patch.object(MODULE.signal, "signal"):
+                self.assertEqual(MODULE.main(["start", *arguments]), 0)
+                settings = constructor.call_args.args[0]
+                self.assertEqual(settings.mesa262_driver, enabled)
+                self.assertFalse(settings.a740_pc_mode)
+                self.assertFalse(settings.shm_presentation)
+                self.assertEqual(settings.linear_presentation, "--linear-presentation" in arguments)
+        for arguments in (["--mesa262-driver", "1"], ["--mesa262-driver", "26.2.4"],
+                          ["--mesa262-driver", "--a740-pc-mode"], ["--mesa262-driver", "--shm-presentation"]):
+            with self.subTest(arguments=arguments), mock.patch.object(MODULE, "Runtime") as constructor, \
+                    mock.patch("sys.stderr", new=io.StringIO()), self.assertRaises(SystemExit):
+                MODULE.main(["start", *arguments])
+            constructor.assert_not_called()
+        for invalid in (1, "1", None):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                MODULE.Runtime(MODULE.Settings(mesa262_driver=invalid))
+        for mode in MODULE.client_graphics.MODES:
+            for flag in ("a740_pc_mode", "shm_presentation"):
+                with self.subTest(mode=mode, flag=flag), self.assertRaises(ValueError):
+                    MODULE.Runtime(MODULE.Settings(**{"graphics_mode": mode, "mesa262_driver": True, flag: True}))
+        runtime = MODULE.Runtime(self.settings(mesa262_driver=True, linear_presentation=True))
+        with mock.patch.object(runtime, "wait_graphics") as helper:
+            report = runtime.run_graphics()
+        helper.assert_not_called()
+        self.assertTrue(report["optimizations"]["requestedMesa262Driver"])
+        self.assertFalse(report["optimizations"]["mesa262Driver"])
+        self.assertFalse(report["mesa262DriverQualification"]["selectedIdentityGatePassed"])
+        self.assertFalse(any(key.startswith(("MESA_", "VK_", "TU_", "DXVK_")) for key in runtime.environment()))
+
+    def test_mesa262_fresh_old_and_selected_chip_gates_then_render_and_reset_preserve_cache(self):
+        for linear in (False, True):
+            with self.subTest(linear=linear):
+                process = self.launch(graphics=True, mesa262_driver=True, linear_presentation=linear)
+                running = self.wait_status("running")
+                report = running["graphicsPreflight"]
+                qualification = report["mesa262DriverQualification"]
+                for field in ("hardwareIdentityGatePassed", "selectedIdentityGatePassed", "selectedDriverVulkanPresentationPassed",
+                              "nativeD3d11ShaderReadbackPassed", "visibleRfbFramesPassed", "immediatePresentationPassed"):
+                    self.assertTrue(qualification[field])
+                self.assertEqual(qualification["mesaVersion"], "26.2.4")
+                self.assertEqual(qualification["driverSha256"], "5" * 64)
+                self.assertEqual(qualification["mesaSourceSha256"], MODULE.client_graphics.MESA262_EXPERIMENT["mesaSourceSha256"])
+                self.assertEqual(qualification["identity"]["device_id"], 0x43050a01)
+                self.assertFalse(qualification["physicalBenefitVerified"])
+                self.assertTrue(running["optimizations"]["mesa262Driver"])
+                self.assertEqual(report["vulkan"]["driver_version"], (26 << 22) | (2 << 12) | 4)
+                identity_history = json.loads((self.state / "graphicsIdentity.environment-history.json").read_text())[-2:]
+                self.assertEqual([Path(item["driverLibrary"]).name for item in identity_history],
+                                 ["turnip-26.0.0.so", "turnip-26.2.4.so"])
+                self.assertEqual([item["MESA_VK_WSI_DEBUG"] for item in identity_history], ["sw", "sw"])
+                vulkan_history = json.loads((self.state / "graphicsVulkan.environment-history.json").read_text())[-(3 if linear else 2):]
+                self.assertEqual([item["MESA_VK_WSI_DEBUG"] for item in vulkan_history],
+                                 ["sw", "sw", "sw,linear"] if linear else ["sw", "sw"])
+                for role in ("graphicsD3d", "client"):
+                    environment = json.loads((self.state / (role + ".environment.json")).read_text())
+                    self.assertEqual(Path(environment["driverLibrary"]).name, "turnip-26.2.4.so")
+                    self.assertEqual(environment["MESA_SHADER_CACHE_DIR"], str(self.state / "cache/mesa-26.2.4"))
+                    self.assertEqual(environment["MESA_VK_WSI_DEBUG"], "sw,linear" if linear else "sw")
+                    self.assertIsNone(environment["EVE_X11_SHM_STAGING"])
+                if linear:
+                    self.assertEqual(report["linearPresentationQualification"]["identity"]["helper"], "eve-mesa262-driver-probe-1")
+                    self.assertEqual(report["linearPresentationQualification"]["originalDriver"], "turnip-26.2.4.so")
+                warm = self.state / "cache/mesa-26.2.4/warm"
+                warm.write_bytes(b"preserved new cache")
+                (self.state / "run/stop").write_text("stop")
+                self.assertEqual(process.wait(timeout=4), 0)
+                baseline = self.launch(graphics=True)
+                restarted = self.wait_status("running")
+                self.assertFalse(restarted["optimizations"]["mesa262Driver"])
+                self.assertFalse(restarted["graphicsPreflight"]["mesa262DriverQualification"]["selectedIdentityGatePassed"])
+                environment = json.loads((self.state / "client.environment.json").read_text())
+                self.assertEqual(Path(environment["driverLibrary"]).name, "turnip-26.0.0.so")
+                self.assertEqual(environment["MESA_SHADER_CACHE_DIR"], str(self.state / "cache/mesa-26.0.0"))
+                self.assertEqual(warm.read_bytes(), b"preserved new cache")
+                (self.state / "run/stop").write_text("stop")
+                self.assertEqual(baseline.wait(timeout=4), 0)
+
+    def test_mesa262_failed_selected_hardware_formats_or_render_never_reuses_receipt_or_launches_game(self):
+        for behavior in ("mesa262-wrong-version", "mesa262-wrong-device", "mesa262-software", "mesa262-wrong-chip",
+                         "mesa262-fixture", "mesa262-old-probe", "mesa262-wrong-info", "mesa262-linear-unsupported",
+                         "mesa262-final-bad", "graphicsD3d-bad", "graphicsD3d-display-bad", "graphicsD3d-policy-fifo"):
+            with self.subTest(behavior=behavior):
+                (self.state / "graphics-preflight.json").write_text(json.dumps({"hardwarePreflightPassed": True,
+                    "mesa262DriverQualification": {"selectedIdentityGatePassed": True}}))
+                process = self.launch(behavior, graphics=True, mesa262_driver=True, linear_presentation=True)
+                self.assertEqual(process.wait(timeout=5), 1)
+                self.assertEqual(self.wait_status("failed")["graphicsPreflight"], {})
+                self.assertFalse((self.state / "graphics-preflight.json").exists())
+                self.assertFalse((self.state / "client.pid").exists())
+                self.assertFalse((self.state / "run/processes.json").exists())
+
+    def test_mesa262_software_and_early_tls_failure_discard_prior_qualification(self):
+        receipt = self.state / "graphics-preflight.json"
+        receipt.write_text('{"mesa262DriverQualification":{"selectedIdentityGatePassed":true}}')
+        failed = self.launch("gate-fails", graphics=True, mesa262_driver=True)
+        self.assertEqual(failed.wait(timeout=5), 1)
+        self.assertEqual(self.wait_status("failed")["graphicsPreflight"], {})
+        self.assertFalse(receipt.exists())
+        self.assertFalse((self.state / "graphicsIdentity.pid").exists())
+        receipt.write_text('{"mesa262DriverQualification":{"selectedIdentityGatePassed":true}}')
+        software = self.launch(mesa262_driver=True)
+        running = self.wait_status("running")
+        self.assertTrue(running["optimizations"]["requestedMesa262Driver"])
+        self.assertFalse(running["optimizations"]["mesa262Driver"])
+        self.assertFalse(running["graphicsPreflight"]["mesa262DriverQualification"]["selectedIdentityGatePassed"])
+        self.assertFalse(receipt.exists())
+        environment = json.loads((self.state / "client.environment.json").read_text())
+        self.assertIsNone(environment["driverLibrary"])
+        self.assertIsNone(environment["MESA_SHADER_CACHE_DIR"])
+        (self.state / "run/stop").write_text("stop")
+        self.assertEqual(software.wait(timeout=4), 0)
+
+    def test_stop_and_timeout_during_selected_mesa262_vulkan_or_chip_identity_clean_helpers_without_game(self):
+        for role in ("graphicsVulkan", "graphicsIdentity"):
+            behavior = "mesa262-selected-" + role + "-hangs"
+            for stop in (True, False):
+                with self.subTest(role=role, stop=stop):
+                    process = self.launch(behavior, graphics=True, mesa262_driver=True)
+                    deadline = time.monotonic() + 4
+                    while time.monotonic() < deadline:
+                        try:
+                            environment = json.loads((self.state / (role + ".environment.json")).read_text())
+                            journal = json.loads((self.state / "run/processes.json").read_text())
+                            identity = journal.get(role + "Identity", {})
+                            if (Path(environment["driverLibrary"]).name == "turnip-26.2.4.so"
+                                    and identity.get("pid") == environment["processId"] and MODULE.identity_alive(identity)):
+                                break
+                        except (OSError, ValueError, KeyError, TypeError):
+                            pass
+                        time.sleep(.01)
+                    else: self.fail("Selected Mesa 26.2.4 stage did not start")
+                    if stop: (self.state / "run/stop").write_text("stop")
+                    self.assertEqual(process.wait(timeout=5), 0 if stop else 1)
+                    self.assertEqual(self.wait_status("stopped" if stop else "failed")["graphicsPreflight"], {})
+                    self.assertFalse((self.state / "graphics-preflight.json").exists())
+                    self.assertFalse((self.state / "client.pid").exists())
+                    self.assertFalse((self.state / "run/processes.json").exists())
 
     def test_shm_cli_is_strict_default_off_mutually_exclusive_and_software_ignores_it(self):
         for arguments, enabled in (([], False), (["--shm-presentation"], True),

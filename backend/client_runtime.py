@@ -81,6 +81,7 @@ class Settings:
     linear_presentation: bool = False
     sysmem_rendering: bool = False
     shm_presentation: bool = False
+    mesa262_driver: bool = False
     graphics_folder: Path = Path("/opt/eve-android")
     graphics_timeout: float = 90
     window_start_timeout: float = 20
@@ -132,7 +133,8 @@ class Runtime:
             self.s.graphics_mode, self.s.performance_profile, self.s.diagnostic_hud)
         self.optimizations = client_graphics.optimization_settings(
             self.s.graphics_mode, self.s.disable_concurrent_binning, self.s.disable_lrcpc2,
-            self.s.a740_pc_mode, self.s.linear_presentation, self.s.sysmem_rendering, self.s.shm_presentation)
+            self.s.a740_pc_mode, self.s.linear_presentation, self.s.sysmem_rendering, self.s.shm_presentation,
+            self.s.mesa262_driver)
         self.cpu_topology = client_graphics.cpu_topology()
         self.run = self.s.state / "run"
         self.logs = self.s.state / "logs"
@@ -154,7 +156,8 @@ class Runtime:
         self.previous_snapshot = None
         self.diagnostics = client_diagnostics.PerformanceHistory(
             self.s.state, client_graphics.cache_directories(
-                self.s.state, self.optimizations["a740PcMode"], self.optimizations["shmPresentation"]))
+                self.s.state, self.optimizations["a740PcMode"], self.optimizations["shmPresentation"],
+                self.optimizations["mesa262Driver"]))
 
     def request_stop(self, *_: Any) -> None:
         self.cancelled = True
@@ -269,7 +272,8 @@ class Runtime:
             env, self.s.graphics_mode, self.s.graphics_folder, self.s.state,
             self.s.performance_profile, self.s.diagnostic_hud,
             self.s.disable_concurrent_binning, self.s.disable_lrcpc2,
-            self.s.a740_pc_mode, self.s.linear_presentation, self.s.sysmem_rendering, self.s.shm_presentation)
+            self.s.a740_pc_mode, self.s.linear_presentation, self.s.sysmem_rendering, self.s.shm_presentation,
+            self.s.mesa262_driver)
 
     def require_server(self) -> None:
         value = read_json(self.s.server_state / "run/status.json")
@@ -572,7 +576,8 @@ class Runtime:
             self.diagnostics.report.update(
                 wrappedClient=self.window_session is not None,
                 graphicsMode=self.s.graphics_mode if self.s.graphics_mode in client_graphics.MODES else "unknown",
-                dxvkVersion=client_graphics.DXVK_VERSION, mesaVersion=client_graphics.MESA_VERSION)
+                dxvkVersion=client_graphics.DXVK_VERSION,
+                mesaVersion=self.optimizations["selectedMesaVersion"])
             for name in ("supervisorIdentity", "clientIdentity"):
                 identity = self.identities.get(name, {})
                 if isinstance(identity.get("pid"), int) and str(identity.get("startTicks", "")).isdigit():
@@ -611,10 +616,16 @@ class Runtime:
                "selectedVulkanPresentationPassed": False, "nativeD3d11ShaderReadbackPassed": False,
                "visibleRfbFramesPassed": False, "transportActivationVerified": False,
                "nativeEffectVerified": False, "physicalBenefitVerified": False}
+        mesa262 = {"requestedMesa262Driver": self.s.mesa262_driver, "mesa262Driver": False,
+                   "hardwareIdentityGatePassed": False, "selectedIdentityGatePassed": False,
+                   "selectedDriverVulkanPresentationPassed": False, "nativeD3d11ShaderReadbackPassed": False,
+                   "visibleRfbFramesPassed": False, "immediatePresentationPassed": False,
+                   "nativeEffectVerified": False, "physicalBenefitVerified": False}
         if self.s.graphics_mode == "software":
             return {"mode": "software", "performance": self.performance,
                     "optimizations": self.optimizations, "hardwarePreflightPassed": False,
-                    "sysmemRenderingQualification": sysmem, "shmPresentationQualification": shm}
+                    "sysmemRenderingQualification": sysmem, "shmPresentationQualification": shm,
+                    "mesa262DriverQualification": mesa262}
         env = self.environment()
         baseline_env = client_graphics.configure_environment(
             env, self.s.graphics_mode, self.s.graphics_folder, self.s.state,
@@ -628,23 +639,34 @@ class Runtime:
         native = self.s.vulkan_command or client_graphics.native_command(self.s.graphics_folder)
         self.wait_graphics("graphicsVulkan", native, baseline_env, min(30, self.s.graphics_timeout))
         vulkan = client_graphics.parse_vulkan(client_prepare.bounded_text(self.logs / "client-graphicsVulkan.log", limit=65536))
-        driver = {"a740PcMode": False, "shmPresentation": False, "driver": "turnip-26.0.0.so"}
+        driver = {"a740PcMode": False, "shmPresentation": False, "mesa262Driver": False,
+                  "driver": "turnip-26.0.0.so", "mesaVersion": client_graphics.MESA_VERSION}
+        selected_mesa = client_graphics.MESA_VERSION
         linear = {"requestedLinearPresentation": self.s.linear_presentation, "linearPresentation": False,
                   "mesaWsiDebug": "sw", "hardwareCapabilityGatePassed": False, "nativeEffectVerified": False}
-        if any(self.optimizations[key] for key in ("a740PcMode", "linearPresentation", "sysmemRendering", "shmPresentation")):
+        if any(self.optimizations[key] for key in ("a740PcMode", "linearPresentation", "sysmemRendering", "shmPresentation", "mesa262Driver")):
             self.status("starting", "Checking native A740 identity and optional presentation capability", displayReady=True)
             self.wait_graphics("graphicsIdentity", client_graphics.a740_identity_command(self.s.graphics_folder),
                                baseline_env, min(30, self.s.graphics_timeout))
             identity_log = client_prepare.bounded_text(self.logs / "client-graphicsIdentity.log", limit=65536)
             identity = client_graphics.parse_a740_identity(identity_log)
-            if self.optimizations["linearPresentation"]:
+            if self.optimizations["linearPresentation"] and not self.optimizations["mesa262Driver"]:
                 linear = client_graphics.parse_linear_presentation(identity_log, vulkan)
             if self.optimizations["sysmemRendering"]:
                 sysmem = client_graphics.parse_sysmem_rendering(identity_log, vulkan)
             self.cancellation_point()
-        if self.optimizations["a740PcMode"] or self.optimizations["shmPresentation"]:
+        if any(self.optimizations[key] for key in ("a740PcMode", "shmPresentation", "mesa262Driver")):
             baseline_vulkan = vulkan
-            if self.optimizations["shmPresentation"]:
+            if self.optimizations["mesa262Driver"]:
+                driver = client_graphics.select_driver(
+                    self.s.graphics_folder, self.s.state, False, baseline_vulkan, identity, mesa262_driver=True)
+                selected_mesa = client_graphics.MESA262_VERSION
+                mesa262.update(mesa262Driver=True, hardwareIdentityGatePassed=True,
+                               baselineIdentity=identity, baselineVulkan=baseline_vulkan,
+                               mesaVersion=selected_mesa, mesaSourceSha256=driver["mesaSourceSha256"],
+                               driver=driver["driver"], driverSha256=driver["driverSha256"],
+                               mesaShaderCache=driver["mesaShaderCache"])
+            elif self.optimizations["shmPresentation"]:
                 driver = client_graphics.select_driver(
                     self.s.graphics_folder, self.s.state, False, baseline_vulkan, identity, shm_presentation=True)
                 shm.update(shmPresentation=True, hardwareIdentityGatePassed=True,
@@ -658,15 +680,31 @@ class Runtime:
                 env, self.s.graphics_mode, self.s.graphics_folder, self.s.state,
                 self.s.performance_profile, self.s.diagnostic_hud,
                 self.s.disable_concurrent_binning, self.s.disable_lrcpc2,
-                self.optimizations["a740PcMode"], False, False, self.optimizations["shmPresentation"])
+                self.optimizations["a740PcMode"], False, False, self.optimizations["shmPresentation"],
+                self.optimizations["mesa262Driver"])
             driver_env.pop("EVE_X11_SHM_STAGING", None)
             self.wait_graphics("graphicsVulkan", native, driver_env, min(30, self.s.graphics_timeout))
             vulkan = client_graphics.parse_vulkan(
-                client_prepare.bounded_text(self.logs / "client-graphicsVulkan.log", limit=65536))
-            if any(vulkan[key] != baseline_vulkan[key]
-                   for key in ("vendor_id", "driver_id", "driver_version", "api_version", "software", "device")):
+                client_prepare.bounded_text(self.logs / "client-graphicsVulkan.log", limit=65536), selected_mesa)
+            physical_keys = ("vendor_id", "driver_id", "software", "device")
+            comparison_keys = physical_keys if self.optimizations["mesa262Driver"] else (*physical_keys, "driver_version", "api_version")
+            if any(vulkan[key] != baseline_vulkan[key] for key in comparison_keys):
                 raise RuntimeErrorDetail("The experimental driver presented a different Vulkan device")
             driver.update(identity=identity, baselineVulkan=baseline_vulkan)
+            if self.optimizations["mesa262Driver"]:
+                self.cancellation_point()
+                self.status("starting", "Checking the selected Mesa 26.2.4 driver's native chip identity", displayReady=True)
+                self.wait_graphics("graphicsIdentity", client_graphics.mesa262_identity_command(self.s.graphics_folder),
+                                   driver_env, min(30, self.s.graphics_timeout))
+                selected_identity_log = client_prepare.bounded_text(self.logs / "client-graphicsIdentity.log", limit=65536)
+                selected_identity = client_graphics.qualify_mesa262_identity(
+                    selected_identity_log, baseline_vulkan, identity, vulkan)
+                driver.update(identity=selected_identity, baselineIdentity=identity, selectedVulkan=vulkan)
+                mesa262.update(identity=selected_identity, selectedIdentityGatePassed=True,
+                               selectedDriverVulkanPresentationPassed=True, selectedVulkan=vulkan)
+                if self.optimizations["linearPresentation"]:
+                    linear = client_graphics.parse_linear_presentation(selected_identity_log, vulkan, selected_mesa)
+                self.cancellation_point()
             if self.optimizations["shmPresentation"]:
                 shm["selectedDriverVulkanPresentationPassed"] = True
         if any(self.optimizations[key] for key in ("linearPresentation", "sysmemRendering", "shmPresentation")):
@@ -674,7 +712,7 @@ class Runtime:
             self.status("starting", "Checking the selected presentation and rendering environment", displayReady=True)
             self.wait_graphics("graphicsVulkan", native, env, min(30, self.s.graphics_timeout))
             vulkan = client_graphics.parse_vulkan(
-                client_prepare.bounded_text(self.logs / "client-graphicsVulkan.log", limit=65536))
+                client_prepare.bounded_text(self.logs / "client-graphicsVulkan.log", limit=65536), selected_mesa)
             if any(vulkan[key] != baseline_vulkan[key]
                    for key in ("vendor_id", "driver_id", "driver_version", "api_version", "software", "device")):
                 raise RuntimeErrorDetail("The selected rendering environment showed a different Vulkan device")
@@ -711,15 +749,21 @@ class Runtime:
         if self.optimizations["sysmemRendering"]:
             sysmem.update(nativeD3d11ShaderReadbackPassed=True, visibleRfbFramesPassed=True,
                           turnipDebug=self.optimizations["turnipDebug"])
+        if self.optimizations["mesa262Driver"]:
+            mesa262.update(nativeD3d11ShaderReadbackPassed=True, visibleRfbFramesPassed=True,
+                           immediatePresentationPassed=True, finalVulkan=vulkan,
+                           qualificationScope="fresh native selected-driver identity, Vulkan, D3D11 shaders/readback and visible immediate presentation; physical EVE benefit requires observation")
         report = {"mode": "turnip-dxvk", "observedAt": time.time(), "supervisorIdentity": self.identities.get("supervisorIdentity"), "hardwarePreflightPassed": True,
                   "vulkan": vulkan, "d3d11": d3d, "presentation": presentation, "display": visible,
                   "driverSelection": driver,
                   "linearPresentationQualification": linear,
                   "sysmemRenderingQualification": sysmem,
                   "shmPresentationQualification": shm,
+                  "mesa262DriverQualification": mesa262,
                   "performance": self.performance,
                   "optimizations": self.optimizations, "cpuTopology": self.cpu_topology,
                   "qualificationScope": "native hardware D3D11 helper and local display; EVE performance requires observation"}
+        self.cancellation_point()
         atomic_json(self.s.state / "graphics-preflight.json", report)
         return report
 
@@ -1044,6 +1088,7 @@ def main(argv=None) -> int:
     parser.add_argument("--linear-presentation", action="store_true")
     parser.add_argument("--sysmem-rendering", action="store_true")
     driver_options.add_argument("--shm-presentation", action="store_true")
+    driver_options.add_argument("--mesa262-driver", action="store_true")
     options = parser.parse_args(argv)
     runtime = Runtime(Settings(content=options.content, state=options.state, server_state=options.server_state,
                                graphics_mode=options.graphics_mode,
@@ -1052,7 +1097,8 @@ def main(argv=None) -> int:
                                disable_lrcpc2=options.disable_lrcpc2, a740_pc_mode=options.a740_pc_mode,
                                linear_presentation=options.linear_presentation,
                                sysmem_rendering=options.sysmem_rendering,
-                               shm_presentation=options.shm_presentation))
+                               shm_presentation=options.shm_presentation,
+                               mesa262_driver=options.mesa262_driver))
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, runtime.request_stop)
     try:

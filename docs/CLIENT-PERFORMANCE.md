@@ -1,5 +1,45 @@
 # Client optimization evidence and qualification
 
+## October 9: surface neutral/hotter, isolated Mesa 26.2.4 driver
+
+[The new device export](DEVICE-20261009-SURFACE.md) verifies 6,364 successful
+surface posts without fallback, yet unchanged user-observed FPS and temperatures
+rising into the low/mid 70s. The captured CPU sensor rises 61.4→73.9°C. Surface
+CPU wall costs normalize to 0.328 ms/snapshot and 3.201 ms/post for lock/draw/post;
+these are aggregate counters including waits/lifecycle work, not GPU execution.
+App-window FrameMetrics exclude the separate game layer, so their reduced totals
+cannot establish whole-device GPU savings. SHM also really ran, with at least
+6,000 completed EVE-sized transfers and sampled later copies near 0.390 ms.
+Captured clock ceilings do not fall; no supported thermal-throttling proof or
+new current-session crash is established before the export-start boundary.
+
+Accept the neutral surface result and disable it for the next candidate. 0.1.20
+adds a separately selected pristine Mesa 26.2.4 glibc/KGSL driver, pinned to the
+[official October 1 release](https://docs.mesa3d.org/relnotes/26.2.4.html) archive
+SHA-256 `bce5f7fbebb934373b86c999a064d52fb5065878dc57f287f95346648ec832e9`.
+[The source comparison](MESA-26.2-CANDIDATE.md) identifies newer IR3 predication,
+constant-vector/global-address lowering, exact-chip A7xx interpolation state and
+KGSL returned-allocation-flags handling. These are plausible GPU/compiler leads,
+not proof that EVE uses every affected path or will sustain 30 FPS.
+
+Preserve the immutable original driver, other independent driver experiments,
+the accepted Wine/FEX runtime, DXVK 2.4.1 per-submit fences, IMMEDIATE mode and
+full RGB. Build the new driver independently without SHM/A740 patches; require
+original ABI/dependencies and complete corresponding sources. A separate Mesa
+cache avoids mixing driver versions. Fresh original/exact-A740 identity and
+selected exact-26.2.4 identity/capabilities/Vulkan/native EC/readback/visible-RFB
+checks must pass each accepted start. Old strict 26.0.0 parser defaults remain;
+only explicitly selected 26.2.4 accepts its expected version difference.
+
+The next single case uses linear + newer driver at 30/1/display30, with SHM and
+surface off. It changes the driver candidate and removes completed neutral
+transport/display experiments; native assets are rebuilt, so this is not a
+binary-identical single-factor A/B. Do not request another completed baseline
+performance run for that reason. Keep game settings and fan/power mode unchanged,
+FSR off, and request only one live export plus actual FPS/temperatures/faults.
+If neutral again, bounded native render/completion/readback timing is the next
+evidence target rather than repeating already neutral option matrices.
+
 ## October 8 final: SHM neutral, separate Android display surface
 
 [The physical run](DEVICE-20261008-SHM.md) verifies at least 2,400 completed

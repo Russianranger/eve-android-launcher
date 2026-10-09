@@ -5,7 +5,7 @@ on:
   pull_request:
   workflow_dispatch:
 env:
-  EVE_APP_VERSION: '0.1.19'
+  EVE_APP_VERSION: '0.1.20'
 permissions:
   contents: read
 defaults:
@@ -179,6 +179,9 @@ jobs:
             out/shm*.log
             out/turnip-shm-no-kgsl.*
             out/turnip-a740-no-kgsl.*
+            out/mesa262-*.json
+            out/mesa262-*.log
+            out/turnip-mesa262-no-kgsl.*
             out/dxvk.conf
             out/qualified-runtime-identity.json
             out/d3d11-*.json
@@ -208,6 +211,9 @@ jobs:
             backend/turnip-26.0.0.so
             backend/turnip-26.0.0-a740-pc-mode.so
             backend/turnip-26.0.0-x11-shm.so
+            backend/turnip-26.2.4.so
+            backend/mesa262-driver-probe
+            backend/mesa-26.2.4-notices.txt
             backend/a740-driver-probe
             backend/vulkan-probe
             backend/dxvk-d3d11-arm64ec.dll

@@ -1,6 +1,53 @@
 # EVE Android Launcher handoff
 
-## Current 0.1.19 continuation: separate Android display surface
+## Current 0.1.20 continuation: separate pristine Mesa 26.2.4 driver
+
+Accept the user's neutral 0.1.19 FPS result and temperatures rising into the
+low/mid 70s Celsius. [DEVICE-20261009-SURFACE.md](DEVICE-20261009-SURFACE.md)
+confirms 6,364 successful surface posts with no fallback, at least 6,000 EVE SHM
+transfers and a captured CPU sensor rising 61.4→73.9°C. App-window metrics now
+exclude the game surface and cannot prove whole-device GPU savings. Readable
+clock ceilings do not fall; no thermal-throttling proof or new current-session
+crash is established. The ZIP ends at export start, so reopen continuity is
+unverified. No baseline performance repeat is requested.
+
+0.1.20 adds default-off **Use newer Turnip driver (26.2.4 experiment)**, preference
+`mesa262-driver`, CLI `--mesa262-driver`. Select independent pristine KGSL asset
+`turnip-26.2.4.so`, new exact-version hardware helper `mesa262-driver-probe` and
+cache `mesa-26.2.4`. The immutable original and old A740/SHM driver choices remain;
+driver choices exclude each other atomically while linear stays independent.
+Restore baseline clears all nine flags while preserving renderer/HUD/data.
+
+Pin the official source SHA-256
+`bce5f7fbebb934373b86c999a064d52fb5065878dc57f287f95346648ec832e9` and new probe
+source SHA-256 `bb96b8e0721e167d20d8b15e433d180b79447b0bdb8f85dfaa614aa867c09d37`.
+Build independently without local A740/SHM patches, preserve original ABI/library
+requirements and record complete corresponding sources. Keep Wine/FEX, DXVK
+2.4.1 per-submit fences, IMMEDIATE presentation, full RGB, VNC comparison,
+memory-pressure policy, input/fullscreen behavior and client/server data intact.
+
+Each accepted start requires fresh original Vulkan/exact-A740 identity, selected
+exact-26.2.4 hardware identity/linear capabilities, selected Vulkan presentation
+and native EC shader/readback/three-visible-RFB-frame qualification. Default old
+parsers remain strict 26.0.0; explicit selection accepts only the pinned newer
+version and consistent physical identity. Record actual selected version/driver
+hash/cache and separate requested/effective/qualified/unverified benefit fields.
+Software mode does not activate the optional GPU driver.
+
+Follow [one 0.1.20 run](TESTING.md): linear + newer driver, 30/1/display30, SHM and
+separate surface off, other experiments off, FSR off, unchanged scene/fan/power.
+This changes the driver and removes completed neutral transport/display trials;
+rebuilt binaries can differ, so it is not a binary-identical single-factor A/B.
+Do not request an old baseline solely for that reason. If worse/faulty, disable
+only the newer-driver flag to recover the original driver/cache. If neutral,
+bounded native render/completion/readback measurements are the next evidence
+target. [CLIENT-PERFORMANCE.md](CLIENT-PERFORMANCE.md) and
+[MESA-26.2-CANDIDATE.md](MESA-26.2-CANDIDATE.md) record the source rationale and
+limits. Actual FPS/heat improvement and device compatibility remain unproven.
+
+Build qualification will be recorded after CI and signed APK inspection pass.
+
+## Historical 0.1.19 continuation: separate Android display surface
 
 Accept the user's neutral 0.1.18 FPS/temperature result; no baseline repeat.
 [DEVICE-20261008-SHM.md](DEVICE-20261008-SHM.md) proves actual EVE-sized shared

@@ -1,6 +1,46 @@
-# EVE Android Launcher 0.1.19: one separate display surface experiment
+# EVE Android Launcher 0.1.20: one newer Turnip driver experiment
 
-## Current 0.1.19 test
+## Current 0.1.20 test
+
+Your surface run really used the new path but did not improve FPS; temperatures
+rose into the low/mid 70s Celsius. Accept that result. No surface or baseline
+performance rerun is requested. This build tests a separate pristine Mesa 26.2.4
+KGSL driver while retaining Wine/FEX and DXVK 2.4.1, completion fences, full RGB
+and IMMEDIATE presentation. The original driver and shader caches remain available.
+
+1. Stop client/server, then install **EVE-Android-Launcher-0.1.20.apk** over the
+   existing app. Keep app data, import, runtime, prefix, account/world, caches
+   and mappings. No reimport or validation is needed.
+2. Keep **Use Adreno GPU rendering** enabled. Tap **Restore baseline settings**,
+   then enable only **Reduce GPU frame copies (experiment)**,
+   **Use newer Turnip driver (26.2.4 experiment)** and HUD. Confirm
+   30 FPS / queue 1 / display 30. Shared-memory transport, separate display
+   surface, SYS, A740, binning, alternate CPU instructions and early requests
+   stay off. This tests one driver candidate using the original Android display
+   and ordinary X11 transport; it is not a binary-identical single-factor A/B.
+3. Keep FSR off and the same 1280×720 station/game settings/fan/power mode.
+   Start server → SERVER READY → EVE client → Open client display. Startup
+   requires fresh original and selected-driver qualification; confirm the HUD
+   reports Mesa 26.2.4. Check ships, station geometry, text/colors, transparency,
+   fullscreen, gear/controller layers, mouse/touch and text entry. The new
+   version has a separate Mesa cache, so first-use shader warm-up is expected.
+4. Warm three minutes, then observe two with static camera and movement
+   separately. Record HUD FPS range, starting/ending SoC temperatures, stutter
+   and input delay. Export while running as **0.1.20-linear-mesa262**, reopen
+   the display and confirm the same session and controls remain usable.
+   Quit normally, then save and stop the server.
+
+Return this single labeled ZIP, FPS/temperatures and visual/input/export faults.
+If startup qualification fails, export immediately and report the stage rather
+than deleting data. If worse or faulty, stop and disable only **Use newer Turnip
+driver** to recover the original Mesa driver/cache while keeping linear.
+If a crash occurs, reopen and export before restarting; a baseline run is only
+needed to isolate that fault. Engine FPS and actual temperatures determine
+benefit; display-update rates or passing compatibility gates do not.
+
+Earlier instructions remain below as historical evidence.
+
+## Completed 0.1.19 test
 
 Your shared-memory run really used the new transport but did not improve FPS or
 heat. That result is accepted; no baseline rerun is requested. This build tries

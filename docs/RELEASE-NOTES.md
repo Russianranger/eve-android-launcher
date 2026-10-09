@@ -1,3 +1,22 @@
+# EVE Android Launcher 0.1.20 — optional newer Turnip driver
+
+The separate Android display surface activated successfully but did not improve
+FPS or heat. Its physical run is accepted; no baseline repeat is requested.
+
+Default-off **Use newer Turnip driver (26.2.4 experiment)** selects a separate,
+pristine Mesa 26.2.4 KGSL driver and shader cache. It targets newer GPU compiler,
+A7xx state and allocation-support changes instead of another display-copy trial.
+The original Mesa 26 driver remains available. Driver choices exclude each other;
+linear presentation remains independent. Restore baseline clears all nine flags.
+
+Fresh original/exact-A740 identity, selected exact-26.2.4 identity/capability,
+Vulkan presentation and native D3D11 shader/readback/visible-frame checks precede
+EVE. The version change does not relax the hardware or selected-driver gate.
+Wine/FEX, DXVK 2.4.1 and its completion fences, IMMEDIATE policy, full RGB, import,
+prefix, caches, world/account and controls remain intact. Physical FPS/heat gains
+are unproven. Install in place and follow [the single linear+new-driver run](TESTING.md),
+with SHM and separate Android surface off.
+
 # EVE Android Launcher 0.1.19 — optional separate display surface
 
 The physical shared-memory run activated successfully but did not improve FPS or

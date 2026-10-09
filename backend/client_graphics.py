@@ -29,6 +29,10 @@ A740_PROBE = "a740-driver-probe"
 A740_FILES = {A740_DRIVER, A740_PROBE}
 SHM_DRIVER = "turnip-26.0.0-x11-shm.so"
 SHM_FILES = {SHM_DRIVER, A740_PROBE}
+MESA262_VERSION = "26.2.4"
+MESA262_DRIVER = "turnip-26.2.4.so"
+MESA262_PROBE = "mesa262-driver-probe"
+MESA262_FILES = {MESA262_DRIVER, MESA262_PROBE, A740_PROBE}
 A740_DEVICE_ID = 0x43050a01
 # Pin the exact checked recipe/source inputs used by the optional build.
 # No experimental binary replaces the immutable baseline driver.
@@ -51,6 +55,13 @@ SHM_EXPERIMENT = {
     "probeSourceSha256": "841cf72ac761d6d3dfc8316d0d8ade103a876ad1a0eb463f3018ef399fa5833e",
     "sourceFileSha256": "92831b74c892f1795c489fc14f1c05afa362ad857b4959e1e28c13932cba52e5",
     "patchedSourceFileSha256": "18281444fd6639f4a6a672d543685f99ba282cdba25ba204e0c5a52062cc74fd",
+}
+MESA262_EXPERIMENT = {
+    "format": 1, "name": "turnip-mesa-26.2.4-1", "driver": MESA262_DRIVER,
+    "identityProbe": MESA262_PROBE, "mesa": MESA262_VERSION,
+    "mesaSourceSha256": "bce5f7fbebb934373b86c999a064d52fb5065878dc57f287f95346648ec832e9",
+    "probeSourceSha256": "bb96b8e0721e167d20d8b15e433d180b79447b0bdb8f85dfaa614aa867c09d37",
+    "deviceId": A740_DEVICE_ID, "pristine": True,
 }
 MODES = ("turnip-dxvk", "software")
 LIMIT = 64 * 1024**2
@@ -153,6 +164,13 @@ def verify_bundle(folder: Path) -> dict:
                 or shm != SHM_EXPERIMENT):
             raise ValueError("SHM presentation source provenance does not match its pinned inputs")
         allowed = allowed | SHM_FILES
+    if "mesa262DriverExperiment" in value:
+        mesa262 = value["mesa262DriverExperiment"]
+        if (not isinstance(mesa262, dict) or type(mesa262.get("format")) is not int
+                or type(mesa262.get("deviceId")) is not int or mesa262.get("pristine") is not True
+                or mesa262 != MESA262_EXPERIMENT):
+            raise ValueError("Mesa 26.2.4 driver source provenance does not match its pinned inputs")
+        allowed = allowed | MESA262_FILES
     if not isinstance(files, dict) or set(files) != allowed:
         raise ValueError("Graphics bundle must contain exactly the selected assets")
     for name, info in files.items():
@@ -167,7 +185,7 @@ def verify_bundle(folder: Path) -> dict:
         if name in KNOWN_BINARY_HASHES and sha != KNOWN_BINARY_HASHES[name]:
             raise ValueError("Graphics asset differs from the immutable selected driver/probe")
         data = asset.read_bytes()
-        if name in KNOWN_BINARY_HASHES or name in A740_FILES or name in SHM_FILES:
+        if name in KNOWN_BINARY_HASHES or name in A740_FILES or name in SHM_FILES or name in MESA262_FILES:
             machine = struct.unpack_from("<H", data, 18)[0] if len(data) >= 64 else None
             if (data[:6] != b"\x7fELF\x02\x01" or machine != 183
                     or type(info.get("machine")) is not int or info["machine"] != 183):
@@ -202,14 +220,15 @@ def verify_mapped(folder: Path, state: Path) -> dict:
     return manifest
 
 
-def cache_directories(state: Path, a740_pc_mode=False, shm_presentation=False) -> tuple[Path, Path]:
-    if any(type(value) is not bool for value in (a740_pc_mode, shm_presentation)):
+def cache_directories(state: Path, a740_pc_mode=False, shm_presentation=False,
+                      mesa262_driver=False) -> tuple[Path, Path]:
+    if any(type(value) is not bool for value in (a740_pc_mode, shm_presentation, mesa262_driver)):
         raise ValueError("Driver selections must be booleans")
-    if a740_pc_mode and shm_presentation:
-        raise ValueError("A740 PC mode and SHM presentation drivers are mutually exclusive")
+    if sum((a740_pc_mode, shm_presentation, mesa262_driver)) > 1:
+        raise ValueError("A740 PC mode, SHM presentation and Mesa 26.2.4 drivers are mutually exclusive")
     suffix = "-a740-pc-mode-1" if a740_pc_mode else "-x11-shm" if shm_presentation else ""
     return (state / ("cache/dxvk-" + DXVK_VERSION + "-arm64ec"),
-            state / ("cache/mesa-" + MESA_VERSION + suffix))
+            state / ("cache/mesa-" + (MESA262_VERSION if mesa262_driver else MESA_VERSION + suffix)))
 
 
 def prepare(folder: Path, state: Path, content: Path, mode: str,
@@ -264,23 +283,29 @@ def a740_identity_command(folder: Path) -> tuple[str, ...]:
     return (str(folder / A740_PROBE),)
 
 
+def mesa262_identity_command(folder: Path) -> tuple[str, ...]:
+    return (str(folder / MESA262_PROBE),)
+
+
 def select_driver(folder: Path, state: Path, enabled: bool,
                   baseline_vulkan: dict | None = None, identity: dict | None = None,
-                  shm_presentation=False) -> dict:
+                  shm_presentation=False, mesa262_driver=False) -> dict:
     """Switch only this session's ICD after an explicit native A740 gate.
 
     Both current-session baseline presentation and checked native identity are
     required. Device names alone never authorize the experiment, and a saved
     previous-session report is not used.
     """
-    if any(type(value) is not bool for value in (enabled, shm_presentation)):
+    if any(type(value) is not bool for value in (enabled, shm_presentation, mesa262_driver)):
         raise ValueError("Driver selections must be booleans")
-    if enabled and shm_presentation:
-        raise ValueError("A740 PC mode and SHM presentation drivers are mutually exclusive")
+    if sum((enabled, shm_presentation, mesa262_driver)) > 1:
+        raise ValueError("A740 PC mode, SHM presentation and Mesa 26.2.4 drivers are mutually exclusive")
     manifest = verify_bundle(folder)
-    experiment = enabled or shm_presentation
+    experiment = enabled or shm_presentation or mesa262_driver
     if experiment:
-        metadata, expected = ("shmPresentationExperiment", SHM_EXPERIMENT) if shm_presentation else ("a740PcModeExperiment", A740_EXPERIMENT)
+        metadata, expected = (("mesa262DriverExperiment", MESA262_EXPERIMENT) if mesa262_driver else
+                              ("shmPresentationExperiment", SHM_EXPERIMENT) if shm_presentation else
+                              ("a740PcModeExperiment", A740_EXPERIMENT))
         if manifest.get(metadata) != expected:
             raise ValueError("This graphics bundle does not contain the pinned selected driver experiment")
         if not isinstance(baseline_vulkan, dict):
@@ -295,8 +320,9 @@ def select_driver(folder: Path, state: Path, enabled: bool,
     for directory in (state, state / "run", state / "cache"):
         if not directory.is_dir() or directory.is_symlink():
             raise ValueError("Missing or linked driver selection state directory")
-    driver = A740_DRIVER if enabled else SHM_DRIVER if shm_presentation else "turnip-26.0.0.so"
-    _, mesa_cache = cache_directories(state, enabled, shm_presentation)
+    driver = (A740_DRIVER if enabled else SHM_DRIVER if shm_presentation else
+              MESA262_DRIVER if mesa262_driver else "turnip-26.0.0.so")
+    _, mesa_cache = cache_directories(state, enabled, shm_presentation, mesa262_driver)
     if mesa_cache.is_symlink():
         raise ValueError("Linked graphics cache directory is not supported")
     mesa_cache.mkdir(parents=True, exist_ok=True)
@@ -304,10 +330,15 @@ def select_driver(folder: Path, state: Path, enabled: bool,
         "library_path": str(folder / driver), "api_version": "1.3.0"}})
     return {"requestedA740PcMode": enabled, "a740PcMode": enabled,
             "requestedShmPresentation": shm_presentation, "shmPresentation": shm_presentation,
+            "requestedMesa262Driver": mesa262_driver, "mesa262Driver": mesa262_driver,
+            "mesaVersion": MESA262_VERSION if mesa262_driver else MESA_VERSION,
+            "mesaSourceSha256": (MESA262_EXPERIMENT["mesaSourceSha256"] if mesa262_driver else
+                                  SOURCE_PINS["mesaSourceSha256"]),
             "driver": driver, "driverSha256": manifest["files"][driver]["sha256"],
             "mesaShaderCache": str(mesa_cache), "experimental": experiment,
             "deviceGated": True, "hardwareGatePassed": experiment,
-            "binaryIdentityVerified": True, "nativeEffectVerified": False}
+            "binaryIdentityVerified": True, "nativeEffectVerified": False,
+            "physicalBenefitVerified": False}
 
 
 def d3d_command(folder: Path, manifest: dict, wine: str = "/opt/wine/bin/wine") -> tuple[str, ...]:
@@ -317,15 +348,17 @@ def d3d_command(folder: Path, manifest: dict, wine: str = "/opt/wine/bin/wine") 
 
 
 def optimization_settings(mode, disable_concurrent_binning=False, disable_lrcpc2=False, a740_pc_mode=False,
-                          linear_presentation=False, sysmem_rendering=False, shm_presentation=False):
+                          linear_presentation=False, sysmem_rendering=False, shm_presentation=False,
+                          mesa262_driver=False):
     """Describe only fixed session assignments, not measured native effects."""
     if mode not in MODES:
         raise ValueError("Unsupported client renderer")
     if any(type(value) is not bool for value in
-           (disable_concurrent_binning, disable_lrcpc2, a740_pc_mode, linear_presentation, sysmem_rendering, shm_presentation)):
+           (disable_concurrent_binning, disable_lrcpc2, a740_pc_mode, linear_presentation, sysmem_rendering,
+            shm_presentation, mesa262_driver)):
         raise ValueError("Client optimization selections must be booleans")
-    if a740_pc_mode and shm_presentation:
-        raise ValueError("A740 PC mode and SHM presentation drivers are mutually exclusive")
+    if sum((a740_pc_mode, shm_presentation, mesa262_driver)) > 1:
+        raise ValueError("A740 PC mode, SHM presentation and Mesa 26.2.4 drivers are mutually exclusive")
     gpu = mode == "turnip-dxvk"
     binning = disable_concurrent_binning and gpu
     lrcpc2 = disable_lrcpc2 and gpu
@@ -342,6 +375,9 @@ def optimization_settings(mode, disable_concurrent_binning=False, disable_lrcpc2
             "sysmemRenderingExperimental": True, "sysmemRenderingDeviceGated": True,
             "requestedShmPresentation": shm_presentation, "shmPresentation": shm_presentation and gpu,
             "shmPresentationExperimental": True, "shmPresentationDeviceGated": True,
+            "requestedMesa262Driver": mesa262_driver, "mesa262Driver": mesa262_driver and gpu,
+            "mesa262DriverExperimental": True, "mesa262DriverDeviceGated": True,
+            "selectedMesaVersion": MESA262_VERSION if mesa262_driver and gpu else MESA_VERSION if gpu else None,
             "mesaWsiDebug": ("sw,linear" if linear_presentation else "sw") if gpu else None,
             "disableConcurrentBinning": binning, "disableLrcpc2": lrcpc2,
             "turnipDebug": turnip_debug,
@@ -382,11 +418,12 @@ def cpu_topology(root=Path("/sys/devices/system/cpu")):
 def configure_environment(base, mode, folder, state,
                           performance_profile=DEFAULT_PERFORMANCE_PROFILE, diagnostic_hud=False,
                           disable_concurrent_binning=False, disable_lrcpc2=False, a740_pc_mode=False,
-                          linear_presentation=False, sysmem_rendering=False, shm_presentation=False):
+                          linear_presentation=False, sysmem_rendering=False, shm_presentation=False,
+                          mesa262_driver=False):
     """Prove graphics options cannot leak between software/GPU sessions."""
     performance = performance_settings(mode, performance_profile, diagnostic_hud)
     optimizations = optimization_settings(mode, disable_concurrent_binning, disable_lrcpc2, a740_pc_mode,
-                                         linear_presentation, sysmem_rendering, shm_presentation)
+                                         linear_presentation, sysmem_rendering, shm_presentation, mesa262_driver)
     env = {k:v for k,v in base.items()
            if not k.startswith(("DXVK_", "VK_", "MESA_", "LIBGL_", "TU_"))
            and k not in ("WINE_D3D_CONFIG", "GALLIUM_DRIVER", "LP_NUM_THREADS", "mesa_glthread",
@@ -396,7 +433,8 @@ def configure_environment(base, mode, folder, state,
         env.update(LIBGL_ALWAYS_SOFTWARE="1", GALLIUM_DRIVER="llvmpipe", LP_NUM_THREADS="4")
     else:
         icd = str(state / "run/turnip-icd.json")
-        dxvk_cache, mesa_cache = cache_directories(state, optimizations["a740PcMode"], optimizations["shmPresentation"])
+        dxvk_cache, mesa_cache = cache_directories(state, optimizations["a740PcMode"],
+                                                 optimizations["shmPresentation"], optimizations["mesa262Driver"])
         env.update(VK_DRIVER_FILES=icd, VK_ICD_FILENAMES=icd, MESA_VK_WSI_DEBUG=optimizations["mesaWsiDebug"],
                    DXVK_LOG_LEVEL="info", DXVK_LOG_PATH="Z:" + str(state / "logs").replace("/", "\\"),
                    DXVK_HUD=DIAGNOSTIC_HUD if performance["diagnosticHud"] else DEFAULT_HUD,
@@ -449,43 +487,80 @@ def color(value, expected):
                     for component, want in zip(value, expected)))
 
 
-def parse_vulkan(text):
+def mesa_driver_version(expected_mesa=MESA_VERSION):
+    if expected_mesa not in (MESA_VERSION, MESA262_VERSION) or not isinstance(expected_mesa, str):
+        raise ValueError("Unsupported selected Mesa version")
+    major, minor, patch = (int(value) for value in expected_mesa.split("."))
+    return (major << 22) | (minor << 12) | patch
+
+
+def parse_vulkan(text, expected_mesa=MESA_VERSION):
+    version = mesa_driver_version(expected_mesa)
     r = last_report(text)
     if (not integer(r.get("presentation_frames"), 3, 3)
             or not integer(r.get("api_version"), (1 << 22) | (3 << 12))
-            or not integer(r.get("driver_version"), 26 << 22, 26 << 22)
+            or not integer(r.get("driver_version"), version, version)
             or not integer(r.get("driver_id"), 18, 18)
             or not integer(r.get("vendor_id"), 0x5143, 0x5143)
             or r.get("software") is not False
             or not isinstance(r.get("device"), str) or "adreno" not in r["device"].casefold()
             or not isinstance(r.get("driver"), str) or "turnip" not in r["driver"].casefold()):
-        raise ValueError("Turnip 26 / Adreno hardware and Vulkan presentation were not verified")
+        raise ValueError("Turnip " + expected_mesa + " / Adreno hardware and Vulkan presentation were not verified")
     return r
 
 
-def parse_a740_identity(text):
-    """Accept only the explicit native A740 identity, never a CPU CI fixture."""
-    r = last_report(text, "eve-a740-driver-probe-1")
+def _parse_identity(text, expected_mesa, helper):
+    version = mesa_driver_version(expected_mesa)
+    r = last_report(text, helper)
     if (r.get("mode") != "hardware" or r.get("passed") is not True
             or not integer(r.get("device_id"), A740_DEVICE_ID, A740_DEVICE_ID)
             or not integer(r.get("vendor_id"), 0x5143, 0x5143)
             or not integer(r.get("driver_id"), 18, 18)
-            or not integer(r.get("driver_version"), 26 << 22, 26 << 22)
+            or not integer(r.get("driver_version"), version, version)
             or not integer(r.get("api_version"), (1 << 22) | (3 << 12))
             or r.get("software") is not False
             or not isinstance(r.get("device"), str) or "adreno" not in r["device"].casefold()
             or not isinstance(r.get("driver"), str) or "turnip" not in r["driver"].casefold()
-            or not isinstance(r.get("driver_info"), str) or not r["driver_info"].startswith("Mesa 26.0.0")):
-        raise ValueError("The driver experiment requires native Turnip 26 / Adreno 740 hardware identity")
+            or not isinstance(r.get("driver_info"), str)
+            or re.match(r"^Mesa " + re.escape(expected_mesa) + r"(?: |$)", r["driver_info"]) is None):
+        raise ValueError("The driver experiment requires native Turnip " + expected_mesa + " / Adreno 740 hardware identity")
     return r
 
 
-def parse_linear_presentation(text, baseline_vulkan):
+def parse_a740_identity(text):
+    """Accept only the original native A740 identity, never a CPU CI fixture."""
+    return _parse_identity(text, MESA_VERSION, "eve-a740-driver-probe-1")
+
+
+def parse_mesa262_identity(text):
+    """The new driver has its own pinned probe and exact version requirement."""
+    return _parse_identity(text, MESA262_VERSION, "eve-mesa262-driver-probe-1")
+
+
+def qualify_mesa262_identity(text, baseline_vulkan, baseline_identity, selected_vulkan):
+    """Allow only the intentional driver/API version change on the same chip."""
+    baseline = parse_vulkan(json.dumps(baseline_vulkan))
+    original = parse_a740_identity(json.dumps(baseline_identity))
+    selected = parse_vulkan(json.dumps(selected_vulkan), MESA262_VERSION)
+    identity = parse_mesa262_identity(text)
+    same = ("vendor_id", "driver_id", "software", "device")
+    if (any(original[key] != baseline[key] or identity[key] != baseline[key] or selected[key] != baseline[key]
+            for key in same)
+            or original["api_version"] != baseline["api_version"]
+            or any(identity[key] != selected[key] for key in (*same, "driver_version", "api_version"))
+            or original["device_id"] != identity["device_id"]
+            or selected["api_version"] < baseline["api_version"]):
+        raise ValueError("Mesa 26.2.4 identity differs from the current baseline hardware device")
+    return identity
+
+
+def parse_linear_presentation(text, baseline_vulkan, expected_mesa=MESA_VERSION):
     """Accept current native format capability, separately from rendering/performance."""
-    identity = parse_a740_identity(text)
+    mesa_driver_version(expected_mesa)
+    identity = parse_mesa262_identity(text) if expected_mesa == MESA262_VERSION else parse_a740_identity(text)
     if not isinstance(baseline_vulkan, dict):
         raise ValueError("Linear presentation requires current-session Vulkan hardware qualification")
-    parse_vulkan(json.dumps(baseline_vulkan))
+    parse_vulkan(json.dumps(baseline_vulkan), expected_mesa)
     if any(identity[key] != baseline_vulkan[key]
            for key in ("vendor_id", "driver_id", "driver_version", "api_version", "software", "device")):
         raise ValueError("Linear presentation identity differs from the current Vulkan presentation device")
@@ -495,7 +570,8 @@ def parse_linear_presentation(text, baseline_vulkan):
                    for key in ("supported", "bgra8_unorm", "rgba8_unorm"))):
         raise ValueError("The original driver does not qualify native linear presentation formats")
     return {"requestedLinearPresentation": True, "linearPresentation": True,
-            "mesaWsiDebug": "sw,linear", "originalDriver": "turnip-26.0.0.so",
+            "mesaWsiDebug": "sw,linear", "originalDriver": MESA262_DRIVER if expected_mesa == MESA262_VERSION else "turnip-26.0.0.so",
+            "mesaVersion": expected_mesa,
             "hardwareCapabilityGatePassed": True, "identity": identity,
             "baselineVulkan": baseline_vulkan, "nativeEffectVerified": False,
             "qualificationScope": "native A740 linear format capability; helper rendering and EVE performance require independent checks"}

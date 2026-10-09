@@ -19,6 +19,8 @@
 #include <unistd.h>
 
 static int fault_mode, last_allocated = -1;
+static inline xcb_void_cookie_t eve_x11_shm_attach_checked(
+   xcb_connection_t *, xcb_shm_seg_t, uint32_t, uint8_t);
 static int fixture_shmget(key_t key, size_t size, int flags)
 {
    if (fault_mode == 1) { errno = ENOMEM; return -1; }
@@ -34,7 +36,7 @@ static xcb_void_cookie_t fixture_attach(xcb_connection_t *conn,
                                        uint8_t read_only)
 {
    /* Exercise a real checked server rejection, not a mocked successful cookie. */
-   return xcb_shm_attach_checked(conn, segment, fault_mode == 3 ? UINT32_MAX : id, read_only);
+   return eve_x11_shm_attach_checked(conn, segment, fault_mode == 3 ? UINT32_MAX : id, read_only);
 }
 #define EVE_X11_SHM_SHMGET fixture_shmget
 #define EVE_X11_SHM_SHMAT fixture_shmat

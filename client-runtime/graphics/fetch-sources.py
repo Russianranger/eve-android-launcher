@@ -56,8 +56,8 @@ SHM_EXPERIMENT = {
     "driver": "turnip-26.0.0-x11-shm.so",
     "mesaSourceSha256": SOURCE_ARCHIVES["mesa-26.0.0.tar.xz"],
     "patchSha256": "3ec5f29a7bee6328b824cc98a47228b9fc5ec63751d7e5d005703e999f0bc83c",
-    "transportSourceSha256": "cdbe77e8091afe06b2689d82c1cf39eb9bcb498912b3a66e5814c4b021369685",
-    "probeSourceSha256": "00030ef619ccb6f4b170f5ae48fff3e90062751ef7ff711ec1c833780ae0182b",
+    "transportSourceSha256": "0966fed8c6bd81326876b11c3d9640eb8daca01c6ae8417b46956ac259a0fa25",
+    "probeSourceSha256": "841cf72ac761d6d3dfc8316d0d8ade103a876ad1a0eb463f3018ef399fa5833e",
     "sourceFileSha256": "92831b74c892f1795c489fc14f1c05afa362ad857b4959e1e28c13932cba52e5",
     "patchedSourceFileSha256": "18281444fd6639f4a6a672d543685f99ba282cdba25ba204e0c5a52062cc74fd",
 }

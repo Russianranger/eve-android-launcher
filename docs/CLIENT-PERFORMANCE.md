@@ -40,6 +40,10 @@ and cleaned after pending reads. This avoids the multi-megabyte socket payload,
 but retains CPU memcpy, Xvnc copying, comparison and Raw RFB. Four actual 720p
 images add about 14.1 MiB of shared storage. Its physical benefit is unmeasured.
 
+The fixed MIT-SHM protocol requests use the baseline core XCB library and
+generated request definitions, retaining its checked-cookie error handling. The
+build rejects additional SONAMEs or newer native ABI requirements.
+
 Production uses one PRoot guest for supervisor, Xvnc, Wine, probes and EVE; the
 pinned SysV extension shares that namespace with fork/exec descendants. The
 shared helper is also compiled into a standalone fixture run within the same

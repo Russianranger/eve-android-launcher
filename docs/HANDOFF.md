@@ -29,6 +29,9 @@ Allocation/attach failures use safe ordinary PutImage fallback. Qualification
 requires actual successful SHM completion records from the selected native EC
 helper, not just a flag or correct pixels; a fallback does not pass this experiment.
 
+Thin fixed-protocol wrappers use core XCB without adding a runtime library.
+The strict dependency/ABI comparison against the original driver remains a gate.
+
 The production patch and native transport fixture share the same header. CI must
 exercise that helper under the production-source PRoot SysV namespace with Xvnc,
 verify exact pixels/visible frames, reuse, resize, pending teardown and negative

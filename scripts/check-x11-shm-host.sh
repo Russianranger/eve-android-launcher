@@ -25,7 +25,7 @@ output_dir="$(cd "$(dirname "$output_path")" && pwd)"
 output_path="$output_dir/$(basename "$output_path")"
 probe="$output_dir/shm-native-probe"
 "${CC:-cc}" -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror -pedantic -pthread \
-  "$native_dir/eve-x11-shm-probe.c" -lxcb-shm -lxcb -o "$probe"
+  "$native_dir/eve-x11-shm-probe.c" -lxcb -o "$probe"
 proot_tmp="$(mktemp -d /tmp/eve-shm-proot-XXXXXX)"
 trap 'rm -rf "$proot_tmp"' EXIT
 result=0

@@ -7,6 +7,7 @@
 #define EVE_X11_SHM_STAGING_H
 
 #include <xcb/xcb.h>
+#include <xcb/xcbext.h>
 #include <xcb/shm.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
@@ -20,6 +21,91 @@
 #include <stdatomic.h>
 #include <time.h>
 
+/* Match libxcb 1.15's generated fixed-size MIT-SHM requests while using only
+ * the existing core libxcb ABI. The installed shm.h supplies the protocol
+ * structs/opcodes; no libxcb-shm symbols or SONAME are required. This extension
+ * ID is lazily allocated and cached by core XCB, just like generated bindings.
+ */
+static xcb_extension_t eve_x11_shm_extension = {"MIT-SHM", 0};
+_Static_assert(sizeof(xcb_shm_query_version_request_t) == 4, "MIT-SHM QueryVersion layout");
+_Static_assert(sizeof(xcb_shm_attach_request_t) == 16, "MIT-SHM Attach layout");
+_Static_assert(sizeof(xcb_shm_detach_request_t) == 8, "MIT-SHM Detach layout");
+_Static_assert(sizeof(xcb_shm_put_image_request_t) == 40, "MIT-SHM PutImage layout");
+
+static inline unsigned
+eve_x11_shm_send_fixed(xcb_connection_t *conn, void *payload, size_t size,
+                      uint8_t opcode, uint8_t is_void)
+{
+   xcb_protocol_request_t protocol = {
+      .count = 2, .ext = &eve_x11_shm_extension, .opcode = opcode, .isvoid = is_void,
+   };
+   /* XCB reserves indices -2 and -1 relative to the supplied vector. It fills
+    * the major/minor opcode and length in the native-order protocol header. */
+   struct iovec parts[4] = {{0}};
+   parts[2].iov_base = payload;
+   parts[2].iov_len = size;
+   parts[3].iov_base = NULL;
+   parts[3].iov_len = (0 - size) & 3;
+   return xcb_send_request(conn, XCB_REQUEST_CHECKED, parts + 2, &protocol);
+}
+
+static inline xcb_shm_query_version_cookie_t
+eve_x11_shm_query_version(xcb_connection_t *conn)
+{
+   xcb_shm_query_version_request_t request = {0};
+   return (xcb_shm_query_version_cookie_t) {
+      .sequence = eve_x11_shm_send_fixed(conn, &request, sizeof(request), XCB_SHM_QUERY_VERSION, 0),
+   };
+}
+
+static inline xcb_shm_query_version_reply_t *
+eve_x11_shm_query_version_reply(xcb_connection_t *conn,
+                               xcb_shm_query_version_cookie_t cookie,
+                               xcb_generic_error_t **error)
+{
+   return (xcb_shm_query_version_reply_t *)xcb_wait_for_reply(conn, cookie.sequence, error);
+}
+
+static inline xcb_void_cookie_t
+eve_x11_shm_attach_checked(xcb_connection_t *conn, xcb_shm_seg_t segment,
+                          uint32_t shmid, uint8_t read_only)
+{
+   xcb_shm_attach_request_t request = {
+      .shmseg = segment, .shmid = shmid, .read_only = read_only,
+   };
+   return (xcb_void_cookie_t) {
+      .sequence = eve_x11_shm_send_fixed(conn, &request, sizeof(request), XCB_SHM_ATTACH, 1),
+   };
+}
+
+static inline xcb_void_cookie_t
+eve_x11_shm_detach_checked(xcb_connection_t *conn, xcb_shm_seg_t segment)
+{
+   xcb_shm_detach_request_t request = {.shmseg = segment};
+   return (xcb_void_cookie_t) {
+      .sequence = eve_x11_shm_send_fixed(conn, &request, sizeof(request), XCB_SHM_DETACH, 1),
+   };
+}
+
+static inline xcb_void_cookie_t
+eve_x11_shm_put_image_checked(xcb_connection_t *conn, xcb_drawable_t drawable,
+                             xcb_gcontext_t gc, uint16_t total_width,
+                             uint16_t total_height, uint16_t source_width,
+                             uint16_t source_height, uint8_t depth,
+                             xcb_shm_seg_t segment)
+{
+   xcb_shm_put_image_request_t request = {
+      .drawable = drawable, .gc = gc, .total_width = total_width,
+      .total_height = total_height, .src_width = source_width,
+      .src_height = source_height, .depth = depth,
+      .format = XCB_IMAGE_FORMAT_Z_PIXMAP, .shmseg = segment,
+   };
+   /* Source/destination coordinates, send_event, offset and padding are zero. */
+   return (xcb_void_cookie_t) {
+      .sequence = eve_x11_shm_send_fixed(conn, &request, sizeof(request), XCB_SHM_PUT_IMAGE, 1),
+   };
+}
+
 #define EVE_X11_SHM_MAX_BYTES (32u * 1024u * 1024u)
 #ifndef EVE_X11_SHM_SHMGET
 #define EVE_X11_SHM_SHMGET shmget
@@ -28,7 +114,7 @@
 #define EVE_X11_SHM_SHMAT shmat
 #endif
 #ifndef EVE_X11_SHM_ATTACH
-#define EVE_X11_SHM_ATTACH xcb_shm_attach_checked
+#define EVE_X11_SHM_ATTACH eve_x11_shm_attach_checked
 #endif
 
 enum eve_x11_shm_result {
@@ -142,7 +228,7 @@ eve_x11_shm_stage_finish(struct eve_x11_shm_stage *stage, xcb_connection_t *conn
    if (stage->attached) {
       if (!xcb_connection_has_error(conn)) {
          xcb_generic_error_t *error = xcb_request_check(
-            conn, xcb_shm_detach_checked(conn, stage->segment));
+            conn, eve_x11_shm_detach_checked(conn, stage->segment));
          free(error);
       }
       stage->attached = false;
@@ -177,15 +263,15 @@ eve_x11_shm_stage_init(struct eve_x11_shm_stage *stage, xcb_connection_t *conn,
       eve_x11_shm_fallback(stage, "bounds");
       return false;
    }
-   const xcb_query_extension_reply_t *extension = xcb_get_extension_data(conn, &xcb_shm_id);
+   const xcb_query_extension_reply_t *extension = xcb_get_extension_data(conn, &eve_x11_shm_extension);
    if (!extension || !extension->present || xcb_connection_has_error(conn)) {
       eve_x11_shm_fallback(stage, "extension_unavailable");
       return false;
    }
    /* Shared pixmaps, DRI3 and external Vulkan host imports are unnecessary. */
    xcb_generic_error_t *version_error = NULL;
-   xcb_shm_query_version_reply_t *version = xcb_shm_query_version_reply(
-      conn, xcb_shm_query_version(conn), &version_error);
+   xcb_shm_query_version_reply_t *version = eve_x11_shm_query_version_reply(
+      conn, eve_x11_shm_query_version(conn), &version_error);
    bool version_ok = version && !version_error && version->major_version >= 1;
    free(version);
    free(version_error);
@@ -254,10 +340,9 @@ eve_x11_shm_stage_put(struct eve_x11_shm_stage *stage, xcb_connection_t *conn,
    uint64_t began = stage->pending_sampled ? eve_x11_shm_now() : 0;
    memcpy(stage->map, source, stage->size);
    stage->pending_copy_ns = stage->pending_sampled ? eve_x11_shm_elapsed(began) : 0;
-   stage->put_cookie = xcb_shm_put_image_checked(
+   stage->put_cookie = eve_x11_shm_put_image_checked(
       conn, drawable, gc, stage->total_width, stage->height,
-      0, 0, stage->width, stage->height, 0, 0, depth,
-      XCB_IMAGE_FORMAT_Z_PIXMAP, 0, stage->segment, 0);
+      stage->width, stage->height, depth, stage->segment);
    stage->barrier_cookie = xcb_get_geometry(conn, drawable);
    stage->pending = true;
    if (xcb_flush(conn) <= 0 || xcb_connection_has_error(conn))

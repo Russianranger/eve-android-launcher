@@ -24,8 +24,8 @@ and IMMEDIATE presentation. The original driver and shader caches remain availab
    reports Mesa 26.2.4. Check ships, station geometry, text/colors, transparency,
    fullscreen, gear/controller layers, mouse/touch and text entry. The new
    version has a separate Mesa cache, so first-use shader warm-up is expected.
-4. Warm three minutes, then observe two with static camera and movement
-   separately. Record HUD FPS range, starting/ending SoC temperatures, stutter
+4. Warm three minutes, then observe two minutes with a static camera and
+   two minutes while moving the camera. Record HUD FPS range, starting/ending SoC temperatures, stutter
    and input delay. Export while running as **0.1.20-linear-mesa262**, reopen
    the display and confirm the same session and controls remain usable.
    Quit normally, then save and stop the server.

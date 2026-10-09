@@ -55,7 +55,46 @@ target. [CLIENT-PERFORMANCE.md](CLIENT-PERFORMANCE.md) and
 [MESA-26.2-CANDIDATE.md](MESA-26.2-CANDIDATE.md) record the source rationale and
 limits. Actual FPS/heat improvement and device compatibility remain unproven.
 
-Build qualification will be recorded after CI and signed APK inspection pass.
+### 0.1.20 build and delivery qualification
+
+Qualified source `86018d138843bd37af21800b9ca9cb1065f30553` on
+`codex/wine-localhost-tls`. [Actions run 37952012222](https://github.com/Russianranger/eve-android-launcher/actions/runs/37952012222)
+passed backend/host regressions, unchanged server runtime reuse, native Wine
+trust/PRoot/graphics and Android release build/tests/lint/content/signing checks.
+Publication is skipped on this branch; main remains unchanged.
+
+- Backend: all 219 tests passed in 368.346 seconds, plus archive, RFB, controller,
+  graphics policy and ARM64EC parser host checks.
+- Android: all 132 API 33/35 cases passed, with zero failures/errors/skips.
+  Release lint has zero errors and 40 warnings. The two added warnings concern
+  the new glibc driver/probe packaged as guest-runtime assets, matching the
+  existing assets. Private extraction and hash/allowlist checks remain required;
+  Android JNI packaging would use the wrong loader/ABI.
+- Native: all nine ARM64EC shader/readback/RFB fixtures, visible-frame and owned
+  window lifecycle checks passed. CPU hardware rejection and forced new-driver
+  missing-KGSL rejection passed. The new driver's 279 strong imports and 220
+  versioned imports resolve against 17 actual checksum-pinned runtime ELFs,
+  with exact GNU providers and reachable-only unversioned lookup. Newly consumed
+  GLIBCXX 3.4.29 and CXXABI 1.3.9 are supported by the unchanged runtime; GLIBC
+  and old variant/probe ceilings remain intact. The sole additional ELF SONAME
+  is libxcb-shm.so.0, with no direct xcb_shm imports. Its actual library/loader
+  closure is verified. No runtime library bytes are added to Android.
+- APK: version 0.1.20/code 21, 16,765,632 bytes. The complete extracted payload
+  matches the digest-verified Actions ZIP; all ten tracked backend Python/shell
+  files match qualified source bytes. Driver SHA-256 is
+  `16c9c05ce420583900c9d7217b4bcc15c547542705293d68b724a32fe99a5866`.
+  The 2,002,532-byte upstream notice asset matches pinned provenance, including
+  13 license documents and 2,254 unique complete source notice comments.
+
+Signed `EVE-Android-Launcher-0.1.20.apk` SHA-256:
+`5ac72b6ea0f925e00fbc9b5d4606c339117d8aeb8545668cc2bc176997b6a983`.
+Certificate SHA-256 matches the published update anchor:
+`456c617128420fd315e1aa453d154e3d08f71a9b593d91966d21f75eed3a2c15`.
+The APK is delivered for an in-place update with existing app/client/server data.
+
+CI exercises software graphics fixtures and proves link compatibility; actual
+Mesa 26.2.4 rendering on Thor and FPS/temperature benefit remain unverified.
+The fresh device-start gates and the single physical test above remain required.
 
 ## Historical 0.1.19 continuation: separate Android display surface
 

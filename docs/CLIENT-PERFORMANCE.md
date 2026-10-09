@@ -25,10 +25,14 @@ not proof that EVE uses every affected path or will sustain 30 FPS.
 Preserve the immutable original driver, other independent driver experiments,
 the accepted Wine/FEX runtime, DXVK 2.4.1 per-submit fences, IMMEDIATE mode and
 full RGB. Build the new driver independently without SHM/A740 patches; require
-original ABI requirements and complete corresponding sources. The sole new
+support from the unchanged pinned runtime and complete corresponding sources. The sole new
 upstream SONAME, `libxcb-shm.so.0`, must be verified against the actual pinned
-existing runtime library and its symbols/dependencies; no runtime library is
-added to Android. Explicit new-only `noshm` WSI policy keeps ordinary X11
+existing runtime library and its symbols/dependencies. Every strong driver
+import is checked against the reachable actual library closure; versioned
+imports bind to exact GNU providers, including libstdc++/libgcc. Newly consumed
+C++ ABI versions may exceed the original driver's imports only when the pinned
+runtime exports support them. The GLIBC ceiling and old probe/variant guards
+remain. No runtime library is added to Android. Explicit new-only `noshm` WSI policy keeps ordinary X11
 transport. A separate Mesa cache avoids mixing driver versions. Fresh original/exact-A740 identity and
 selected exact-26.2.4 identity/capabilities/Vulkan/native EC/readback/visible-RFB
 checks must pass each accepted start. Old strict 26.0.0 parser defaults remain;

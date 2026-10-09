@@ -696,6 +696,13 @@ runtime_libraries = json.loads(runtime_libraries_bytes)
 assert mesa262['pinnedRuntimeLibraries'] == runtime_libraries
 assert runtime_libraries['baselineRuntimeSha256'] == client_graphics.BASELINE_SHA256
 assert runtime_libraries['approvedAdditionalSonames'] == ['libxcb-shm.so.0']
+expected_runtime_roots = sorted({
+    'libz.so.1', 'libzstd.so.1', 'libxcb.so.1', 'libX11-xcb.so.1',
+    'libxcb-xfixes.so.0', 'libxcb-randr.so.0', 'libexpat.so.1',
+    'libstdc++.so.6', 'libm.so.6', 'libgcc_s.so.1', 'libc.so.6',
+    'libxcb-shm.so.0', 'ld-linux-aarch64.so.1'})
+assert runtime_libraries['proofRootSonames'] == expected_runtime_roots
+assert set(expected_runtime_roots).issubset(runtime_libraries['libraries'])
 assert runtime_libraries['runtimeLibrariesInstalled'] is False
 for field in ('transitiveDependenciesVerified', 'loaderVerified', 'symbolVersionsVerified', 'requiredSymbolsVerified'):
     assert runtime_libraries[field] is True
@@ -705,11 +712,31 @@ assert runtime_proof['report'] == 'actual-runtime-libraries.json'
 assert runtime_proof['reportSha256'] == hashlib.sha256(runtime_libraries_bytes).hexdigest()
 assert runtime_proof['additionalSoname'] == 'libxcb-shm.so.0'
 assert runtime_proof['actualRuntimeLibrary'] == runtime_libraries['libraries']['libxcb-shm.so.0']
+assert runtime_proof['candidateElfSha256'] == manifest['files'][client_graphics.MESA262_DRIVER]['sha256']
+assert runtime_proof['candidateElfSizeBytes'] == manifest['files'][client_graphics.MESA262_DRIVER]['sizeBytes']
+assert runtime_proof['candidateNeeded'] == mesa262_driver_links['requirements']['needed']
 assert runtime_proof['runtimeLibrariesInstalled'] is False
 assert type(runtime_proof['candidateRequiredSymbols']) is list
 assert all(symbol['name'].startswith('xcb_shm_') for symbol in runtime_proof['candidateRequiredSymbols'])
 for field in ('candidateSymbolsVerified', 'transitiveDependenciesVerified', 'loaderVerified', 'symbolVersionsVerified'):
     assert runtime_proof[field] is True
+candidate_imports = runtime_proof['candidateImportProof']
+assert candidate_imports['allStrongImportsVerified'] is True
+assert candidate_imports['exactVersionProvidersVerified'] is True
+assert type(candidate_imports['strongImportCount']) is int and candidate_imports['strongImportCount'] > 0
+assert type(candidate_imports['versionedImports']) is list
+assert candidate_imports['versionedImportCount'] == len(candidate_imports['versionedImports'])
+assert candidate_imports['strongImportCount'] == len(candidate_imports['strongUnversionedImports']) + sum(
+    item['binding'] == 'GLOBAL' for item in candidate_imports['versionedImports'])
+for item in candidate_imports['versionedImports']:
+    assert item['provider'] in runtime_proof['candidateNeeded']
+    assert item['version'] in runtime_libraries['libraries'][item['provider']]['elf']['versionDefinitions']
+for family, difference in mesa262_driver_links['increasedConsumedAbiRequirements'].items():
+    assert family in ('GLIBCXX', 'CXXABI')
+    assert difference['originalDriverMaximum'] == mesa262_driver_links['originalDriverRequirements']['versionRequirements'].get(family, [0])
+    assert difference['selectedMaximum'] == mesa262_driver_links['requirements']['versionRequirements'][family]
+    assert difference['selectedMaximum'] > difference['originalDriverMaximum']
+assert mesa262_driver_links['requirements']['versionRequirements']['GLIBC'] <= mesa262_driver_links['originalDriverRequirements']['versionRequirements']['GLIBC']
 try:
     client_graphics.parse_mesa262_identity(Path('out/mesa262-identity-cpu-fixture.json').read_text())
 except ValueError:

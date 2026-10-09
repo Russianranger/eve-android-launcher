@@ -21,11 +21,16 @@ Restore baseline clears all nine flags while preserving renderer/HUD/data.
 Pin the official source SHA-256
 `bce5f7fbebb934373b86c999a064d52fb5065878dc57f287f95346648ec832e9` and new probe
 source SHA-256 `bb96b8e0721e167d20d8b15e433d180b79447b0bdb8f85dfaa614aa867c09d37`.
-Build independently without local A740/SHM patches, preserve original ABI
-requirements and record complete corresponding sources. The new driver adds
+Build independently without local A740/SHM patches, prove support in the unchanged
+pinned runtime and record complete corresponding sources. The new driver adds
 `libxcb-shm.so.0` to its ELF requirements; accept that sole additional SONAME only
 after checking the actual checksum-pinned installed runtime's library, exported
-symbols and dependency closure. Do not ship a runtime or library update.
+symbols and dependency closure. Verify every strong driver import against the
+actual runtime library exports, binding each versioned import to its exact GNU
+provider. C++ ABI versions consumed by the original driver are not the runtime's
+support ceiling: a newly consumed GLIBCXX/CXXABI version requires actual pinned
+libstdc++/libgcc proof. Retain the GLIBC ceiling and the old probe/variant guards.
+Do not ship a runtime or library update.
 Explicit new-driver `sw,noshm` / `sw,noshm,linear` policy keeps this test on ordinary
 X11 transport. Keep Wine/FEX, DXVK
 2.4.1 per-submit fences, IMMEDIATE presentation, full RGB, VNC comparison,

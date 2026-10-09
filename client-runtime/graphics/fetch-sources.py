@@ -456,11 +456,11 @@ def verify_mesa262_link_compatibility(assets: Path) -> dict:
         selected = native_link_requirements(assets / variant)
         added = sorted(set(selected["needed"]) - set(baseline["needed"]))
         runtime_proof = None
-        if added:
+        if variant == MESA262_EXPERIMENT["driver"]:
             # Only the new driver's upstream XCB-SHM import may extend the
             # original ELF's NEEDED list, after checking the exact unchanged
             # runtime archive. The native probe still has a strict subset gate.
-            if variant != MESA262_EXPERIMENT["driver"] or added != ["libxcb-shm.so.0"]:
+            if added != ["libxcb-shm.so.0"]:
                 raise ValueError("Optional Mesa 26.2.4 component adds unapproved dynamic libraries: "
                                  + variant + " " + repr(added))
             helper_path = Path(__file__).with_name("check-mesa262-runtime-libraries.py")
@@ -470,15 +470,28 @@ def verify_mesa262_link_compatibility(assets: Path) -> dict:
             helper = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(helper)
             runtime_proof = helper.validate_candidate(assets / variant, Path("/runtime-proof/mesa262-xcb-shm"))
+        elif added:
+            raise ValueError("Optional Mesa 26.2.4 probe adds unapproved dynamic libraries: " + repr(added))
+        consumed_abi_increases = {}
         for family, version in selected["versionRequirements"].items():
-            if version > baseline["versionRequirements"].get(family, (0,)):
-                raise ValueError("Optional Mesa 26.2.4 component requires a newer runtime ABI: " + variant + " " + family)
+            original_version = baseline["versionRequirements"].get(family, (0,))
+            if version > original_version:
+                difference = {"originalDriverMaximum": original_version, "selectedMaximum": version}
+                if (variant == MESA262_EXPERIMENT["driver"] and family in ("GLIBCXX", "CXXABI")
+                        and runtime_proof["candidateImportProof"]["allStrongImportsVerified"] is True
+                        and runtime_proof["candidateImportProof"]["exactVersionProvidersVerified"] is True):
+                    consumed_abi_increases[family] = difference
+                else:
+                    raise ValueError("Optional Mesa 26.2.4 component exceeds its preserved runtime ABI ceiling: "
+                                     + json.dumps({"component": variant, "family": family, **difference}))
         linked = subprocess.check_output(["ldd", str(assets / variant)], text=True, stderr=subprocess.STDOUT)
         if "not found" in linked:
             raise ValueError("Optional Mesa 26.2.4 component has unresolved runtime dependencies: " + variant)
         report[variant] = {"baseline": original, "requirements": selected, "newRuntimeAbiRequired": False}
         if variant == MESA262_EXPERIMENT["driver"]:
             report[variant]["addedDynamicDependencies"] = added
+            report[variant]["originalDriverRequirements"] = baseline
+            report[variant]["increasedConsumedAbiRequirements"] = consumed_abi_increases
         else:
             report[variant]["newDynamicDependencies"] = False
         if runtime_proof is not None:

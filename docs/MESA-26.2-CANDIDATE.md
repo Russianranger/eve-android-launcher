@@ -81,8 +81,15 @@ mandatory new upstream X11 dependency, `libxcb-shm.so.0`; Mesa has no supported
 build option to disable it. This sole additional dependency requires proof from
 the actual checksum-pinned existing runtime archive, including its ELF,
 exported functions and dependency closure. Builder-installed libraries alone
-are insufficient; all other added libraries and newer ABI requirements remain
-rejected. No new library or runtime is installed on Android. New-driver-only
+are insufficient; all other added libraries remain rejected. A later build
+also consumed GLIBCXX symbols absent from the original driver's imports; that
+does not establish whether the unchanged runtime supports those symbols.
+Qualification therefore checks every strong import against the actual pinned
+library closure, with GNU version indices binding versioned imports to their
+exact providers, including libstdc++ and libgcc. A C++ ABI requirement may exceed
+the original driver's consumed versions only after this actual export/version
+proof. The GLIBC ceiling and old probe/variant comparisons remain unchanged.
+No new library or runtime is installed on Android. New-driver-only
 `noshm` WSI policy keeps transport ordinary even though upstream was built with
 SHM support. Use existing source/compiler/tool pins where compatible, and record
 every necessary build-only change.

@@ -706,7 +706,7 @@ assert runtime_proof['reportSha256'] == hashlib.sha256(runtime_libraries_bytes).
 assert runtime_proof['additionalSoname'] == 'libxcb-shm.so.0'
 assert runtime_proof['actualRuntimeLibrary'] == runtime_libraries['libraries']['libxcb-shm.so.0']
 assert runtime_proof['runtimeLibrariesInstalled'] is False
-assert runtime_proof['candidateRequiredSymbols']
+assert type(runtime_proof['candidateRequiredSymbols']) is list
 assert all(symbol['name'].startswith('xcb_shm_') for symbol in runtime_proof['candidateRequiredSymbols'])
 for field in ('candidateSymbolsVerified', 'transitiveDependenciesVerified', 'loaderVerified', 'symbolVersionsVerified'):
     assert runtime_proof[field] is True

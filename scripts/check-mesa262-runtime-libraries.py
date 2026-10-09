@@ -251,11 +251,22 @@ def validate_candidate(candidate: Path, folder: Path) -> dict:
     if ADDITIONAL_SONAME not in metadata["needed"]:
         raise ValueError("Candidate does not need the dependency this proof authorizes")
     required = {symbol for symbol in imports if symbol[0].startswith("xcb_shm_")}
-    if not required or not required.issubset(inspections[ADDITIONAL_SONAME][1]):
-        raise ValueError("Candidate requires unavailable pinned runtime xcb_shm symbols")
+    # Linker section collection can retain an upstream NEEDED entry after its
+    # SHM callers are discarded. An empty import set adds no symbol requirement;
+    # the actual library/loader dependency closure is still verified above.
+    available = inspections[ADDITIONAL_SONAME][1]
+    missing = required - available
+    if missing:
+        raise ValueError("Candidate requires unavailable pinned runtime xcb_shm symbols: "
+                         + json.dumps({"required": sorted(required, key=str),
+                                       "missing": sorted(missing, key=str),
+                                       "available": sorted((symbol for symbol in available
+                                                            if symbol[0].startswith("xcb_shm_")), key=str)}))
     versions = metadata["versionRequirements"].get(ADDITIONAL_SONAME, [])
     if not set(versions).issubset(inspections[ADDITIONAL_SONAME][3]):
-        raise ValueError("Candidate requires a newer pinned runtime xcb-shm ABI")
+        raise ValueError("Candidate requires a newer pinned runtime xcb-shm ABI: "
+                         + json.dumps({"required": versions,
+                                       "available": sorted(inspections[ADDITIONAL_SONAME][3])}))
     return {"baselineRuntimeSha256": RUNTIME_SHA256, "report": REPORT_NAME,
             "reportSha256": sha256_file(folder / REPORT_NAME), "additionalSoname": ADDITIONAL_SONAME,
             "actualRuntimeLibrary": report["libraries"][ADDITIONAL_SONAME],

@@ -47,7 +47,47 @@ No old cap/FEX/binning/SYS matrix or new game-quality changes. CPU copying, Xvnc
 copying and RFB still exist, and no dominant bottleneck or stable-30 result is
 established. [CLIENT-PERFORMANCE.md](CLIENT-PERFORMANCE.md) records the research;
 [TESTING.md](TESTING.md) supplies the one-run instructions.
-Build qualification is recorded here after CI and APK inspection complete.
+### 0.1.18 build and delivery qualification
+
+Implementation `696b2f612dc0384f01683836283cf24c43b9dcff` on
+`codex/wine-localhost-tls`. [Actions run 37867367620](https://github.com/Russianranger/eve-android-launcher/actions/runs/37867367620)
+passed all build jobs: backend/host regressions, immutable server reuse,
+native Wine trust/PRoot/graphics, Android release build/tests/lint and APK
+content/signing checks. Development publication is skipped; main was not changed.
+
+- Backend: 209 tests passed, including strict experiment manifest pins,
+  mutually exclusive driver selection, inherited-environment cleanup, fresh
+  qualification receipts and positive/negative SHM completion parsing.
+- Android: 96 cases passed across API 33 and 35, no failures/errors/skips:
+  display 12, performance settings 48, pressure 30, support export 6.
+  Release lint has 37 warnings and no errors.
+- Native: all nine exact ARM64EC shader/readback/three-visible-RFB-frame fixtures
+  passed. Real SHM fixtures under production-source PRoot passed at 640×480 and
+  1280×720, including reuse, resize, pending teardown and cleanup. Server-grab
+  controls blocked reuse/teardown for 199.85–200.86 ms until release. Allocation,
+  mapping, attach rejection, bounds, missing extension and server-death controls
+  passed; actual segment disappearance and 17 memfd allocations were observed.
+  The activation parser rejects all negative controls. These use native Linux
+  libc and software rendering; Android/physical Adreno activation and sustained
+  FPS/temperature benefit remain unverified.
+- The driver retains all 11 original dynamic dependencies and original ABI
+  limits, without libxcb-shm. Driver SHA-256:
+  `ed8a9566755001c59696a3de7a2c46a8724e3fcacdb2cd0df1d24aa58c738be1`.
+  Header, probe, patch, Mesa and PRoot provenance pins match repository source.
+  Independent native/source reviews found no material blockers.
+- Downloaded artifact ZIP digests and source SHA match GitHub metadata. Local APK
+  inspection passes: all ten tracked backend Python/shell assets match source
+  byte for byte, experiment strings/assets are packaged, strict manifest checks
+  pass, and the embedded v2 certificate matches CI's signing verification.
+
+Built **EVE-Android-Launcher-0.1.18.apk**, 13,524,242 bytes, versionCode 19,
+non-debuggable with shell profiling enabled. APK SHA-256:
+`0cee955a4291ad6bd1f15431da1d3eaf09a611ff1562565a9a2c55d423aa9c16`.
+Existing signing-anchor SHA-256:
+`456c617128420fd315e1aa453d154e3d08f71a9b593d91966d21f75eed3a2c15`.
+Install in place with client/server stopped and preserve existing data/runtime.
+Use only the one linear+SHM case above; accepted neutral SYS needs no baseline
+repeat unless a new fault requires isolation.
 
 ## Historical 0.1.17 continuation: direct GPU rendering alongside linear
 

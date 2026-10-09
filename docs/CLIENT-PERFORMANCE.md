@@ -1,5 +1,56 @@
 # Client optimization evidence and qualification
 
+## October 8 final: SHM neutral, separate Android display surface
+
+[The physical run](DEVICE-20261008-SHM.md) verifies at least 2,400 completed
+1280×720 EVE SHM transfers, with no fallback or overwrite violation. Later
+sampled CPU copies have a median 0.970 ms and pending server-reply waits a median
+7.083 µs. These do not include GPU rendering/readback or total frame latency.
+The user reports unchanged FPS and temperatures; accept that neutral result
+without requesting another baseline comparison.
+
+Remaining Android measurements identify a different target. Window FrameMetrics
+reports 26,638.3 ms GPU time over 3,527 reports, about 7.55 ms/report. CPU decode
+plus bitmap publication averages 2.14 ms/RFB update; Java drawing averages
+0.067 ms/draw. Window GPU duration includes the app's bitmap texture draw and UI,
+not EVE GPU execution or independently measured physical GPU utilization.
+
+0.1.19 selects default-off **Use separate display surface (experiment)**.
+[AOSP's SurfaceView architecture](https://source.android.com/docs/core/graphics/arch-sv-glsv)
+places the game's buffer in a separate SurfaceFlinger layer. The existing opaque
+ARGB8888 framebuffer remains; a bounded worker draws at game resolution through
+the CPU [SurfaceHolder Canvas](https://source.android.com/docs/core/graphics/arch-sh).
+SurfaceFlinger/HWC scales the separate layer instead of uploading and drawing
+the game bitmap into the app UI's GPU surface. This retains CPU copies, RFB,
+system composition, and the existing upper UI/gear/controller layers. HWC use
+and an FPS/temperature benefit are not guaranteed.
+
+Lifecycle ownership and bounded buffering are part of qualification: pause,
+surface destruction, rapid reopen, resize, partial updates and failures must
+not recycle a bitmap still being drawn, block input/decoding behind lockCanvas,
+post stale frames or hide the controls. Surface-specific lock, snapshot, draw,
+post, coalescing, activation and failure records are required. Window FrameMetrics
+after the switch covers only the app UI layer and cannot demonstrate total
+display GPU savings by itself. Physical FPS/temperatures and visual/input/export
+checks remain the actual benefit gate.
+
+The next single run keeps linear+SHM at 30/1/display30 and adds only the separate
+surface. SYS and other experiments stay off; no game quality changes or old
+baseline/SYS/cap/FEX/binning matrix is requested. Existing source-version pins,
+GPU completion fences, IMMEDIATE presentation and independent graphics gates
+remain intact. [The source-pinned Mesa 26.2.4 candidate](MESA-26.2-CANDIDATE.md)
+is the next GPU/compiler lead if this measured display target is also neutral.
+Native graphics are still rebuilt by the unchanged workflow from the same source
+pins; emitted DLL/optional-driver hashes can differ. The selected option is the
+single intended change, but this is not a binary-identical controlled A/B and
+does not require another already completed baseline comparison.
+
+The export also records an earlier Android LOW_MEMORY process exit before the
+successful later launch. The repaired trim guard retained the client with ample
+sampled memory; those samples do not explain the OS/vendor kill. No new thermal
+throttling proof or current-run crash cause is established, and the ZIP ends at
+export start, so post-export continuity is unverified.
+
 ## October 8 late: SYS neutral, single shared-memory transport candidate
 
 [The new run](DEVICE-20261008-SYSMEM.md) really used SYS+linear and passed all

@@ -152,6 +152,8 @@ public final class MainActivity extends Activity {
             performance.addView(label("Tries an alternative GPU rendering mode. FPS and heat may improve or worsen. Compare one change at a time.", 13, 0xffb9ced1));
             performanceOption(performance, "Use shared-memory frame transport (experiment)", "shm-presentation");
             performance.addView(label("Sends frames through shared memory. FPS and heat may improve or worsen.", 13, 0xffb9ced1));
+            performanceOption(performance, "Use separate display surface (experiment)", "separate-display-surface");
+            performance.addView(label("Tries to reduce display composition work. FPS and heat may improve or worsen. Close and reopen the display after changing it.", 13, 0xffb9ced1));
             diagnosticHud = new CheckBox(this); diagnosticHud.setText("Show frame-time and GPU diagnostics"); diagnosticHud.setTextColor(0xffeef8fa);
             diagnosticHud.setChecked(new ClientRuntime(this).diagnosticHud()); performance.addView(diagnosticHud);
             diagnosticHud.setOnCheckedChangeListener((button, checked) -> {

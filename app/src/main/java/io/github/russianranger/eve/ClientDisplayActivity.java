@@ -31,7 +31,11 @@ public final class ClientDisplayActivity extends Activity {
     private Window.OnFrameMetricsAvailableListener frameListener;
     private AlertDialog activeTextDialog;
     private volatile DisplayPerformance performance;
-    private RfbView screen;
+    private final Object screenLock = new Object();
+    private volatile RfbScreen screen;
+    private FrameLayout displayRoot;
+    private volatile boolean displayDestroyed;
+    private volatile String surfaceFailureReason = "none";
     private TextView status, layerBanner, layerStatus;
     private FrameLayout menuLayer;
     private LinearLayout menu;
@@ -54,13 +58,13 @@ public final class ClientDisplayActivity extends Activity {
         super.onCreate(saved);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         fullscreen();
-        FrameLayout root = new FrameLayout(this); root.setBackgroundColor(Color.BLACK);
-        screen = new RfbView(this);
-        root.addView(screen, new FrameLayout.LayoutParams(-1, -1));
+        FrameLayout root = new FrameLayout(this); root.setBackgroundColor(Color.BLACK); displayRoot = root;
+        screen = new ClientRuntime(this).separateDisplaySurface() ? new RfbSurfaceView(this, this::fallbackSurface) : new RfbView(this);
+        root.addView(screen.view(), new FrameLayout.LayoutParams(-1, -1));
         pointerMotion = new PointerMotion((x, y, mask) -> submit(client -> client.pointer(x, y, mask)),
             new PointerMotion.Scheduler() {
-                public void post(Runnable task) { screen.postOnAnimation(task); }
-                public void remove(Runnable task) { screen.removeCallbacks(task); }
+                public void post(Runnable task) { screen.view().postOnAnimation(task); }
+                public void remove(Runnable task) { screen.view().removeCallbacks(task); }
             });
         gameInput = new DisplayInput(new DisplayInput.Sink() {
             public void key(int symbol, boolean down) { submit(client -> client.key(symbol, down)); }
@@ -141,6 +145,31 @@ public final class ClientDisplayActivity extends Activity {
         };
         getWindow().addOnFrameMetricsAvailableListener(frameListener, new Handler(frameThread.getLooper()));
     }
+    private void fallbackSurface(RfbSurfaceView failed, String reason) {
+        if (displayDestroyed || screen != failed) return;
+        // A saturated input queue can synchronously close the socket. Do not hold screenLock here.
+        pointerMotion.cancel(); failed.releasePointer(); gameInput.releaseAll(); pointerMask = 0;
+        if (controller != null) controller.capture(false);
+        synchronized (screenLock) {
+            if (displayDestroyed || screen != failed) return;
+            RfbView replacement = new RfbView(this);
+            failed.transferTo(replacement);
+            replacement.setPointer((x, y, mask) -> { if (gameInputActive()) gameInput.touch(x, y, mask); });
+            DisplayPerformance measured = performance;
+            if (measured != null) { measured.surfaceRequested(); measured.surfaceFallback(reason); }
+            replacement.setPerformance(measured);
+            surfaceFailureReason = reason;
+            screen = replacement;
+            displayRoot.removeView(failed.view());
+            displayRoot.addView(replacement, 0, new FrameLayout.LayoutParams(-1, -1));
+            failed.dispose();
+            // A failed resize may have retained the previous dimensions; request a fresh full handshake.
+            if (reason.equals("framebuffer-allocation-failed")) close(socket);
+        }
+        RuntimeService.append(this, "Separate display surface unavailable (" + reason + "); regular bitmap display retained");
+        updateCapture();
+        if (visible) Toast.makeText(this, "Using regular display after a surface error", Toast.LENGTH_LONG).show();
+    }
     private void persistPerformance(DisplayPerformance measured) {
         if (measured == null) return;
         synchronized (performanceFileLock) {
@@ -219,7 +248,7 @@ public final class ClientDisplayActivity extends Activity {
         menuOpen = open; menuLayer.setVisibility(open ? View.VISIBLE : View.GONE);
         gear.setContentDescription(open ? "Close flight controls" : "Open flight controls");
         if (controller != null) layerStatus.setText("Layer " + controller.layerLabel());
-        updateCapture(); if (open) menu.getChildAt(0).requestFocus(); else { screen.requestFocus(); fullscreen(); }
+        updateCapture(); if (open) menu.getChildAt(0).requestFocus(); else { screen.view().requestFocus(); fullscreen(); }
     }
     private void showLayer() {
         if (controller == null || layerBanner == null) return;
@@ -229,7 +258,7 @@ public final class ClientDisplayActivity extends Activity {
     private void controllerMappings() {
         mappingsOpen = true; setMenuOpen(false); updateCapture();
         mappingDialog = new ControllerDialog(this, controller, () -> {
-            mappingsOpen = false; mappingDialog = null; screen.requestFocus(); fullscreen(); updateCapture();
+            mappingsOpen = false; mappingDialog = null; screen.view().requestFocus(); fullscreen(); updateCapture();
         }).show();
     }
     private void press(int key) { submit(client -> client.tap(key)); }
@@ -252,7 +281,7 @@ public final class ClientDisplayActivity extends Activity {
                 if (value.length() > 4096) { Toast.makeText(this, "Send up to 4096 characters at once", Toast.LENGTH_SHORT).show(); return; }
                 boolean replacing = replace.isChecked(); submit(client -> client.text(value, replacing));
             }).setNegativeButton("Cancel", (dialog, which) -> text.setText("")).create();
-        activeTextDialog.setOnDismissListener(dialog -> { text.setText(""); activeTextDialog = null; screen.requestFocus(); fullscreen(); updateCapture(); });
+        activeTextDialog.setOnDismissListener(dialog -> { text.setText(""); activeTextDialog = null; screen.view().requestFocus(); fullscreen(); updateCapture(); });
         updateCapture(); activeTextDialog.show();
     }
     private void displayStatus(long token, String message) { handler.post(() -> {
@@ -268,7 +297,11 @@ public final class ClientDisplayActivity extends Activity {
         synchronized (socketLock) {
             visible = false; generation++; previous = socket; client = connection; socket = null; connection = null;
         }
-        DisplayPerformance measured = performance; performance = null; screen.setPerformance(null); finishPerformance(measured);
+        final DisplayPerformance measured;
+        synchronized (screenLock) {
+            screen.pausePresentation(); measured = performance; performance = null; screen.setPerformance(null);
+        }
+        finishPerformance(measured);
         input.getQueue().clear();
         try { input.execute(() -> { try { if (client != null) client.releaseInputs(); } catch (IOException ignored) { } finally { close(previous); } }); }
         catch (RejectedExecutionException stopped) { close(previous); }
@@ -295,12 +328,15 @@ public final class ClientDisplayActivity extends Activity {
                 measured = new DisplayPerformance();
                 RfbClient client = new RfbClient(attempt.getInputStream(), attempt.getOutputStream(), new RfbClient.Screen() {
                     @Override public void resize(int width, int height) { if (generation == token) {
-                        screen.resize(width, height); handler.post(() -> { if (generation == token) gameInput.size(width, height); });
+                        synchronized (screenLock) { if (generation != token || displayDestroyed) return; screen.resize(width, height); }
+                        handler.post(() -> { if (generation == token) gameInput.size(width, height); });
                     } }
-                    @Override public void pixels(int x, int y, int width, int height, int[] pixels) { if (generation == token) screen.pixels(x, y, width, height, pixels); }
+                    @Override public void pixels(int x, int y, int width, int height, int[] pixels) {
+                        synchronized (screenLock) { if (generation == token && !displayDestroyed) screen.pixels(x, y, width, height, pixels); }
+                    }
                     @Override public void updated() {
                         if (generation != token) return;
-                        screen.updated();
+                        synchronized (screenLock) { if (generation != token || displayDestroyed) return; screen.updated(); }
                         if (!receivedFrame) { receivedFrame = true; displayStatus(token, "Local display connected · touch to click · use Text for login fields"); }
                     }
                 }, measured, new ClientRuntime(this).earlyDisplayRequests());
@@ -311,7 +347,11 @@ public final class ClientDisplayActivity extends Activity {
                 client.pointer(0, 0, 0);
                 synchronized (socketLock) {
                     if (!visible || generation != token) break;
-                    connection = client; performance = measured; screen.setPerformance(measured);
+                    synchronized (screenLock) {
+                        connection = client; performance = measured;
+                        if (!surfaceFailureReason.equals("none")) { measured.surfaceRequested(); measured.surfaceFallback(surfaceFailureReason); }
+                        screen.setPerformance(measured);
+                    }
                 }
                 attempt.setSoTimeout(0);
                 connected = true;
@@ -332,7 +372,7 @@ public final class ClientDisplayActivity extends Activity {
                 try { if (sessionClient != null) sessionClient.releaseInputs(); } catch (IOException ignored) { }
                 try { attempt.close(); } catch (IOException ignored) { }
                 synchronized (socketLock) {
-                    if (generation == token) { connection = null; socket = null; performance = null; screen.setPerformance(null); receivedFrame = false;
+                    if (generation == token) { synchronized (screenLock) { connection = null; socket = null; performance = null; screen.setPerformance(null); receivedFrame = false; }
                         handler.post(() -> { if (generation == token) updateCapture(); }); }
                 }
                 finishPerformance(measured);
@@ -344,9 +384,11 @@ public final class ClientDisplayActivity extends Activity {
     @Override public void onResume() {
         super.onResume(); fullscreen(); final long token;
         synchronized (socketLock) { visible = true; receivedFrame = false; token = ++generation; }
+        screen.resumePresentation();
         new Thread(() -> connect(token), "eve-display-reader").start();
     }
     @Override public void onPause() {
+        screen.pausePresentation();
         if (controller != null) controller.capture(false);
         screen.releasePointer(); gameInput.releaseAll();
         visible = false;
@@ -356,9 +398,10 @@ public final class ClientDisplayActivity extends Activity {
         super.onPause();
     }
     @Override public void onDestroy() {
+        displayDestroyed = true;
         if (controller != null) controller.close();
         gameInput.releaseAll(); pointerMotion.cancel(); handler.removeCallbacks(hideLayer);
-        disconnect(); input.shutdown(); screen.dispose();
+        disconnect(); input.shutdown(); synchronized (screenLock) { screen.dispose(); }
         getWindow().removeOnFrameMetricsAvailableListener(frameListener); frameThread.quitSafely(); diagnostics.shutdown();
         super.onDestroy();
     }

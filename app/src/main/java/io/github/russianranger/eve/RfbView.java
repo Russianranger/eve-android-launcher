@@ -6,12 +6,13 @@ import android.view.MotionEvent;
 import android.view.View;
 
 /** Fit the local framebuffer to the screen and forward ordinary touch clicks/drags. */
-final class RfbView extends View implements RfbClient.Screen {
+final class RfbView extends View implements RfbScreen {
     interface Pointer { void send(int x, int y, int mask); }
     private final Object lock = new Object();
     private final Paint paint = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final RectF destination = new RectF();
     private Bitmap image;
+    private boolean disposed;
     private volatile Pointer pointer;
     private volatile DisplayPerformance performance;
     private final PointerMotion motion;
@@ -26,10 +27,14 @@ final class RfbView extends View implements RfbClient.Screen {
                 @Override public void remove(Runnable task) { removeCallbacks(task); }
             });
     }
-    void setPointer(Pointer value) { motion.cancel(); pointer = value; }
-    void setPerformance(DisplayPerformance value) { performance = value; }
+    @Override public View view() { return this; }
+    @Override public void setPointer(Pointer value) { motion.cancel(); pointer = value; }
+    @Override public void setPerformance(DisplayPerformance value) { performance = value; }
+    @Override public void resumePresentation() { }
+    @Override public void pausePresentation() { }
     @Override public void resize(int width, int height) {
         synchronized (lock) {
+            if (disposed) return;
             if (image != null && image.getWidth() == width && image.getHeight() == height) return;
             if (image != null) image.recycle();
             // RFB decoding makes every pixel opaque; untouched pixels should match the black background.
@@ -38,7 +43,11 @@ final class RfbView extends View implements RfbClient.Screen {
         postInvalidate();
     }
     @Override public void pixels(int x, int y, int width, int height, int[] argb) {
-        synchronized (lock) { if (image != null) image.setPixels(argb, 0, width, x, y, width, height); }
+        synchronized (lock) { if (!disposed && image != null) image.setPixels(argb, 0, width, x, y, width, height); }
+    }
+    void adoptImage(Bitmap transferred) {
+        synchronized (lock) { if (image != null) image.recycle(); image = transferred; }
+        postInvalidate();
     }
     @Override public void updated() { postInvalidateOnAnimation(); }
     private void fit() {
@@ -85,6 +94,6 @@ final class RfbView extends View implements RfbClient.Screen {
     }
     @Override public boolean performClick() { super.performClick(); return true; }
     void rightClick() { touching = false; edge(4); edge(0); }
-    void releasePointer() { boolean held = touching; touching = false; motion.cancel(); if (held) edge(0); }
-    void dispose() { motion.cancel(); pointer = null; performance = null; synchronized (lock) { if (image != null) { image.recycle(); image = null; } } }
+    @Override public void releasePointer() { boolean held = touching; touching = false; motion.cancel(); if (held) edge(0); }
+    @Override public void dispose() { motion.cancel(); pointer = null; performance = null; synchronized (lock) { disposed = true; if (image != null) { image.recycle(); image = null; } } }
 }

@@ -1,3 +1,24 @@
+# EVE Android Launcher 0.1.19 — optional separate display surface
+
+The physical shared-memory run activated successfully but did not improve FPS or
+heat. Accept that result; this update requests only one new experiment.
+
+Default-off **Use separate display surface (experiment)** moves the Android game
+image into a separate CPU Canvas surface at game resolution. The system scales
+and composes that layer while the existing flight-control UI stays above it.
+It targets the measured app-window bitmap GPU work, retaining full RGB, Raw RFB,
+Wine/FEX/DXVK/Turnip source versions, GPU completion fences and game settings.
+System composition and CPU copies still exist; physical FPS/heat gains remain
+unproven. Surface-specific posts/timings/fallback evidence complement the app-window
+metrics, whose scope changes when the game image is in another layer.
+
+The selection is saved independently of guest rendering and default off.
+**Restore baseline settings** clears eight options atomically, keeping renderer,
+HUD and data. Failures recover through the existing bitmap display; disable only
+the new option after stopping if it is worse. Keep import, runtime, prefix,
+shader caches, world/account and mappings. Install in place, then follow
+[the single linear+SHM+surface run](TESTING.md). No baseline rerun is requested.
+
 # EVE Android Launcher 0.1.18 — optional shared-memory frame transport
 
 The direct GPU rendering experiment showed no physical improvement. It is

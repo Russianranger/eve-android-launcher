@@ -3,6 +3,7 @@ package io.github.russianranger.eve;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.content.Context;
 import android.view.View;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
@@ -76,6 +77,44 @@ public final class ClientDisplayActivityTest {
         } finally { owned.destroy(); }
         assertTrue("Activity destruction releases the active framebuffer", resized.isRecycled());
         assertNull(ReflectionHelpers.getField(display, "image"));
+        display.resize(1280, 720);
+        assertNull("A delayed old reader cannot revive a destroyed framebuffer", ReflectionHelpers.getField(display, "image"));
+    }
+
+    @Test public void experimentalDisplayFallbackPreservesPixelsOverlaysAndHeldInputRelease() throws Exception {
+        RuntimeEnvironment.getApplication().getSharedPreferences("client-graphics", Context.MODE_PRIVATE)
+            .edit().putBoolean("separate-display-surface", true).commit();
+        ActivityController<ClientDisplayActivity> owned = Robolectric.buildActivity(ClientDisplayActivity.class).create();
+        try {
+            ClientDisplayActivity activity = owned.get();
+            RfbSurfaceView separate = ReflectionHelpers.getField(activity, "screen");
+            separate.resize(3, 2); separate.pixels(1, 1, 1, 1, new int[]{0xff1259ac}); separate.updated();
+            Bitmap retained = ReflectionHelpers.getField(separate, "image");
+            DisplayInput inputs = ReflectionHelpers.getField(activity, "gameInput");
+            inputs.key("held-key", 'w', true); inputs.mouse("held-pointer", 1, true);
+            DisplayPerformance performance = new DisplayPerformance();
+            ReflectionHelpers.setField(activity, "performance", performance);
+            ReflectionHelpers.callInstanceMethod(activity, "fallbackSurface",
+                ReflectionHelpers.ClassParameter.from(RfbSurfaceView.class, separate), ReflectionHelpers.ClassParameter.from(String.class, "canvas-post-failed"));
+            RfbView recovered = ReflectionHelpers.getField(activity, "screen");
+            assertSame("Framebuffer transfers without a third full allocation", retained, ReflectionHelpers.getField(recovered, "image"));
+            assertEquals(0xff1259ac, retained.getPixel(1, 1));
+            assertTrue(((Map<?, ?>) ReflectionHelpers.getField(inputs, "keys")).isEmpty());
+            assertTrue(((Map<?, ?>) ReflectionHelpers.getField(inputs, "buttons")).isEmpty());
+            assertEquals("bitmap-fallback", new JSONObject(performance.json()).getString("presentation_mode"));
+            ImageButton gear = ReflectionHelpers.getField(activity, "gear"); FrameLayout menu = ReflectionHelpers.getField(activity, "menuLayer");
+            FrameLayout root = ReflectionHelpers.getField(activity, "displayRoot");
+            assertSame(recovered, root.getChildAt(0)); assertTrue(root.indexOfChild(gear) > 0); assertTrue(root.indexOfChild(menu) > 0);
+            gear.performClick(); assertEquals(View.VISIBLE, menu.getVisibility()); gear.performClick(); assertEquals(View.GONE, menu.getVisibility());
+            owned.destroy();
+            ReflectionHelpers.callInstanceMethod(activity, "fallbackSurface",
+                ReflectionHelpers.ClassParameter.from(RfbSurfaceView.class, separate), ReflectionHelpers.ClassParameter.from(String.class, "canvas-render-failed"));
+            assertSame("A late failure cannot replace a destroyed activity's display", recovered, ReflectionHelpers.getField(activity, "screen"));
+            assertTrue(retained.isRecycled());
+        } finally {
+            if (!owned.get().isDestroyed()) owned.destroy();
+            RuntimeEnvironment.getApplication().getSharedPreferences("client-graphics", Context.MODE_PRIVATE).edit().remove("separate-display-surface").commit();
+        }
     }
 
     @Test public void gearMenuReleasesHeldInputsAndClosesCleanly() {

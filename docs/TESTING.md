@@ -1,6 +1,43 @@
-# EVE Android Launcher 0.1.18: one shared-memory transport experiment
+# EVE Android Launcher 0.1.19: one separate display surface experiment
 
-## Current 0.1.18 test
+## Current 0.1.19 test
+
+Your shared-memory run really used the new transport but did not improve FPS or
+heat. That result is accepted; no baseline rerun is requested. This build tries
+one different target: Android display composition through a separate surface.
+
+1. Stop client/server, then install **EVE-Android-Launcher-0.1.19.apk** over the
+   existing app. Keep app data, import, runtime, prefix, caches, account/world and
+   mappings. No reimport or validation is needed.
+2. Keep **Use Adreno GPU rendering** enabled. Tap **Restore baseline settings**,
+   then enable **Reduce GPU frame copies (experiment)**, **Use shared-memory frame
+   transport (experiment)**, **Use separate display surface (experiment)** and HUD.
+   Confirm 30 FPS / queue 1 / display 30, with only those three experiments.
+   SYS, A740, binning, alternate CPU instructions and early requests stay off.
+3. Keep FSR off and the same resolution/station/game settings/fan/power mode.
+   Start server → SERVER READY → EVE client → Open client display. Check full
+   RGB colors, ships/text/transparency, aspect ratio/black bars and fullscreen.
+   Open the gear menu, use controller layers, touch/drag/right-click and text
+   entry; the menu and keyboard must remain above the game image.
+4. Warm three minutes, then observe two with static camera and movement
+   separately. Record HUD FPS range, starting/ending SoC temperatures, stutter
+   and input delay. Export while running, label **0.1.19-linear-shm-surface**,
+   reopen the display and confirm the same session/controls remain usable.
+   Briefly leave/reopen once to check the surface redraws rather than remaining
+   black. Quit normally, then save and stop the server.
+
+Return this single labeled ZIP with FPS/temperatures and visual/input/export
+faults. The export records actual surface posts and phase costs. A lower app-window
+GPU metric alone is not proof of less total GPU work or better EVE performance.
+If the surface path fails, it should recover through the existing bitmap display
+and record that fallback. If worse or faulty, stop and disable only **Use separate
+display surface**; the prior linear+SHM setup remains available. If a crash occurs,
+reopen and export before restarting; a baseline test is only needed to isolate
+that fault. Do not reimport or delete any data.
+
+Earlier instructions remain below as historical evidence.
+
+## Completed 0.1.18 test
 
 Your SYS+linear run showed no improvement. That result is accepted; no repeat of
 linear-only or the old baseline/SYS matrix is required. The log records no

@@ -24,6 +24,15 @@ final class DisplayPerformance {
     final AtomicLong inputs = new AtomicLong(), completedInputs = new AtomicLong(), rejectedInputs = new AtomicLong();
     final AtomicLong queueNanos = new AtomicLong(), maxQueueNanos = new AtomicLong(), sendNanos = new AtomicLong(), maxSendNanos = new AtomicLong(), maxQueueDepth = new AtomicLong();
     final AtomicLong androidFrames = new AtomicLong(), androidTotalNanos = new AtomicLong(), androidDrawNanos = new AtomicLong(), androidSyncNanos = new AtomicLong(), androidGpuNanos = new AtomicLong(), gpuSamples = new AtomicLong(), droppedFrameReports = new AtomicLong();
+    final AtomicLong surfaceRequests = new AtomicLong(), surfaceCoalesced = new AtomicLong(), surfaceSnapshots = new AtomicLong(), surfacePosts = new AtomicLong(), surfaceFailures = new AtomicLong();
+    final AtomicLong surfaceSnapshotNanos = new AtomicLong(), surfaceLockNanos = new AtomicLong(), surfaceDrawNanos = new AtomicLong(), surfacePostNanos = new AtomicLong();
+    private volatile boolean separateSurfaceRequested, separateSurfaceActivated, separateSurfaceActive;
+    private volatile String presentationMode = "bitmap-view", surfaceFailure = "none";
+    void surfaceRequested() { separateSurfaceRequested = true; presentationMode = "separate-surface-cpu-canvas"; }
+    void surfaceInvalidated() { separateSurfaceActive = false; }
+    void surfacePosted() { surfacePosts.incrementAndGet(); separateSurfaceActivated = true; separateSurfaceActive = true; }
+    void surfaceFailed(String reason) { surfaceFailures.incrementAndGet(); surfaceFailure = reason; separateSurfaceActive = false; }
+    void surfaceFallback(String reason) { if (!surfaceFailure.equals(reason)) surfaceFailed(reason); presentationMode = "bitmap-fallback"; }
     static void maximum(AtomicLong value, long sample) { value.accumulateAndGet(sample, Math::max); }
     void requestPolicy(boolean earlyDisplayRequests) {
         updateRequestPolicy = earlyDisplayRequests ? "one-ahead-with-resize-refresh" : "after-complete-with-resize-refresh";
@@ -88,6 +97,19 @@ final class DisplayPerformance {
         number(out, "android_window_frames", androidFrames.get()); millis(out, "android_frame_total_ms", androidTotalNanos);
         millis(out, "android_frame_draw_ms", androidDrawNanos); millis(out, "android_frame_sync_ms", androidSyncNanos);
         millis(out, "android_frame_gpu_ms", androidGpuNanos); number(out, "android_gpu_samples", gpuSamples.get()); number(out, "dropped_android_frame_reports", droppedFrameReports.get());
+        // Window FrameMetrics excludes the independent SurfaceView layer and its compositor work.
+        out.append(",\n  \"android_frame_metrics_scope\": \"app-ui-window-only\"");
+        out.append(",\n  \"presentation_mode\": \"").append(presentationMode).append('"');
+        out.append(",\n  \"separate_surface_requested\": ").append(separateSurfaceRequested);
+        out.append(",\n  \"separate_surface_activation_verified\": ").append(separateSurfaceActivated);
+        out.append(",\n  \"separate_surface_active\": ").append(separateSurfaceActive && connected);
+        out.append(",\n  \"surface_failure\": \"").append(surfaceFailure).append('"');
+        out.append(",\n  \"surface_timing_meaning\": \"cpu-wall-time-including-bufferqueue-waits-not-gpu-time\"");
+        out.append(",\n  \"physical_benefit_verified\": false");
+        number(out, "surface_frame_requests", surfaceRequests.get()); number(out, "surface_coalesced_updates", surfaceCoalesced.get());
+        number(out, "surface_snapshots", surfaceSnapshots.get()); number(out, "surface_successful_posts", surfacePosts.get()); number(out, "surface_failures", surfaceFailures.get());
+        millis(out, "surface_snapshot_ms", surfaceSnapshotNanos); millis(out, "surface_lock_canvas_ms", surfaceLockNanos);
+        millis(out, "surface_draw_cpu_ms", surfaceDrawNanos); millis(out, "surface_post_ms", surfacePostNanos);
         return out.append("\n}\n").toString();
     }
     private static void number(StringBuilder out, String name, long value) { out.append(",\n  \"").append(name).append("\": ").append(value); }

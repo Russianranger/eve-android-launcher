@@ -72,6 +72,14 @@ through bounded shared buffers, retaining GPU fences and full RGB. It is default
 off and remains a physical FPS/heat candidate. Follow [the single new experiment
 run](docs/TESTING.md); no repeat of the completed baseline/SYS comparisons is needed.
 
+The [0.1.18 device run](docs/DEVICE-20261008-SHM.md) confirms actual shared-memory
+frame transfers but no user-observed FPS or heat improvement. 0.1.19 adds
+default-off **Use separate display surface (experiment)**, moving the Android
+game image out of the app's bitmap texture draw while keeping flight controls
+above it. It retains the existing Wine/FEX/DXVK/Turnip source versions and game
+settings. [Test only the new surface](docs/TESTING.md); actual composition,
+FPS, heat, overlay controls and reopen behavior remain physical device checks.
+
 ## Fullscreen controls in 0.1.11
 
 The display fills the screen; a top-right space-themed gear opens the controls

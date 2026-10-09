@@ -82,6 +82,33 @@ public final class ClientPerformanceSettingsTest {
         assertFalse(new ClientRuntime(context).diagnosticHud());
     }
 
+    @Test public void separateSurfaceIsSavedIndependentlyAndDoesNotChangeGuestLaunchOrAssets() throws Exception {
+        ClientRuntime runtime = new ClientRuntime(context);
+        assertFalse(runtime.separateDisplaySurface());
+        assertFalse(runtime.status().getBoolean("separateDisplaySurface"));
+        runtime.setPerformanceOption("linear-presentation", true);
+        runtime.setPerformanceOption("shm-presentation", true);
+        runtime.setDiagnosticHud(true);
+        List<String> hardware = runtime.launchCommand("turnip-dxvk", "responsive", true);
+        List<String> software = runtime.launchCommand("software", "responsive", true);
+        runtime.setPerformanceOption("separate-display-surface", true);
+        ClientRuntime restored = new ClientRuntime(context);
+        assertTrue(restored.separateDisplaySurface());
+        assertTrue(restored.status().getBoolean("separateDisplaySurface"));
+        assertEquals(hardware, restored.launchCommand("turnip-dxvk", "responsive", true));
+        assertEquals(software, restored.launchCommand("software", "responsive", true));
+        assertTrue(restored.linearPresentation()); assertTrue(restored.shmPresentation());
+        assertTrue(restored.performanceSummary().endsWith("Selected experiments: Reduce GPU frame copies, Shared-memory frame transport, Separate display surface"));
+        restored.useAdreno(false);
+        assertTrue(restored.separateDisplaySurface());
+        assertTrue(restored.performanceSummary().endsWith("Separate display surface (active)"));
+        restored.restoreBaselineSettings();
+        assertFalse(new ClientRuntime(context).separateDisplaySurface());
+        assertTrue(restored.diagnosticHud());
+        assertTrue(preferences.edit().putString("separate-display-surface", "true").commit());
+        assertFalse(new ClientRuntime(context).separateDisplaySurface());
+    }
+
     @Test public void invalidStoredProfileFallsBackAndInvalidChoicesCannotOverwriteIt() {
         assertTrue(preferences.edit().putString("performance-profile-v2", "unsupported-profile").commit());
         ClientRuntime runtime = new ClientRuntime(context);
@@ -110,7 +137,7 @@ public final class ClientPerformanceSettingsTest {
             runtime.setPerformanceProfile(profile);
             assertEquals(profile, new ClientRuntime(context).performanceProfile());
         }
-        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation"}) {
+        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface"}) {
             runtime.setPerformanceOption(option, true);
             assertTrue(new ClientRuntime(context).performanceOption(option));
             RuntimeService.busy = true;
@@ -337,7 +364,7 @@ public final class ClientPerformanceSettingsTest {
     }
 
     @Test public void explicitBaselineRestoreClearsEveryExperimentTogetherAndPreservesOtherSettings() {
-        String[] options = {"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation"};
+        String[] options = {"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface"};
         for (boolean adreno : new boolean[]{true, false}) {
             SharedPreferences.Editor setup = preferences.edit().putString("performance-profile-v2", "throughput")
                     .putBoolean("use-adreno", adreno).putBoolean("diagnostic-hud", true).putString("unrelated-setting", "preserved");
@@ -385,7 +412,7 @@ public final class ClientPerformanceSettingsTest {
     @Test public void baselineCapsKeepExperimentsVisibleUntilExplicitRestoreUpdatesAllControls() {
         ClientRuntime runtime = new ClientRuntime(context);
         runtime.setPerformanceProfile("render60"); runtime.setDiagnosticHud(true);
-        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation"})
+        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface"})
             runtime.setPerformanceOption(option, true);
         ActivityController<MainActivity> owned = Robolectric.buildActivity(MainActivity.class).create().start().resume().visible();
         try {
@@ -402,7 +429,7 @@ public final class ClientPerformanceSettingsTest {
             assertEquals(0, profile(root).getSelectedItemPosition());
             for (String label : new String[]{"Request next display frame early", "Disable concurrent binning (Adreno experiment)",
                     "Use alternate CPU load instructions (FEX experiment)", "Use A740 driver experiment", "Reduce GPU frame copies (experiment)",
-                    "Use direct GPU rendering (experiment)", "Use shared-memory frame transport (experiment)"})
+                    "Use direct GPU rendering (experiment)", "Use shared-memory frame transport (experiment)", "Use separate display surface (experiment)"})
                 assertFalse("Reset immediately clears " + label, checkBox(root, label).isChecked());
             assertEquals("Baseline caps: render 30 FPS · queue 1 frame · display 30 FPS\nSelected experiments: none",
                     performanceSummary(root).getText().toString());

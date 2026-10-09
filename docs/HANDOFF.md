@@ -1,6 +1,44 @@
 # EVE Android Launcher handoff
 
-## Current 0.1.18 continuation: shared-memory frame transport
+## Current 0.1.19 continuation: separate Android display surface
+
+Accept the user's neutral 0.1.18 FPS/temperature result; no baseline repeat.
+[DEVICE-20261008-SHM.md](DEVICE-20261008-SHM.md) proves actual EVE-sized shared
+transport with at least 2,400 completed frames and no fallback. Sampled warm
+copies are around 1 ms and server-reply waits around 7 µs, so this wire-leg change
+has not solved performance. An earlier launcher process has Android LOW_MEMORY
+exit reason; the later/current run remains alive at export capture. The ZIP ends
+at export start and does not establish post-export continuity.
+
+0.1.19 adds default-off **Use separate display surface (experiment)**, key
+`separate-display-surface`. This is an Android display selection, independent of
+hardware/software guest rendering; it does not add a guest CLI/environment flag
+or change graphics asset selection. Restore baseline atomically clears all eight
+options while preserving renderer/HUD/data. Saved settings persist across upgrade.
+
+The experiment retains opaque full-RGB ARGB8888 framebuffer and Raw RFB. A separate
+CPU Canvas surface is drawn at game resolution; the system scales/composes it
+outside the app's bitmap texture drawing path. Upper gear/controller/text menus
+retain normal Android UI/input. Rendering uses a bounded latest-frame worker with
+surface/lifecycle checks; surface failure recovers to the original bitmap view.
+Window FrameMetrics now measures only app UI, so surface phase/post/fallback
+receipts and physical FPS/temperatures are required, not a lower window GPU value.
+
+Follow only [the 0.1.19 case](TESTING.md): keep linear+SHM at 30/1/display30 and add
+only separate surface; SYS/A740/other flags off, FSR off, same game/fan/power state.
+The Wine/FEX/DXVK/Mesa source pins, GPU fences, IMMEDIATE mode, graphics gates,
+corroborated-pressure policy and existing runtime/data remain intact.
+CI still rebuilds native graphics from those same sources; resulting DLL/optional
+driver byte hashes can differ. This trial selects only one new option, but is not
+a controlled binary-identical A/B. Do not infer a performance change from hashes
+or request a completed baseline repeat solely for that reason.
+[CLIENT-PERFORMANCE.md](CLIENT-PERFORMANCE.md) records the measured target and
+limits; [MESA-26.2-CANDIDATE.md](MESA-26.2-CANDIDATE.md) preserves the next primary-
+source GPU/compiler candidate if the display experiment is also neutral.
+
+Build qualification is recorded here after CI and APK inspection complete.
+
+## Historical 0.1.18 continuation: shared-memory frame transport
 
 The user ran only the 0.1.17 SYS experiment, reported no improvement and explicitly
 requires no other baseline repeat unless investigating a crash. Accept that result.

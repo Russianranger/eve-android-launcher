@@ -33,6 +33,12 @@ SPEC.loader.exec_module(MODULE)
 CA_PEM = "-----BEGIN CERTIFICATE-----\nZmFrZS1jZXJ0\n-----END CERTIFICATE-----\n"
 OFFLINE_HEALTH = {"status": "ok", "service": "express-secondary", "gatewayMode": "local",
                   "offlinePolicy": {"version": 2, "proxyForwarding": "disabled", "clientFeatureFlags": "defaults"}}
+# Mesa262 plus linear runs six real qualification helpers. Joining the two
+# deliberately live display/Wine log pumps consumes 3.6s across those helpers;
+# TLS adds 0.6s before process scheduling, status sampling and final cleanup.
+# Bound the whole fixture session separately from its unchanged 0.5s per-helper
+# graphics timeout so a loaded CI runner can finish every asserted gate.
+MESA262_SESSION_TIMEOUT = 15
 
 FIXTURE = r'''
 import hashlib, json, os, pathlib, signal, socket, subprocess, sys, threading, time
@@ -292,6 +298,17 @@ class ClientRuntimeTests(unittest.TestCase):
                 if MODULE.process_record(pid):
                     with contextlib.suppress(ProcessLookupError):
                         os.kill(pid, signal.SIGKILL)
+
+    @contextlib.contextmanager
+    def cleanup_failed_fixture_session(self):
+        # subTest continues its loop after a timeout/assertion failure. Reap
+        # the current supervisor and its fixture helpers before another case
+        # can reuse this directory and overwrite its status/identity receipts.
+        try:
+            yield
+        except BaseException:
+            self.cleanup_processes()
+            raise
 
     def wait_status(self, phase, timeout=5):
         deadline = time.monotonic() + timeout
@@ -789,9 +806,9 @@ class ClientRuntimeTests(unittest.TestCase):
 
     def test_mesa262_fresh_old_and_selected_chip_gates_then_render_and_reset_preserve_cache(self):
         for linear in (False, True):
-            with self.subTest(linear=linear):
+            with self.subTest(linear=linear), self.cleanup_failed_fixture_session():
                 process = self.launch(graphics=True, mesa262_driver=True, linear_presentation=linear)
-                running = self.wait_status("running")
+                running = self.wait_status("running", timeout=MESA262_SESSION_TIMEOUT)
                 report = running["graphicsPreflight"]
                 qualification = report["mesa262DriverQualification"]
                 for field in ("hardwareIdentityGatePassed", "selectedIdentityGatePassed", "selectedDriverVulkanPresentationPassed",
@@ -825,7 +842,7 @@ class ClientRuntimeTests(unittest.TestCase):
                 (self.state / "run/stop").write_text("stop")
                 self.assertEqual(process.wait(timeout=4), 0)
                 baseline = self.launch(graphics=True)
-                restarted = self.wait_status("running")
+                restarted = self.wait_status("running", timeout=MESA262_SESSION_TIMEOUT)
                 self.assertFalse(restarted["optimizations"]["mesa262Driver"])
                 self.assertFalse(restarted["graphicsPreflight"]["mesa262DriverQualification"]["selectedIdentityGatePassed"])
                 environment = json.loads((self.state / "client.environment.json").read_text())
@@ -839,11 +856,11 @@ class ClientRuntimeTests(unittest.TestCase):
         for behavior in ("mesa262-wrong-version", "mesa262-wrong-device", "mesa262-software", "mesa262-wrong-chip",
                          "mesa262-fixture", "mesa262-old-probe", "mesa262-wrong-info", "mesa262-linear-unsupported",
                          "mesa262-final-bad", "graphicsD3d-bad", "graphicsD3d-display-bad", "graphicsD3d-policy-fifo"):
-            with self.subTest(behavior=behavior):
+            with self.subTest(behavior=behavior), self.cleanup_failed_fixture_session():
                 (self.state / "graphics-preflight.json").write_text(json.dumps({"hardwarePreflightPassed": True,
                     "mesa262DriverQualification": {"selectedIdentityGatePassed": True}}))
                 process = self.launch(behavior, graphics=True, mesa262_driver=True, linear_presentation=True)
-                self.assertEqual(process.wait(timeout=5), 1)
+                self.assertEqual(process.wait(timeout=MESA262_SESSION_TIMEOUT), 1)
                 self.assertEqual(self.wait_status("failed")["graphicsPreflight"], {})
                 self.assertFalse((self.state / "graphics-preflight.json").exists())
                 self.assertFalse((self.state / "client.pid").exists())

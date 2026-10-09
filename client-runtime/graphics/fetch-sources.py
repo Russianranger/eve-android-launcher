@@ -51,6 +51,16 @@ A740_EXPERIMENT = {
     "patchedSourceFileSha256": "a59ac4f80c0109ebffa7cd766bf91661ced97bdae35771af084ce6e73831bfdc",
     "deviceId": 0x43050a01, "registerOffset": 0x9804, "originalValue": 0x3f, "value": 0x1f1f,
 }
+SHM_EXPERIMENT = {
+    "format": 1, "name": "turnip-x11-shm-staging-1",
+    "driver": "turnip-26.0.0-x11-shm.so",
+    "mesaSourceSha256": SOURCE_ARCHIVES["mesa-26.0.0.tar.xz"],
+    "patchSha256": "3ec5f29a7bee6328b824cc98a47228b9fc5ec63751d7e5d005703e999f0bc83c",
+    "transportSourceSha256": "cdbe77e8091afe06b2689d82c1cf39eb9bcb498912b3a66e5814c4b021369685",
+    "probeSourceSha256": "00030ef619ccb6f4b170f5ae48fff3e90062751ef7ff711ec1c833780ae0182b",
+    "sourceFileSha256": "92831b74c892f1795c489fc14f1c05afa362ad857b4959e1e28c13932cba52e5",
+    "patchedSourceFileSha256": "18281444fd6639f4a6a672d543685f99ba282cdba25ba204e0c5a52062cc74fd",
+}
 
 
 def checked(data: bytes, digest: str, name: str) -> bytes:
@@ -121,6 +131,37 @@ def prepare_a740_sources(source: Path, recipe: Path) -> None:
     (source / "a740-pc-mode-experiment.json").write_text(json.dumps(A740_EXPERIMENT, indent=2) + "\n")
 
 
+def prepare_shm_sources(source: Path, recipe: Path) -> None:
+    """Patch only X11 software presentation in an independent pristine Mesa tree."""
+    archive = source / "turnip-original-source/mesa-26.0.0.tar.xz"
+    checked(archive.read_bytes(), SHM_EXPERIMENT["mesaSourceSha256"], archive.name)
+    patch = recipe / "x11-shm-staging.patch"
+    transport = recipe / "eve-x11-shm-staging.h"
+    probe = recipe / "eve-x11-shm-probe.c"
+    checked(patch.read_bytes(), SHM_EXPERIMENT["patchSha256"], patch.name)
+    checked(transport.read_bytes(), SHM_EXPERIMENT["transportSourceSha256"], transport.name)
+    checked(probe.read_bytes(), SHM_EXPERIMENT["probeSourceSha256"], probe.name)
+    mesa = source / "mesa-shm"
+    mesa.mkdir()
+    subprocess.run(["tar", "--no-same-owner", "--no-same-permissions", "-xf",
+                    str(archive), "-C", str(mesa)], check=True)
+    checkout = mesa / "mesa-26.0.0"
+    changed = checkout / "src/vulkan/wsi/wsi_common_x11.c"
+    checked(changed.read_bytes(), SHM_EXPERIMENT["sourceFileSha256"], changed.name)
+    changes = subprocess.check_output(
+        ["git", "apply", "--numstat", str(patch)], cwd=checkout, text=True)
+    if len(changes.splitlines()) != 1 or changes.split("\t")[-1].strip() != "src/vulkan/wsi/wsi_common_x11.c":
+        raise ValueError("SHM experiment must change only the selected X11 WSI source")
+    subprocess.run(["git", "apply", "--check", str(patch)], cwd=checkout, check=True)
+    subprocess.run(["git", "apply", str(patch)], cwd=checkout, check=True)
+    checked(changed.read_bytes(), SHM_EXPERIMENT["patchedSourceFileSha256"], changed.name)
+    # The standalone fixture compiles this identical header. It is not a second
+    # implementation of the transport and remains in corresponding sources.
+    shutil.copyfile(transport, changed.parent / transport.name)
+    (source / "x11-shm-presentation-experiment.json").write_text(
+        json.dumps(SHM_EXPERIMENT, indent=2) + "\n")
+
+
 def fetch_sources(source: Path, output: Path) -> None:
     source.mkdir(parents=True, exist_ok=True)
     (output / "assets").mkdir(parents=True, exist_ok=True)
@@ -157,6 +198,7 @@ def fetch_sources(source: Path, output: Path) -> None:
             content = file_by_suffix(original, name)
             (turnip_sources / Path(name).name).write_bytes(content)
     prepare_a740_sources(source, Path("/graphics-recipe"))
+    prepare_shm_sources(source, Path("/graphics-recipe"))
     checkout = source / "dxvk"
     git("init", str(checkout))
     git("remote", "add", "origin", "https://github.com/doitsujin/dxvk.git", cwd=checkout)
@@ -181,6 +223,7 @@ def fetch_sources(source: Path, output: Path) -> None:
         "turnipOriginalBinaryRelease": RELEASE, "turnipOriginalBundleSha256": BUNDLE_HASH,
         "turnipOriginalCorrespondingSourcesSha256": SOURCES_HASH,
         "a740PcModeExperiment": A740_EXPERIMENT,
+        "shmPresentationExperiment": SHM_EXPERIMENT,
         "licenses": {"dxvk": "Zlib", "mesa": "MIT and source component notices",
                      "vulkanProbe": "Original project probe source and accompanying notices retained"},
     }
@@ -289,15 +332,40 @@ def verify_a740_link_compatibility(assets: Path) -> dict:
     return report
 
 
+def verify_shm_link_compatibility(assets: Path) -> dict:
+    """The presentation-only candidate must retain the baseline native ABI."""
+    original = "turnip-26.0.0.so"
+    variant = SHM_EXPERIMENT["driver"]
+    baseline = native_link_requirements(assets / original)
+    selected = native_link_requirements(assets / variant)
+    if not set(selected["needed"]).issubset(baseline["needed"]):
+        raise ValueError("Optional SHM driver adds a dynamic library requirement")
+    for family, version in selected["versionRequirements"].items():
+        if version > baseline["versionRequirements"].get(family, (0,)):
+            raise ValueError("Optional SHM driver requires a newer runtime ABI: " + family)
+    linked = subprocess.check_output(["ldd", str(assets / variant)], text=True, stderr=subprocess.STDOUT)
+    if "not found" in linked:
+        raise ValueError("Optional SHM driver has unresolved runtime dependencies")
+    return {variant: {"baseline": original, "requirements": selected,
+                      "newDynamicDependencies": False, "newRuntimeAbiRequired": False}}
+
+
 def make_manifest(assets):
     names = {
         'turnip-26.0.0.so': 'elf', 'vulkan-probe': 'elf',
         'turnip-26.0.0-a740-pc-mode.so': 'elf', 'a740-driver-probe': 'elf',
+        'turnip-26.0.0-x11-shm.so': 'elf',
         'dxvk-d3d11-arm64ec.dll': 'ec', 'dxvk-dxgi-arm64ec.dll': 'ec',
         'eve-d3d11-probe.exe': 'x64',
     }
     compatibility = verify_a740_link_compatibility(assets)
     (assets.parent / 'a740-link-compatibility.json').write_text(json.dumps(compatibility, indent=2) + '\n')
+    (assets.parent / 'shm-link-compatibility.json').write_text(
+        json.dumps(verify_shm_link_compatibility(assets), indent=2) + '\n')
+    candidate = (assets / SHM_EXPERIMENT['driver']).read_bytes()
+    for marker in (b'EVE_X11_SHM_STAGING', b'EVE_X11_SHM {', b'eve-x11-shm-1'):
+        if marker not in candidate:
+            raise ValueError('Optional SHM driver lacks its compiled transport marker')
     files = {}
     for name, kind in names.items():
         data = (assets / name).read_bytes()
@@ -325,6 +393,7 @@ def make_manifest(assets):
         'mesa': '26.0.0', 'dxvk': '2.4.1', 'dxvk_commit': DXVK_COMMIT,
         'architecture': 'arm64ec-and-arm64-glibc', 'kmd': 'kgsl', 'files': files,
         'a740PcModeExperiment': A740_EXPERIMENT,
+        'shmPresentationExperiment': SHM_EXPERIMENT,
         'baselineRuntimeSha256': 'f036c00a290abb953bec26be80c4d8fe492fd986e7a589c51008124432c8641e',
         'toolchain': {'name': 'llvm-mingw-20250920-ucrt-ubuntu-22.04-aarch64',
                       'sha256': 'bce5cc755c613515fd44e1ee9523123d854103abae147571adb645450036274d'},
@@ -337,7 +406,7 @@ def make_manifest(assets):
                              'reusedCorrespondingSourcesSha256': SOURCES_HASH},
     }
     (assets / 'client-graphics-bundle.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    print('Validated native EC code ranges, original graphics bytes and optional A740 driver/probe.', flush=True)
+    print('Validated native EC code ranges, original graphics bytes and optional A740/SHM drivers.', flush=True)
 
 
 def runtime_identity(output):

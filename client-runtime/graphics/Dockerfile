@@ -14,6 +14,8 @@ RUN test "$(uname -m)" = aarch64 \
 COPY client-runtime/graphics/fetch-sources.py /graphics-recipe/fetch-sources.py
 COPY client-runtime/graphics/arm64ec.txt /graphics-recipe/arm64ec.txt
 COPY client-runtime/graphics/a740-pc-mode.patch native/a740-driver-probe.c /graphics-recipe/
+COPY client-runtime/graphics/x11-shm-staging.patch native/eve-x11-shm-staging.h \
+     native/eve-x11-shm-probe.c /graphics-recipe/
 COPY backend/pe_image.py /graphics-recipe/
 RUN python3 /graphics-recipe/fetch-sources.py fetch /graphics-src /graphics-out \
  && cd /graphics-src/dxvk \
@@ -46,6 +48,19 @@ RUN pip3 install --break-system-packages cmake==3.31.6 meson==1.5.2 \
  && /usr/bin/strip /graphics-out/assets/a740-driver-probe \
  && ldd /graphics-out/assets/turnip-26.0.0-a740-pc-mode.so \
  && ldd /graphics-out/assets/a740-driver-probe
+# This second optional driver is independently built from pristine Mesa 26.0.0
+# with only the X11 software-WSI staging patch. No A740 register patch is mixed
+# in, and the unchanged original Turnip remains the default asset.
+RUN /usr/local/bin/meson setup /graphics-mesa-shm-build /graphics-src/mesa-shm/mesa-26.0.0 \
+      --buildtype=release -Dplatforms=x11 -Dvulkan-drivers=freedreno -Dfreedreno-kmds=kgsl \
+      -Dgallium-drivers= -Dglx=disabled -Degl=disabled -Dgbm=disabled \
+      -Dopengl=false -Dgles1=disabled -Dgles2=disabled -Dllvm=disabled \
+      -Dvideo-codecs= -Dbuild-tests=false \
+ && ninja -C /graphics-mesa-shm-build -j2 \
+ && cp /graphics-mesa-shm-build/src/freedreno/vulkan/libvulkan_freedreno.so \
+      /graphics-out/assets/turnip-26.0.0-x11-shm.so \
+ && /usr/bin/strip /graphics-out/assets/turnip-26.0.0-x11-shm.so \
+ && ldd /graphics-out/assets/turnip-26.0.0-x11-shm.so
 # Runtime bundle manifest validation/hashes are a separate Python step shared
 # with APK validation; linked ARM64EC uses AMD64+CHPE metadata, NOT machineA641.
 COPY native/eve-d3d11-probe.c /graphics-tests/native/
@@ -54,6 +69,7 @@ RUN bash /graphics-tests/scripts/build-client-graphics-probe.sh /graphics-out/as
  && python3 /graphics-recipe/fetch-sources.py manifest /graphics-out/assets \
  && cp /graphics-out/assets/client-graphics-bundle.json /graphics-src/provenance-build.json \
  && cp /graphics-out/a740-link-compatibility.json /graphics-src/ \
+ && cp /graphics-out/shm-link-compatibility.json /graphics-src/ \
  && python3 /graphics-recipe/fetch-sources.py runtime-identity /graphics-out/qualified-runtime-identity.json \
  && cp /graphics-out/qualified-runtime-identity.json /graphics-src/
 COPY backend/graphics_present.py /graphics-tests/graphics_present.py
@@ -65,6 +81,8 @@ RUN EVE_CLIENT_WINDOW_CC=/toolchain/bin/x86_64-w64-mingw32-clang \
  && mv /graphics-out/window-build/eve-client-window-fixture.exe /graphics-out/ \
  && rmdir /graphics-out/window-build
 COPY client-runtime/graphics/Dockerfile scripts/build-client-graphics.sh /graphics-recipe/
+COPY scripts/check-x11-shm-host.sh /graphics-tests/scripts/
+COPY tests/check_x11_shm_rfb.py /graphics-tests/tests/
 RUN cp -R /graphics-recipe /graphics-src/recipe \
  && cp /graphics-tests/native/eve-d3d11-probe.c /graphics-src/recipe/ \
  && cp /graphics-tests/graphics_present.py /graphics-tests/scripts/build-client-graphics-probe.sh /graphics-src/recipe/ \
@@ -72,6 +90,10 @@ RUN cp -R /graphics-recipe /graphics-src/recipe \
       /graphics-tests/scripts/build-client-window.sh /graphics-src/recipe/ \
  && cp /graphics-build/meson-logs/meson-log.txt /graphics-src/recipe/ \
  && cp /graphics-mesa-a740-build/meson-logs/meson-log.txt /graphics-src/recipe/mesa-a740-meson-log.txt \
+ && cp /graphics-mesa-shm-build/meson-logs/meson-log.txt /graphics-src/recipe/mesa-shm-meson-log.txt \
+ && cp /graphics-tests/scripts/check-x11-shm-host.sh /graphics-tests/tests/check_x11_shm_rfb.py /graphics-src/recipe/ \
+ && mkdir -p /graphics-tests/native-proot /graphics-tests/native \
+ && cp /graphics-recipe/eve-x11-shm-staging.h /graphics-recipe/eve-x11-shm-probe.c /graphics-tests/native/ \
  && tar --exclude=.git --sort=name --owner=0 --group=0 --numeric-owner \
       -czf /graphics-out/client-graphics-corresponding-source.tar.gz -C /graphics-src . \
  && rm -rf /graphics-out/download-cache

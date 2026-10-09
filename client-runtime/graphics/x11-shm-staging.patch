@@ -1,0 +1,104 @@
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -68,6 +68,7 @@
+ #ifdef HAVE_SYS_SHM_H
+ #include <sys/ipc.h>
+ #include <sys/shm.h>
++#include "eve-x11-shm-staging.h"
+ #endif
+ 
+ #ifndef XCB_PRESENT_OPTION_ASYNC_MAY_TEAR
+@@ -1104,6 +1105,9 @@
+    xcb_shm_seg_t                             shmseg;
+    int                                       shmid;
+    uint8_t *                                 shmaddr;
++#ifdef HAVE_SYS_SHM_H
++   struct eve_x11_shm_stage                   eve_shm_stage;
++#endif
+    uint64_t                                  present_id;
+    VkPresentModeKHR                          present_mode;
+    xcb_rectangle_t                           rects[MAX_DAMAGE_RECTS];
+@@ -1525,6 +1529,24 @@
+    int stride_b = image->base.row_pitches[0];
+    size_t size = (hdr_len + stride_b * chain->extent.height) >> 2;
+    uint64_t max_req_len = xcb_get_maximum_request_length(chain->conn);
++
++#ifdef HAVE_SYS_SHM_H
++   if (image->eve_shm_stage.enabled) {
++      enum eve_x11_shm_result staged = eve_x11_shm_stage_put(
++         &image->eve_shm_stage, chain->conn, chain->window, chain->gc,
++         chain->depth, image->base.cpu_map, image->base.sizes[0]);
++      if (staged == EVE_X11_SHM_OK)
++         goto wait_geometry;
++      if (staged == EVE_X11_SHM_OUT_OF_DATE || staged == EVE_X11_SHM_SURFACE_LOST) {
++         xcb_discard_reply(chain->conn, geom_cookie.sequence);
++         return staged == EVE_X11_SHM_OUT_OF_DATE ?
++            VK_ERROR_OUT_OF_DATE_KHR : VK_ERROR_SURFACE_LOST_KHR;
++      }
++      /* An allocation/attach/protocol rejection retains ordinary PutImage.
++       * The old shared put was drained before this fallback or a new copy. */
++      eve_x11_shm_stage_finish(&image->eve_shm_stage, chain->conn);
++   }
++#endif
+ 
+    if (image->rectangle_count > 0) {
+       for (int i = 0; i < image->rectangle_count; i++) {
+@@ -1575,6 +1597,9 @@
+ 
+    xcb_flush(chain->conn);
+ 
++#ifdef HAVE_SYS_SHM_H
++wait_geometry:;
++#endif
+    /* We don't have queued present here.
+     * Immediately let application acquire again, but query geometry first so
+     * we can report OUT_OF_DATE on resize. */
+@@ -2116,8 +2141,36 @@
+       return result;
+ 
+    image->update_region = None;
+-   if (chain->base.wsi->sw && !chain->has_mit_shm)
++   if (chain->base.wsi->sw && !chain->has_mit_shm) {
++#ifdef HAVE_SYS_SHM_H
++      if (debug_get_bool_option("EVE_X11_SHM_STAGING", false) &&
++          !(WSI_DEBUG & WSI_DEBUG_NOSHM) && chain->base.image_count <= 8 &&
++          image->base.num_planes == 1 && image->base.offsets[0] == 0 &&
++          image->base.cpu_map &&
++          (pCreateInfo->imageFormat == VK_FORMAT_B8G8R8A8_UNORM ||
++           pCreateInfo->imageFormat == VK_FORMAT_R8G8B8A8_UNORM ||
++           pCreateInfo->imageFormat == VK_FORMAT_B8G8R8A8_SRGB ||
++           pCreateInfo->imageFormat == VK_FORMAT_R8G8B8A8_SRGB)) {
++         /* SHM ZPixmap derives stride from the server's pixmap format. Only
++          * the exact 32-bit/pad32 byte layout used by this private Xvnc can
++          * consume our pitch/4 total width without pixel reinterpretation. */
++         bool format_ok = false;
++         xcb_format_iterator_t formats =
++            xcb_setup_pixmap_formats_iterator(xcb_get_setup(chain->conn));
++         for (; formats.rem; xcb_format_next(&formats)) {
++            if (formats.data->depth == chain->depth &&
++                formats.data->bits_per_pixel == 32 &&
++                formats.data->scanline_pad == 32)
++               format_ok = true;
++         }
++         if (format_ok)
++            (void)eve_x11_shm_stage_init(&image->eve_shm_stage, chain->conn,
++               chain->extent.width, chain->extent.height,
++               image->base.row_pitches[0], image->base.sizes[0]);
++      }
++#endif
+       return VK_SUCCESS;
++   }
+ 
+ #ifdef HAVE_X11_DRM
+    xcb_void_cookie_t cookie;
+@@ -2292,6 +2345,10 @@
+ #endif
+    }
+ 
++#ifdef HAVE_SYS_SHM_H
++   if (image->eve_shm_stage.stage_id)
++      eve_x11_shm_stage_finish(&image->eve_shm_stage, chain->conn);
++#endif
+    wsi_destroy_image(&chain->base, &image->base);
+ #ifdef HAVE_SYS_SHM_H
+    if (image->shmaddr)

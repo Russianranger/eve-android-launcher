@@ -80,6 +80,7 @@ class Settings:
     a740_pc_mode: bool = False
     linear_presentation: bool = False
     sysmem_rendering: bool = False
+    shm_presentation: bool = False
     graphics_folder: Path = Path("/opt/eve-android")
     graphics_timeout: float = 90
     window_start_timeout: float = 20
@@ -131,7 +132,7 @@ class Runtime:
             self.s.graphics_mode, self.s.performance_profile, self.s.diagnostic_hud)
         self.optimizations = client_graphics.optimization_settings(
             self.s.graphics_mode, self.s.disable_concurrent_binning, self.s.disable_lrcpc2,
-            self.s.a740_pc_mode, self.s.linear_presentation, self.s.sysmem_rendering)
+            self.s.a740_pc_mode, self.s.linear_presentation, self.s.sysmem_rendering, self.s.shm_presentation)
         self.cpu_topology = client_graphics.cpu_topology()
         self.run = self.s.state / "run"
         self.logs = self.s.state / "logs"
@@ -152,7 +153,8 @@ class Runtime:
         self.graphics_reports: dict[str, Any] = {}
         self.previous_snapshot = None
         self.diagnostics = client_diagnostics.PerformanceHistory(
-            self.s.state, client_graphics.cache_directories(self.s.state, self.optimizations["a740PcMode"]))
+            self.s.state, client_graphics.cache_directories(
+                self.s.state, self.optimizations["a740PcMode"], self.optimizations["shmPresentation"]))
 
     def request_stop(self, *_: Any) -> None:
         self.cancelled = True
@@ -267,7 +269,7 @@ class Runtime:
             env, self.s.graphics_mode, self.s.graphics_folder, self.s.state,
             self.s.performance_profile, self.s.diagnostic_hud,
             self.s.disable_concurrent_binning, self.s.disable_lrcpc2,
-            self.s.a740_pc_mode, self.s.linear_presentation, self.s.sysmem_rendering)
+            self.s.a740_pc_mode, self.s.linear_presentation, self.s.sysmem_rendering, self.s.shm_presentation)
 
     def require_server(self) -> None:
         value = read_json(self.s.server_state / "run/status.json")
@@ -604,15 +606,20 @@ class Runtime:
                   "hardwareIdentityGatePassed": False, "selectedVulkanPresentationPassed": False,
                   "nativeD3d11ShaderReadbackPassed": False, "visibleRfbFramesPassed": False,
                   "nativeEffectVerified": False}
+        shm = {"requestedShmPresentation": self.s.shm_presentation, "shmPresentation": False,
+               "hardwareIdentityGatePassed": False, "selectedDriverVulkanPresentationPassed": False,
+               "selectedVulkanPresentationPassed": False, "nativeD3d11ShaderReadbackPassed": False,
+               "visibleRfbFramesPassed": False, "transportActivationVerified": False,
+               "nativeEffectVerified": False, "physicalBenefitVerified": False}
         if self.s.graphics_mode == "software":
             return {"mode": "software", "performance": self.performance,
                     "optimizations": self.optimizations, "hardwarePreflightPassed": False,
-                    "sysmemRenderingQualification": sysmem}
+                    "sysmemRenderingQualification": sysmem, "shmPresentationQualification": shm}
         env = self.environment()
         baseline_env = client_graphics.configure_environment(
             env, self.s.graphics_mode, self.s.graphics_folder, self.s.state,
             self.s.performance_profile, self.s.diagnostic_hud,
-            self.s.disable_concurrent_binning, self.s.disable_lrcpc2, False, False, False)
+            self.s.disable_concurrent_binning, self.s.disable_lrcpc2, False, False, False, False)
         # The initialized, accepted prefix is required before these session-only
         # file binds. Recheck after Wine bootstrap/TLS so a refresh cannot corrupt
         # an asset and then be mistaken for a working native renderer.
@@ -621,10 +628,10 @@ class Runtime:
         native = self.s.vulkan_command or client_graphics.native_command(self.s.graphics_folder)
         self.wait_graphics("graphicsVulkan", native, baseline_env, min(30, self.s.graphics_timeout))
         vulkan = client_graphics.parse_vulkan(client_prepare.bounded_text(self.logs / "client-graphicsVulkan.log", limit=65536))
-        driver = {"a740PcMode": False, "driver": "turnip-26.0.0.so"}
+        driver = {"a740PcMode": False, "shmPresentation": False, "driver": "turnip-26.0.0.so"}
         linear = {"requestedLinearPresentation": self.s.linear_presentation, "linearPresentation": False,
                   "mesaWsiDebug": "sw", "hardwareCapabilityGatePassed": False, "nativeEffectVerified": False}
-        if any(self.optimizations[key] for key in ("a740PcMode", "linearPresentation", "sysmemRendering")):
+        if any(self.optimizations[key] for key in ("a740PcMode", "linearPresentation", "sysmemRendering", "shmPresentation")):
             self.status("starting", "Checking native A740 identity and optional presentation capability", displayReady=True)
             self.wait_graphics("graphicsIdentity", client_graphics.a740_identity_command(self.s.graphics_folder),
                                baseline_env, min(30, self.s.graphics_timeout))
@@ -635,16 +642,24 @@ class Runtime:
             if self.optimizations["sysmemRendering"]:
                 sysmem = client_graphics.parse_sysmem_rendering(identity_log, vulkan)
             self.cancellation_point()
-        if self.optimizations["a740PcMode"]:
+        if self.optimizations["a740PcMode"] or self.optimizations["shmPresentation"]:
             baseline_vulkan = vulkan
-            driver = client_graphics.select_driver(self.s.graphics_folder, self.s.state, True, baseline_vulkan, identity)
+            if self.optimizations["shmPresentation"]:
+                driver = client_graphics.select_driver(
+                    self.s.graphics_folder, self.s.state, False, baseline_vulkan, identity, shm_presentation=True)
+                shm.update(shmPresentation=True, hardwareIdentityGatePassed=True,
+                           identity=identity, baselineVulkan=baseline_vulkan)
+            else:
+                driver = client_graphics.select_driver(self.s.graphics_folder, self.s.state, True, baseline_vulkan, identity)
             self.cancellation_point()
-            self.status("starting", "Checking the experimental A740 driver's Vulkan display", displayReady=True)
+            self.status("starting", "Checking the selected experimental driver's Vulkan display", displayReady=True)
             # Qualify driver selection independently of the linear presentation trial.
             driver_env = client_graphics.configure_environment(
                 env, self.s.graphics_mode, self.s.graphics_folder, self.s.state,
                 self.s.performance_profile, self.s.diagnostic_hud,
-                self.s.disable_concurrent_binning, self.s.disable_lrcpc2, True, False, False)
+                self.s.disable_concurrent_binning, self.s.disable_lrcpc2,
+                self.optimizations["a740PcMode"], False, False, self.optimizations["shmPresentation"])
+            driver_env.pop("EVE_X11_SHM_STAGING", None)
             self.wait_graphics("graphicsVulkan", native, driver_env, min(30, self.s.graphics_timeout))
             vulkan = client_graphics.parse_vulkan(
                 client_prepare.bounded_text(self.logs / "client-graphicsVulkan.log", limit=65536))
@@ -652,7 +667,9 @@ class Runtime:
                    for key in ("vendor_id", "driver_id", "driver_version", "api_version", "software", "device")):
                 raise RuntimeErrorDetail("The experimental driver presented a different Vulkan device")
             driver.update(identity=identity, baselineVulkan=baseline_vulkan)
-        if self.optimizations["linearPresentation"] or self.optimizations["sysmemRendering"]:
+            if self.optimizations["shmPresentation"]:
+                shm["selectedDriverVulkanPresentationPassed"] = True
+        if any(self.optimizations[key] for key in ("linearPresentation", "sysmemRendering", "shmPresentation")):
             baseline_vulkan = vulkan
             self.status("starting", "Checking the selected presentation and rendering environment", displayReady=True)
             self.wait_graphics("graphicsVulkan", native, env, min(30, self.s.graphics_timeout))
@@ -665,6 +682,8 @@ class Runtime:
                 linear["vulkanPresentationPassed"] = True
             if self.optimizations["sysmemRendering"]:
                 sysmem["selectedVulkanPresentationPassed"] = True
+            if self.optimizations["shmPresentation"]:
+                shm["selectedVulkanPresentationPassed"] = True
         self.status("starting", "Checking native D3D11 shaders and their visible display frames", displayReady=True)
         display_report = self.run / "graphics-display.json"
         helper_log = self.logs / "client-graphicsD3d-helper.log"
@@ -682,10 +701,13 @@ class Runtime:
             "--report", str(display_report), "--stdout", str(helper_log), "--stderr", str(helper_errors), "--", *helper)
         self.wait_graphics("graphicsD3d", command, helper_env, self.s.graphics_timeout)
         d3d = client_graphics.parse_d3d(client_prepare.bounded_text(helper_log, limit=65536), self.graphics_bundle)
-        presentation = client_graphics.parse_performance_policy(
-            client_prepare.bounded_text(helper_errors, limit=65536), self.s.performance_profile)
+        errors = client_prepare.bounded_text(helper_errors, limit=65536)
+        presentation = client_graphics.parse_performance_policy(errors, self.s.performance_profile)
         visible = client_graphics.parse_display(client_prepare.bounded_text(display_report, limit=65536))
         client_graphics.verify_mapped(self.s.graphics_folder, self.s.state)
+        if self.optimizations["shmPresentation"]:
+            shm.update(client_graphics.parse_shm_presentation(errors))
+            shm.update(nativeD3d11ShaderReadbackPassed=True, visibleRfbFramesPassed=True)
         if self.optimizations["sysmemRendering"]:
             sysmem.update(nativeD3d11ShaderReadbackPassed=True, visibleRfbFramesPassed=True,
                           turnipDebug=self.optimizations["turnipDebug"])
@@ -694,6 +716,7 @@ class Runtime:
                   "driverSelection": driver,
                   "linearPresentationQualification": linear,
                   "sysmemRenderingQualification": sysmem,
+                  "shmPresentationQualification": shm,
                   "performance": self.performance,
                   "optimizations": self.optimizations, "cpuTopology": self.cpu_topology,
                   "qualificationScope": "native hardware D3D11 helper and local display; EVE performance requires observation"}
@@ -1016,9 +1039,11 @@ def main(argv=None) -> int:
     parser.add_argument("--diagnostic-hud", action="store_true")
     parser.add_argument("--disable-concurrent-binning", action="store_true")
     parser.add_argument("--disable-lrcpc2", action="store_true")
-    parser.add_argument("--a740-pc-mode", action="store_true")
+    driver_options = parser.add_mutually_exclusive_group()
+    driver_options.add_argument("--a740-pc-mode", action="store_true")
     parser.add_argument("--linear-presentation", action="store_true")
     parser.add_argument("--sysmem-rendering", action="store_true")
+    driver_options.add_argument("--shm-presentation", action="store_true")
     options = parser.parse_args(argv)
     runtime = Runtime(Settings(content=options.content, state=options.state, server_state=options.server_state,
                                graphics_mode=options.graphics_mode,
@@ -1026,7 +1051,8 @@ def main(argv=None) -> int:
                                disable_concurrent_binning=options.disable_concurrent_binning,
                                disable_lrcpc2=options.disable_lrcpc2, a740_pc_mode=options.a740_pc_mode,
                                linear_presentation=options.linear_presentation,
-                               sysmem_rendering=options.sysmem_rendering))
+                               sysmem_rendering=options.sysmem_rendering,
+                               shm_presentation=options.shm_presentation))
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, runtime.request_stop)
     try:

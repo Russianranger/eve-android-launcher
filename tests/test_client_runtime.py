@@ -20,7 +20,7 @@ import threading
 import time
 import unittest
 from unittest import mock
-from test_client_graphics import a740_identity, d3d_success, display_success, linear_identity, vulkan_success
+from test_client_graphics import a740_identity, d3d_success, display_success, linear_identity, shm_report, vulkan_success
 
 BACKEND = Path(__file__).resolve().parents[1] / "backend/client_runtime.py"
 sys.path.insert(0, str(BACKEND.parent))
@@ -39,13 +39,16 @@ mode, state, port, behavior = sys.argv[1:]
 state = pathlib.Path(state)
 port = int(port)
 (state / (mode + '.pid')).write_text(str(os.getpid()))
-environment = {key: os.environ.get(key) for key in ('DXVK_HUD', 'DXVK_CONFIG_FILE', 'TU_DEBUG', 'FEX_HOSTFEATURES', 'FEX_TSOENABLED', 'MESA_VK_WSI_DEBUG', 'MESA_SHADER_CACHE_DIR')}
+environment = {key: os.environ.get(key) for key in ('DXVK_HUD', 'DXVK_CONFIG_FILE', 'TU_DEBUG', 'FEX_HOSTFEATURES', 'FEX_TSOENABLED', 'MESA_VK_WSI_DEBUG', 'MESA_SHADER_CACHE_DIR', 'EVE_X11_SHM_STAGING')}
+icd = os.environ.get('VK_DRIVER_FILES')
+environment['driverLibrary'] = json.loads(pathlib.Path(icd).read_text())['ICD']['library_path'] if icd and pathlib.Path(icd).exists() else None
+environment['processId'] = os.getpid()
 (state / (mode + '.environment.json')).write_text(json.dumps(environment))
 history_file = state / (mode + '.environment-history.json')
 history = json.loads(history_file.read_text()) if history_file.exists() else []
 history_file.write_text(json.dumps(history + [environment]))
 if mode in ('graphicsVulkan', 'graphicsD3d', 'graphicsIdentity'):
-    if behavior == mode + '-hangs':
+    if behavior == mode + '-hangs' or (mode == 'graphicsVulkan' and behavior == 'shm-selected-hangs' and environment['EVE_X11_SHM_STAGING'] == '1'):
         def finish_graphics(*args):
             (state / (mode + '.stopped')).write_text('graceful')
             sys.exit(0)
@@ -74,6 +77,12 @@ if mode in ('graphicsVulkan', 'graphicsD3d', 'graphicsIdentity'):
     selected_sysmem = mode == 'graphicsVulkan' and 'sysmem' in os.environ.get('TU_DEBUG', '').split(',')
     if selected_sysmem and behavior == 'sysmem-vulkan-bad': report['software'] = True
     if selected_sysmem and behavior == 'sysmem-vulkan-device': report['device'] += ' alternate adapter'
+    shm_driver = mode == 'graphicsVulkan' and environment['driverLibrary'] and environment['driverLibrary'].endswith('turnip-26.0.0-x11-shm.so')
+    if shm_driver and behavior == 'shm-driver-vulkan-bad' and environment['EVE_X11_SHM_STAGING'] is None: report['software'] = True
+    if shm_driver and behavior == 'shm-selected-vulkan-bad' and environment['EVE_X11_SHM_STAGING'] == '1': report['software'] = True
+    if shm_driver and behavior == 'shm-vulkan-device': report['device'] += ' alternate adapter'
+    if shm_driver and behavior == 'shm-receipts-only-vulkan':
+        for receipt in json.loads((state / 'fixture-shm.json').read_text()): print('EVE_X11_SHM ' + json.dumps(receipt), flush=True)
     if mode == 'graphicsD3d':
         if behavior == 'graphics-server-lost': (state / 'server-lost').touch()
         display = json.loads((state / 'fixture-display.json').read_text())
@@ -88,6 +97,14 @@ if mode in ('graphicsVulkan', 'graphicsD3d', 'graphicsIdentity'):
         if behavior == 'graphicsD3d-profile-wrong': policy_log = policy_log.replace('maxFrameRate = ' + str(performance['targetFrameRate']), 'maxFrameRate = 10')
         if behavior == 'graphicsD3d-profile-missing': policy_log = policy_log.replace('info:  dxgi.maxFrameLatency = ' + str(performance['maxFrameLatency']) + '\n', '')
         if behavior == 'graphicsD3d-policy-missing': policy_log = ''
+        if environment['EVE_X11_SHM_STAGING'] == '1':
+            receipts = json.loads((state / 'fixture-shm.json').read_text())
+            if behavior in ('shm-receipt-missing', 'shm-receipts-only-vulkan'): receipts = []
+            if behavior == 'shm-receipt-short': receipts = receipts[:2]
+            if behavior == 'shm-receipt-duplicate': receipts = [receipts[0]] * 3
+            if behavior == 'shm-receipt-fallback': receipts.insert(0, {'format':'eve-x11-shm-1', 'mode':'fallback', 'reason':'attach-failed'})
+            policy_log += ''.join('EVE_X11_SHM ' + json.dumps(receipt) + '\n' for receipt in receipts)
+            if behavior == 'shm-receipt-malformed': policy_log += 'EVE_X11_SHM unavailable\n'
         (state / 'logs/client-graphicsD3d-helper-errors.log').write_text(policy_log)
     print(json.dumps(report), flush=True)
     sys.exit(5 if behavior in (mode + '-exit', mode + '-orphan') or (selected_sysmem and behavior == 'sysmem-vulkan-exit') else 0)
@@ -169,12 +186,17 @@ class ClientRuntimeTests(unittest.TestCase):
         (self.state / 'fixture-graphicsIdentity.json').write_text(json.dumps(linear_identity()))
         (self.state / 'fixture-graphicsD3d.json').write_text(json.dumps(d3d_success()))
         (self.state / 'fixture-display.json').write_text(json.dumps(display_success()))
+        (self.state / 'fixture-shm.json').write_text(json.dumps([shm_report(stage_id=n) for n in (1, 2, 3)]))
         (self.state / 'fixture-graphics.json').write_text(json.dumps({'files': {
             'dxvk-d3d11-arm64ec.dll': {'sha256': '1' * 64},
-            'dxvk-dxgi-arm64ec.dll': {'sha256': '2' * 64}}}))
+            'dxvk-dxgi-arm64ec.dll': {'sha256': '2' * 64},
+            'turnip-26.0.0.so': {'sha256': '3' * 64},
+            'turnip-26.0.0-x11-shm.so': {'sha256': '4' * 64}},
+            'shmPresentationExperiment': MODULE.client_graphics.SHM_EXPERIMENT}))
 
     def settings(self, behavior="normal", graphics=False, performance_profile="responsive", diagnostic_hud=False,
-                 disable_concurrent_binning=False, disable_lrcpc2=False, linear_presentation=False, sysmem_rendering=False):
+                 disable_concurrent_binning=False, disable_lrcpc2=False, linear_presentation=False, sysmem_rendering=False,
+                 shm_presentation=False):
         def command(role):
             return (sys.executable, str(self.fixture), role, str(self.state), str(self.port), behavior)
         return MODULE.Settings(content=self.content, state=self.state, server_state=self.server,
@@ -186,17 +208,19 @@ class ClientRuntimeTests(unittest.TestCase):
                                performance_profile=performance_profile, diagnostic_hud=diagnostic_hud,
                                disable_concurrent_binning=disable_concurrent_binning, disable_lrcpc2=disable_lrcpc2,
                                linear_presentation=linear_presentation, sysmem_rendering=sysmem_rendering,
+                               shm_presentation=shm_presentation,
                                vulkan_command=command("graphicsVulkan") if graphics else None,
                                d3d_command=command("graphicsD3d") if graphics else None,
                                graphics_timeout=.5,
                                minimum_available_kib=0)
 
     def launch(self, behavior="normal", clear_stop=True, graphics=False, performance_profile="responsive", diagnostic_hud=False,
-               disable_concurrent_binning=False, disable_lrcpc2=False, linear_presentation=False, sysmem_rendering=False):
+               disable_concurrent_binning=False, disable_lrcpc2=False, linear_presentation=False, sysmem_rendering=False,
+               shm_presentation=False):
         if clear_stop:
             (self.state / "run/stop").unlink(missing_ok=True)
         selected = self.settings(behavior, graphics, performance_profile, diagnostic_hud,
-                                 disable_concurrent_binning, disable_lrcpc2, linear_presentation, sysmem_rendering)
+                                 disable_concurrent_binning, disable_lrcpc2, linear_presentation, sysmem_rendering, shm_presentation)
         (self.state / 'fixture-performance.json').write_text(json.dumps(MODULE.client_graphics.performance_settings(
             "turnip-dxvk", performance_profile)))
         values = {key: str(value) if isinstance(value, Path) else value for key, value in selected.__dict__.items()}
@@ -211,6 +235,9 @@ class ClientRuntimeTests(unittest.TestCase):
             " def preflight(self):\n"
             "  self.graphics_bundle=json.loads((self.s.state/'fixture-graphics.json').read_text()) if self.s.graphics_mode=='turnip-dxvk' else {}\n"
             "  if self.s.graphics_mode=='turnip-dxvk': module.client_graphics.verify_mapped=lambda folder,state: self.graphics_bundle\n"
+            "  if self.s.graphics_mode=='turnip-dxvk': module.client_graphics.verify_bundle=lambda folder: self.graphics_bundle\n"
+            "  if self.s.graphics_mode=='turnip-dxvk': (self.s.state/'cache').mkdir(exist_ok=True)\n"
+            "  if self.s.graphics_mode=='turnip-dxvk': module.client_graphics.select_driver(self.s.graphics_folder,self.s.state,False)\n"
             "  if self.s.graphics_mode=='turnip-dxvk': module.client_graphics.a740_identity_command=lambda folder: (*self.s.vulkan_command[:2],'graphicsIdentity',*self.s.vulkan_command[3:])\n"
             "  return {'contentBuild':3396210}\n"
             " def require_server(self):\n"
@@ -704,6 +731,159 @@ class ClientRuntimeTests(unittest.TestCase):
                 driver.assert_not_called()
                 self.assertEqual(stages, ["graphicsVulkan", "graphicsIdentity"])
                 self.assertFalse((self.state / "graphics-preflight.json").exists())
+
+    def test_shm_cli_is_strict_default_off_mutually_exclusive_and_software_ignores_it(self):
+        for arguments, enabled in (([], False), (["--shm-presentation"], True),
+                                   (["--shm-presentation", "--linear-presentation"], True)):
+            with self.subTest(arguments=arguments), mock.patch.object(MODULE, "Runtime") as constructor, \
+                    mock.patch.object(MODULE.signal, "signal"):
+                self.assertEqual(MODULE.main(["start", *arguments]), 0)
+                settings = constructor.call_args.args[0]
+                self.assertEqual(settings.shm_presentation, enabled)
+                self.assertFalse(settings.a740_pc_mode)
+                self.assertFalse(settings.sysmem_rendering)
+        for arguments in (["--shm-presentation", "1"], ["--shm-presentation", "arbitrary"],
+                          ["--shm-presentation", "--a740-pc-mode"]):
+            with self.subTest(arguments=arguments), mock.patch.object(MODULE, "Runtime") as constructor, \
+                    mock.patch("sys.stderr", new=io.StringIO()), self.assertRaises(SystemExit):
+                MODULE.main(["start", *arguments])
+            constructor.assert_not_called()
+        for invalid in (1, "1", None):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                MODULE.Runtime(MODULE.Settings(shm_presentation=invalid))
+        for mode in MODULE.client_graphics.MODES:
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                MODULE.Runtime(MODULE.Settings(graphics_mode=mode, a740_pc_mode=True, shm_presentation=True))
+        runtime = MODULE.Runtime(self.settings(shm_presentation=True))
+        with mock.patch.dict(os.environ, EVE_X11_SHM_STAGING="1"), mock.patch.object(runtime, "wait_graphics") as helper:
+            self.assertNotIn("EVE_X11_SHM_STAGING", runtime.environment())
+            report = runtime.run_graphics()
+        helper.assert_not_called()
+        self.assertTrue(report["optimizations"]["requestedShmPresentation"])
+        self.assertFalse(report["optimizations"]["shmPresentation"])
+        self.assertFalse(report["shmPresentationQualification"]["transportActivationVerified"])
+
+    def test_shm_fresh_driver_completed_transfers_and_final_environment_reset_on_restart(self):
+        for linear, sysmem, binning in ((True, False, False), (False, False, False), (True, True, True)):
+            with self.subTest(linear=linear, sysmem=sysmem):
+                (self.state / "fixture-graphicsIdentity.json").write_text(json.dumps(
+                    linear_identity() if linear else a740_identity()))
+                with mock.patch.dict(os.environ, EVE_X11_SHM_STAGING="arbitrary"):
+                    process = self.launch(graphics=True, shm_presentation=True, linear_presentation=linear,
+                                          sysmem_rendering=sysmem, disable_concurrent_binning=binning)
+                running = self.wait_status("running")
+                report = running["graphicsPreflight"]
+                qualification = report["shmPresentationQualification"]
+                for field in ("hardwareIdentityGatePassed", "selectedDriverVulkanPresentationPassed",
+                              "selectedVulkanPresentationPassed", "nativeD3d11ShaderReadbackPassed",
+                              "visibleRfbFramesPassed", "transportActivationVerified"):
+                    self.assertTrue(qualification[field])
+                self.assertEqual(qualification["completedPresents"], 3)
+                self.assertFalse(qualification["nativeEffectVerified"])
+                self.assertFalse(qualification["physicalBenefitVerified"])
+                self.assertEqual(report["driverSelection"]["driver"], MODULE.client_graphics.SHM_DRIVER)
+                self.assertTrue(running["optimizations"]["shmPresentation"])
+                history = json.loads((self.state / "graphicsVulkan.environment-history.json").read_text())[-3:]
+                self.assertEqual([env["EVE_X11_SHM_STAGING"] for env in history], [None, None, "1"])
+                self.assertEqual([Path(env["driverLibrary"]).name for env in history],
+                                 ["turnip-26.0.0.so", MODULE.client_graphics.SHM_DRIVER, MODULE.client_graphics.SHM_DRIVER])
+                self.assertEqual(history[1]["MESA_SHADER_CACHE_DIR"], str(self.state / "cache/mesa-26.0.0-x11-shm"))
+                identity = json.loads((self.state / "graphicsIdentity.environment.json").read_text())
+                self.assertIsNone(identity["EVE_X11_SHM_STAGING"])
+                self.assertEqual(Path(identity["driverLibrary"]).name, "turnip-26.0.0.so")
+                for role in ("graphicsD3d", "client"):
+                    env = json.loads((self.state / (role + ".environment.json")).read_text())
+                    self.assertEqual(env["EVE_X11_SHM_STAGING"], "1")
+                    self.assertEqual(env["MESA_VK_WSI_DEBUG"], "sw,linear" if linear else "sw")
+                    self.assertEqual(env["TU_DEBUG"], "nocb,sysmem" if sysmem else None)
+                    self.assertEqual(env["MESA_SHADER_CACHE_DIR"], str(self.state / "cache/mesa-26.0.0-x11-shm"))
+                (self.state / "run/stop").write_text("stop")
+                self.assertEqual(process.wait(timeout=4), 0)
+                with mock.patch.dict(os.environ, EVE_X11_SHM_STAGING="1"):
+                    baseline = self.launch(graphics=True)
+                restarted = self.wait_status("running")
+                self.assertFalse(restarted["optimizations"]["shmPresentation"])
+                self.assertFalse(restarted["graphicsPreflight"]["shmPresentationQualification"]["transportActivationVerified"])
+                env = json.loads((self.state / "client.environment.json").read_text())
+                self.assertIsNone(env["EVE_X11_SHM_STAGING"])
+                self.assertEqual(Path(env["driverLibrary"]).name, "turnip-26.0.0.so")
+                self.assertEqual(env["MESA_SHADER_CACHE_DIR"], str(self.state / "cache/mesa-26.0.0"))
+                self.assertNotIn("activeReports", restarted["graphicsPreflight"]["shmPresentationQualification"])
+                (self.state / "run/stop").write_text("stop")
+                self.assertEqual(baseline.wait(timeout=4), 0)
+
+    def test_shm_failed_identity_driver_rendering_or_transport_never_reuses_old_receipts_or_launches_game(self):
+        for behavior in ("identity-unavailable", "graphicsIdentity-bad", "identity-variant-device",
+                         "shm-driver-vulkan-bad", "shm-selected-vulkan-bad", "shm-vulkan-device",
+                         "graphicsD3d-bad", "graphicsD3d-display-bad", "graphicsD3d-policy-fifo",
+                         "shm-receipt-missing", "shm-receipt-short", "shm-receipt-duplicate",
+                         "shm-receipt-fallback", "shm-receipt-malformed", "shm-receipts-only-vulkan"):
+            with self.subTest(behavior=behavior):
+                (self.state / "graphics-preflight.json").write_text(json.dumps({"hardwarePreflightPassed": True,
+                    "shmPresentationQualification": {"transportActivationVerified": True}}))
+                process = self.launch(behavior, graphics=True, shm_presentation=True)
+                self.assertEqual(process.wait(timeout=5), 1)
+                failed = self.wait_status("failed")
+                self.assertEqual(failed["graphicsPreflight"], {})
+                self.assertFalse((self.state / "graphics-preflight.json").exists())
+                self.assertFalse((self.state / "client.pid").exists())
+                self.assertFalse((self.state / "run/processes.json").exists())
+
+    def test_shm_early_tls_failure_discards_previous_transport_receipt(self):
+        receipt = self.state / "graphics-preflight.json"
+        receipt.write_text('{"shmPresentationQualification":{"transportActivationVerified":true}}')
+        process = self.launch("gate-fails", graphics=True, shm_presentation=True, linear_presentation=True)
+        self.assertEqual(process.wait(timeout=5), 1)
+        self.assertEqual(self.wait_status("failed")["graphicsPreflight"], {})
+        self.assertFalse(receipt.exists())
+        self.assertFalse((self.state / "graphicsIdentity.pid").exists())
+        self.assertFalse((self.state / "client.pid").exists())
+
+    def test_shm_software_recovery_scrubs_inherited_staging_and_previous_qualification(self):
+        (self.state / "graphics-preflight.json").write_text('{"shmPresentationQualification":{"transportActivationVerified":true}}')
+        with mock.patch.dict(os.environ, EVE_X11_SHM_STAGING="1"):
+            process = self.launch(shm_presentation=True)
+        running = self.wait_status("running")
+        self.assertEqual(running["graphicsMode"], "software")
+        self.assertTrue(running["optimizations"]["requestedShmPresentation"])
+        self.assertFalse(running["optimizations"]["shmPresentation"])
+        self.assertFalse(running["graphicsPreflight"]["shmPresentationQualification"]["transportActivationVerified"])
+        env = json.loads((self.state / "client.environment.json").read_text())
+        self.assertIsNone(env["EVE_X11_SHM_STAGING"])
+        self.assertIsNone(env["driverLibrary"])
+        self.assertIsNone(env["MESA_SHADER_CACHE_DIR"])
+        self.assertFalse((self.state / "graphics-preflight.json").exists())
+        self.assertNotIn("graphicsVulkanIdentity", running)
+        (self.state / "run/stop").write_text("stop")
+        self.assertEqual(process.wait(timeout=4), 0)
+
+    def test_stop_and_timeout_during_shm_identity_or_selected_vulkan_clean_helpers_without_game(self):
+        for behavior, role in (("graphicsIdentity-hangs", "graphicsIdentity"), ("shm-selected-hangs", "graphicsVulkan")):
+            for stop in (True, False):
+                with self.subTest(behavior=behavior, stop=stop):
+                    process = self.launch(behavior, graphics=True, shm_presentation=True)
+                    if behavior == "shm-selected-hangs":
+                        deadline = time.monotonic() + 4
+                        while time.monotonic() < deadline:
+                            path = self.state / "graphicsVulkan.environment.json"
+                            try:
+                                env = json.loads(path.read_text())
+                                journal = json.loads((self.state / "run/processes.json").read_text())
+                                identity = journal.get("graphicsVulkanIdentity", {})
+                                if (env["EVE_X11_SHM_STAGING"] == "1" and identity.get("pid") == env["processId"]
+                                        and MODULE.identity_alive(identity)):
+                                    break
+                            except (OSError, ValueError):
+                                pass
+                            time.sleep(.01)
+                        else: self.fail("Selected SHM Vulkan stage did not start")
+                    self.wait_role(role)
+                    if stop: (self.state / "run/stop").write_text("stop")
+                    self.assertEqual(process.wait(timeout=5), 0 if stop else 1)
+                    self.assertTrue(self.wait_status("stopped" if stop else "failed")["cleanShutdown"])
+                    self.assertFalse((self.state / "client.pid").exists())
+                    self.assertFalse((self.state / "graphics-preflight.json").exists())
+                    self.assertFalse((self.state / "run/processes.json").exists())
 
     def test_server_loss_after_graphics_prevents_eve(self):
         process = self.launch("graphics-server-lost", graphics=True)

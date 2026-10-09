@@ -1,5 +1,80 @@
 # Client optimization evidence and qualification
 
+## October 8 late: SYS neutral, single shared-memory transport candidate
+
+[The new run](DEVICE-20261008-SYSMEM.md) really used SYS+linear and passed all
+fresh graphics gates. The user reports no improvement; accept that and stop
+requesting another baseline. Warm CPU/RSS remain similar, shaders idle and GPU
+current is usually near its readable 680 MHz ceiling. These observations do not
+identify a dominant bottleneck or prove throttling. The corrected memory guard
+is directly exercised with ample memory and retains the same client.
+
+The historical comparison is not a fresh A/B: 0.1.17 includes the opaque bitmap
+hint and rebuilt native DLL byte hashes despite unchanged source/version pins.
+This does not invalidate the user's physical no-improvement conclusion.
+
+### Selected implementation: WSI-only shared-memory staging
+
+Exact Mesa 26 X11 CPU WSI sends the mapped final image with PutImage. At 1280×720,
+a full frame has 3,686,400 bytes; 30 presentations/s means up to 105.5 MiB/s of
+X11 pixel payload before RFB filtering. [MIT-SHM](https://xorg.freedesktop.org/archive/X11R7.7/doc/xextproto/shm.html)
+allows image data to stay in shared memory. 0.1.18 adds a separate source-pinned
+Mesa 26 driver with per-image staging, not a broad runtime upgrade or A740
+register change. Its default-off option preserves the original as recovery.
+
+The same CPU map, source capacity/pitch and existing GPU fence remain. A memcpy
+fills a separately allocated bounded segment, then SHM PutImage and an after-put
+geometry request are queued. The helper waits for that pending reply before
+writing to the same stage again and during cleanup. Source Vulkan reuse remains
+independent; the original early geometry query and resize semantics stay intact.
+For the exact Xvnc fb path, request processing completes the copy before the
+later reply. [X11 delivery order](https://xorg.freedesktop.org/archive/X11R7.7/doc/xproto/x11protocol.html)
+alone is not a generic accelerated-server memory-lifetime guarantee; this relies
+on the audited shipped Xvnc implementation. Generic SHM clients must observe
+completion before reusing memory.
+
+Bounds cover 32-bpp formats, pitch, source capacity, 16-bit protocol dimensions,
+32 MiB per image, at most eight images per chain and overflow. Checked attach and partial failures
+retain ordinary PutImage without relaxing permissions. Segments are per image
+and cleaned after pending reads. This avoids the multi-megabyte socket payload,
+but retains CPU memcpy, Xvnc copying, comparison and Raw RFB. Four actual 720p
+images add about 14.1 MiB of shared storage. Its physical benefit is unmeasured.
+
+Production uses one PRoot guest for supervisor, Xvnc, Wine, probes and EVE; the
+pinned SysV extension shares that namespace with fork/exec descendants. The
+shared helper is also compiled into a standalone fixture run within the same
+production-source PRoot+Xvnc namespace in CI. It checks exact readback/visible
+frames, stage reuse, resize, pending teardown and failure controls. A separate
+server grab holds a read pending to verify that reuse and teardown really block;
+server-death cleanup checks actual segment removal. CI cannot
+initialize the patched KGSL driver, so these are protocol/lifetime checks;
+physical driver activation and FPS require Thor. Actual native EC helper SHM
+completion records are mandatory before launching the experiment. Support logs
+retain sampled CPU-copy/blocked-reply timings; neither measures EVE GPU time.
+
+The new driver/cache is independent and excludes the old A740 driver selection.
+The next physical case is **linear+SHM only**, SYS off, responsive 30/1/display30.
+No repeat baseline or previous experiment matrix is requested.
+
+### Other primary-source leads remain deferred
+
+- The current run's VNC comparison removes 34.6% of compared pixels. Disabling
+  it would add roughly 52.9% pixel traffic here, so keep it enabled.
+- Pinned CPU WSI already requests coherent cached host memory where available;
+  an extra generic cached-readback knob duplicates existing selection.
+- Stock Wine synchronization here has no useful esync/fsync enable path; merely
+  changing those environment flags does not add that implementation.
+- [FEX 2510 EVMD](https://fex-emu.com/FEX-2510/) already consumes compiler volatile
+  metadata. Manual exceptions require proven-safe hot address ranges and exact
+  binary offsets. Do not weaken TSO globally without that evidence.
+- Pinned [DXVK cached resources](https://github.com/doitsujin/dxvk/blob/0cf05780abd7250c2cd713b7749cf32180157cf5/dxvk.conf)
+  are a CPU-read workaround with possible GPU-bound regressions. Coherence and
+  dynamic/default-buffer behavior are not yet qualified. Later descriptor-buffer
+  or broad Mesa/DXVK/FEX upgrades require a separate larger qualification.
+- Android decode+publication is about 2.32 ms/update and Java draw about 0.088 ms;
+  JNI decoding, SurfaceView or server logging have smaller measured targets than
+  full X11 image transfer. This is ranking evidence, not a proven bottleneck.
+
 ## October 8 evening: true linear A/B and the 0.1.17 SYS trial
 
 [The evening evidence](DEVICE-20261008-EVENING.md) confirms original `sw` versus

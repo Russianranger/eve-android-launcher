@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 # Build the graphics bundle and qualify the native EC path without changing the client runtime.
-# Run on the same native ARM64 CI job immediately after the Wine trust build.
+# Run on the same native ARM64 CI job after the Wine trust and production-source
+# PRoot policy builds; see check-proot-network-host.sh --prepare/--run.
 set -Eeuo pipefail
 cd "$(dirname "$0")/.."
 test "$(uname -m)" = aarch64 || { echo 'Client graphics qualification requires native ARM64.' >&2; exit 1; }
 docker image inspect eve-wine-trust-overlay:local >/dev/null
+# The preceding native policy fixture builds the exact production PRoot source
+# patches with native libc. Reuse that binary/loader for one shared SysV guest;
+# Linux host SysV IPC alone does not exercise Android's memfd-backed emulation.
+proot_fixture="$PWD/runtime-work/proot-network/native"
+test -x "$proot_fixture/proot-entry-only"
+test -x "$proot_fixture/source/proot/src/loader/loader"
+test -f "$proot_fixture/build-manifest.json"
 mkdir -p out
 graphics_container=''
 cleanup() {
@@ -15,13 +23,45 @@ docker build --platform linux/arm64 --target qualification \
   -f client-runtime/graphics/Dockerfile -t eve-client-graphics:local .
 graphics_container=$(docker create --init -i --network none --cap-add SYS_PTRACE \
   --security-opt seccomp=unconfined eve-client-graphics:local /bin/bash -s)
+docker cp "$proot_fixture/proot-entry-only" "$graphics_container:/graphics-tests/native-proot/proot"
+docker cp "$proot_fixture/source/proot/src/loader/loader" "$graphics_container:/graphics-tests/native-proot/loader"
+docker cp "$proot_fixture/build-manifest.json" "$graphics_container:/graphics-tests/native-proot/build-manifest.json"
+python3 - <<'PY'
+import hashlib
+import json
+from pathlib import Path
+folder = Path('runtime-work/proot-network/native')
+manifest = json.loads((folder / 'build-manifest.json').read_text())
+assert manifest['architecture'] == 'aarch64' and manifest['guestAbi'] == 'native64'
+assert manifest['prootCommit'] == '7266fb3e8516535682f5a9c8f3a7e70f6506eddb'
+assert manifest['candidateNetworkSourceSha256'] == hashlib.sha256(
+    Path('native/eve-client-network.c').read_bytes()).hexdigest()
+source = folder / 'source/proot/src/extension/sysvipc/sysvipc_shm.c'
+assert b'"proot-sysvshm", MFD_CLOEXEC' in source.read_bytes()
+paths = {
+    'proot': folder / 'proot-entry-only',
+    'loader': folder / 'source/proot/src/loader/loader',
+    'sysvipcSource': source,
+    'sysvipcPatch': Path('native/proot-sysvipc.patch'),
+    'accelerationPatch': Path('native/proot-acceleration.patch'),
+    'networkPatch': Path('native/eve-client-network.patch'),
+    'networkSource': Path('native/eve-client-network.c'),
+}
+report = {'format': 1, 'qualification': 'native-libc-production-proot-source-fixture',
+          'productionAndroidBinary': False, 'memfdSysvPatchPresent': True,
+          'sourceBuildManifest': manifest,
+          'sha256': {name: hashlib.sha256(path.read_bytes()).hexdigest()
+                     for name, path in paths.items()}}
+Path('out/shm-proot-fixture-source.json').write_text(json.dumps(report, indent=2) + '\n')
+PY
+docker cp out/shm-proot-fixture-source.json "$graphics_container:/graphics-out/shm-proot-fixture-source.json"
 qualification_status=0
 docker start -ai "$graphics_container" <<'QUALIFICATION' || qualification_status=$?
 set -Eeuo pipefail
 export DISPLAY=:21
 # Every fixture starts from an explicit baseline. Per-process experiment
 # assignments below must not leak into another trial or negative control.
-unset TU_DEBUG FEX_HOSTFEATURES
+unset TU_DEBUG FEX_HOSTFEATURES EVE_X11_SHM_STAGING
 export MESA_VK_WSI_DEBUG=sw
 display_pid=''
 responsive_display_pid=''
@@ -31,6 +71,13 @@ cleanup_display() {
   if [[ -n "$responsive_display_pid" ]]; then kill "$responsive_display_pid" || true; fi
 }
 trap cleanup_display EXIT
+# The checker runs Xvnc and the actual shared transport helper in the same
+# production --sysvipc guest, verifying real RFB pixels and failure lifecycles.
+CC=/usr/bin/cc bash /graphics-tests/scripts/check-x11-shm-host.sh \
+  --proot /graphics-tests/native-proot/proot \
+  --loader /graphics-tests/native-proot/loader \
+  --output /graphics-out/shm-helper-check.json \
+  > /graphics-out/shm-helper-check.log 2>&1
 /usr/bin/Xtigervnc "$DISPLAY" -geometry 320x240 -depth 24 -rfbport 5991 \
   -localhost yes -SecurityTypes None -nolisten tcp -ac -AlwaysShared \
   -FrameRate 60 -desktop 'EVE graphics fixture' > /graphics-out/xvnc.log 2>&1 &
@@ -87,7 +134,7 @@ import json
 import os
 from pathlib import Path
 import sys
-keys = ('MESA_VK_WSI_DEBUG', 'TU_DEBUG', 'FEX_HOSTFEATURES',
+keys = ('MESA_VK_WSI_DEBUG', 'TU_DEBUG', 'FEX_HOSTFEATURES', 'EVE_X11_SHM_STAGING',
         'VK_DRIVER_FILES', 'VK_ICD_FILENAMES', 'DISPLAY', 'DXVK_CONFIG_FILE',
         'DXVK_LOG_LEVEL', 'DXVK_LOG_PATH', 'DXVK_HUD', 'DXVK_STATE_CACHE_PATH',
         'MESA_SHADER_CACHE_DIR', 'MESA_SHADER_CACHE_MAX_SIZE', 'WINEDLLOVERRIDES')
@@ -278,6 +325,22 @@ if /graphics-out/assets/vulkan-probe --allow-software \
   echo 'Optional A740 driver unexpectedly rendered without KGSL' >&2
   exit 1
 fi
+# A KGSL-free native machine must also reject this separately rebuilt driver.
+# The shared helper fixture above proves its transport implementation, while
+# only a Thor run can prove Turnip+D3D selects that implementation in practice.
+python3 - <<'PY'
+import json
+from pathlib import Path
+Path('/graphics-out/turnip-shm-icd.json').write_text(json.dumps({
+  'file_format_version': '1.0.0', 'ICD': {
+    'library_path': '/graphics-out/assets/turnip-26.0.0-x11-shm.so', 'api_version': '1.3.0'}}))
+PY
+export VK_DRIVER_FILES=/graphics-out/turnip-shm-icd.json VK_ICD_FILENAMES=/graphics-out/turnip-shm-icd.json
+if EVE_X11_SHM_STAGING=1 /graphics-out/assets/vulkan-probe --allow-software \
+    > /graphics-out/turnip-shm-no-kgsl.json 2> /graphics-out/turnip-shm-no-kgsl.log; then
+  echo 'Optional SHM driver unexpectedly rendered without KGSL' >&2
+  exit 1
+fi
 python3 - <<'PY'
 import json
 import re
@@ -337,6 +400,7 @@ report = {'passed': True, 'qualification': 'native-arm64-ec-lavapipe-ci-only',
 baseline_environment = one_json('d3d11-throughput-environment.json')
 assert baseline_environment['MESA_VK_WSI_DEBUG'] == 'sw'
 assert baseline_environment['TU_DEBUG'] is None and baseline_environment['FEX_HOSTFEATURES'] is None
+assert baseline_environment['EVE_X11_SHM_STAGING'] is None
 assert baseline_environment['DISPLAY'] == ':21'
 assert baseline_environment['DXVK_CONFIG_FILE'] == 'Z:\\graphics-out\\dxvk.conf'
 report['effectiveEnvironment'] = baseline_environment
@@ -349,6 +413,32 @@ report['a740PcModeExperiment'] = {
     'driverWithoutKgslRejected': True, 'identityOnly': True, 'physicalThorQualified': False,
     'sourceProvenance': json.loads((folder / 'assets/client-graphics-bundle.json').read_text())['a740PcModeExperiment'],
     'linkCompatibility': json.loads((folder / 'a740-link-compatibility.json').read_text()),
+}
+shm_helper = one_json('shm-helper-check.json')
+shm_proot = one_json('shm-proot-fixture-source.json')
+assert shm_helper['passed'] is True
+assert shm_helper['format'] == 1 and shm_helper['helper'] == 'eve-x11-shm-host-1'
+for field in ('productionSysvipcGuest', 'memfdAllocationVerified', 'namespaceSharingVerified',
+              'threeRfbFramesVerified', 'reuseVerified', 'resizeVerified', 'pendingTeardownVerified',
+              'delayedReuseVerified', 'delayedTeardownVerified',
+              'allocationFallbackVerified', 'attachFallbackVerified', 'boundsVerified',
+              'extensionFallbackVerified', 'serverDeathVerified', 'cleanupVerified'):
+    assert shm_helper[field] is True
+assert shm_helper['dimensions'] == [[640, 480], [1280, 720]]
+assert shm_helper['transportActiveLog'] == 'shm-active-transport.log'
+assert shm_proot['qualification'] == 'native-libc-production-proot-source-fixture'
+assert shm_proot['memfdSysvPatchPresent'] is True
+report['shmPresentationExperiment'] = {
+    'qualification': 'native-arm64-production-proot-shared-helper-xvnc-rfb-ci-only',
+    'transportHelper': shm_helper, 'prootSourceFixture': shm_proot,
+    'sharedHelperIntegrationVerified': True,
+    'productionProotSysvNamespaceVerified': True,
+    'sourceProvenance': json.loads((folder / 'assets/client-graphics-bundle.json').read_text())['shmPresentationExperiment'],
+    'linkCompatibility': one_json('shm-link-compatibility.json'),
+    'clientDriver': 'turnip-26.0.0-x11-shm.so',
+    'clientDriverSha256': json.loads((folder / 'assets/client-graphics-bundle.json').read_text())['files']['turnip-26.0.0-x11-shm.so']['sha256'],
+    'driverWithoutKgslRejected': True,
+    'nativeEffectVerified': False, 'physicalThorQualified': False,
 }
 report['performance'] = {'requestedProfile': 'throughput', 'performanceProfile': 'throughput',
                          'targetFrameRate': 60, 'maxFrameLatency': 2, 'displayFrameRate': 60,
@@ -369,6 +459,7 @@ report['responsiveProfile'] = {'d3d11': responsive, 'rfbPresentation': responsiv
 responsive_environment = one_json('d3d11-responsive-environment.json')
 assert responsive_environment['MESA_VK_WSI_DEBUG'] == 'sw'
 assert responsive_environment['TU_DEBUG'] is None and responsive_environment['FEX_HOSTFEATURES'] is None
+assert responsive_environment['EVE_X11_SHM_STAGING'] is None
 assert responsive_environment['DISPLAY'] == ':22'
 assert responsive_environment['DXVK_CONFIG_FILE'] == 'Z:\\graphics-out\\dxvk-responsive.conf'
 report['responsiveProfile']['effectiveEnvironment'] = responsive_environment
@@ -385,6 +476,7 @@ assert linear_environment['DXVK_CONFIG_FILE'] == 'Z:\\graphics-out\\dxvk-respons
 assert linear_environment['VK_DRIVER_FILES'] == '/usr/share/vulkan/icd.d/lvp_icd.aarch64.json'
 assert linear_environment['VK_ICD_FILENAMES'] == linear_environment['VK_DRIVER_FILES']
 assert linear_environment['TU_DEBUG'] is None and linear_environment['FEX_HOSTFEATURES'] is None
+assert linear_environment['EVE_X11_SHM_STAGING'] is None
 linear = one_json('d3d11-linear-fixture.json')
 linear_display = one_json('d3d11-linear-rfb-presentation.json')
 assert linear['mode'] == 'fixture' and linear['passed'] is True
@@ -511,6 +603,34 @@ report = json.loads(Path('out/client-graphics-check.json').read_text())
 assert report['passed'] is True and report['physicalThorQualified'] is False
 assert report['a740PcModeExperiment']['sourceProvenance'] == client_graphics.A740_EXPERIMENT
 assert report['a740PcModeExperiment']['physicalThorQualified'] is False
+shm = report['shmPresentationExperiment']
+assert shm['sourceProvenance'] == client_graphics.SHM_EXPERIMENT
+assert shm['sourceProvenance'] == manifest['shmPresentationExperiment']
+assert shm['clientDriver'] == client_graphics.SHM_DRIVER
+assert shm['clientDriverSha256'] == manifest['files'][client_graphics.SHM_DRIVER]['sha256']
+assert shm['physicalThorQualified'] is False and shm['nativeEffectVerified'] is False
+assert shm['driverWithoutKgslRejected'] is True
+assert shm['transportHelper']['passed'] is True
+assert shm['sharedHelperIntegrationVerified'] is True and shm['productionProotSysvNamespaceVerified'] is True
+shm['productionTransportReceipt'] = client_graphics.parse_shm_presentation(
+    Path('out/shm-active-transport.log').read_text())
+assert shm['productionTransportReceipt']['transportActivationVerified'] is True
+assert shm['productionTransportReceipt']['completedPresents'] >= 3
+assert shm['prootSourceFixture']['productionAndroidBinary'] is False
+assert shm['prootSourceFixture']['memfdSysvPatchPresent'] is True
+shm['productionEnvironment'] = {
+    key: value for key, value in client_graphics.configure_environment(
+        {'EVE_X11_SHM_STAGING': '0', 'TU_DEBUG': 'sysmem', 'MESA_VK_WSI_DEBUG': 'invalid'},
+        'turnip-dxvk', assets, Path('out'), shm_presentation=True).items()
+    if key in ('EVE_X11_SHM_STAGING', 'MESA_VK_WSI_DEBUG', 'TU_DEBUG', 'FEX_HOSTFEATURES')}
+assert shm['productionEnvironment'] == {'EVE_X11_SHM_STAGING': '1', 'MESA_VK_WSI_DEBUG': 'sw'}
+for mode in ('turnip-dxvk', 'software'):
+    disabled = client_graphics.configure_environment(
+        {'EVE_X11_SHM_STAGING': '1'}, mode, assets, Path('out'))
+    assert 'EVE_X11_SHM_STAGING' not in disabled
+software = client_graphics.configure_environment(
+    {'EVE_X11_SHM_STAGING': '1'}, 'software', assets, Path('out'), shm_presentation=True)
+assert 'EVE_X11_SHM_STAGING' not in software
 try:
     client_graphics.parse_a740_identity(Path('out/a740-identity-cpu-fixture.json').read_text())
 except ValueError:
@@ -537,7 +657,7 @@ assert linear['rfbPresentation'] == client_graphics.parse_display(
     Path('out/d3d11-linear-rfb-presentation.json').read_text())
 production_linear_env = client_graphics.configure_environment(
     {}, 'turnip-dxvk', assets, Path('out'), linear_presentation=True)
-for key in ('MESA_VK_WSI_DEBUG', 'TU_DEBUG', 'FEX_HOSTFEATURES'):
+for key in ('MESA_VK_WSI_DEBUG', 'TU_DEBUG', 'FEX_HOSTFEATURES', 'EVE_X11_SHM_STAGING'):
     assert linear['effectiveEnvironment'][key] == production_linear_env.get(key)
 try:
     client_graphics.parse_linear_presentation(
@@ -577,7 +697,7 @@ for trial, linear_selected, expected_wsi in (
     assert production_env.get('TU_DEBUG') == 'sysmem'
     assert production_env.get('MESA_VK_WSI_DEBUG') == expected_wsi
     assert production_env.get('FEX_HOSTFEATURES') is None
-    for key in ('MESA_VK_WSI_DEBUG', 'TU_DEBUG', 'FEX_HOSTFEATURES'):
+    for key in ('MESA_VK_WSI_DEBUG', 'TU_DEBUG', 'FEX_HOSTFEATURES', 'EVE_X11_SHM_STAGING'):
         assert selected['effectiveEnvironment'][key] == production_env.get(key)
     try:
         client_graphics.parse_sysmem_rendering(

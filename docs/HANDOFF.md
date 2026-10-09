@@ -1,6 +1,52 @@
 # EVE Android Launcher handoff
 
-## Current 0.1.17 continuation: direct GPU rendering alongside linear
+## Current 0.1.18 continuation: shared-memory frame transport
+
+The user ran only the 0.1.17 SYS experiment, reported no improvement and explicitly
+requires no other baseline repeat unless investigating a crash. Accept that result.
+[DEVICE-20261008-SYSMEM.md](DEVICE-20261008-SYSMEM.md) confirms actual SYS+linear,
+fresh hardware/native pixel gates, similar warm CPU/RSS and no current crash
+record. A fresh critical trim with 6.71 GiB available directly exercises the fixed
+guard: client retained. The ZIP ends at export start, so do not claim post-export
+continuity from this export. Earlier native DLL bytes differ despite the same
+version/source pins; the historical metric comparison is not a new controlled A/B.
+
+0.1.18 adds default-off **Use shared-memory frame transport (experiment)**.
+The new `turnip-26.0.0-x11-shm.so` is built from the exact pristine Mesa 26 source
+with only the X11 WSI staging patch and shared helper. It does not include the
+neutral A740 register change. The immutable original remains available; A740 and
+SHM driver selections exclude each other. Renderer/HUD and other independent
+experiments remain saved. Restore baseline clears all seven flags.
+
+Each eligible CPU-mapped image gets its own bounded SysV stage. After the existing
+GPU fence, a CPU memcpy fills that separate stage and a small SHM PutImage request
+replaces the full X11 pixel payload. The helper issues a geometry request after
+the shared read; it waits for that reply before overwriting the stage or teardown.
+The Vulkan source image can become available independently, preserving overlap.
+The old early geometry query/resize check remains. Full RGB, IMMEDIATE policy,
+Xvnc framebuffer comparison, RFB, opaque Android bitmap and controls are retained.
+Allocation/attach failures use safe ordinary PutImage fallback. Qualification
+requires actual successful SHM completion records from the selected native EC
+helper, not just a flag or correct pixels; a fallback does not pass this experiment.
+
+The production patch and native transport fixture share the same header. CI must
+exercise that helper under the production-source PRoot SysV namespace with Xvnc,
+verify exact pixels/visible frames, reuse, resize, pending teardown and negative
+controls. Server-grab cases hold reads pending during reuse and teardown, and
+server-death cleanup verifies segment removal. Retain the existing nine native EC shader/readback/RFB fixtures.
+Lavapipe cannot initialize KGSL Turnip; physical activation and performance remain
+Thor checks. Fresh original A740 identity and selected-driver Vulkan/EC shader/
+readback/RFB checks precede EVE. Old driver/cache and accepted runtime/data remain.
+The new driver uses its own Mesa cache; first-run warm-up is not a measured gain.
+
+The single device case uses linear+SHM, SYS and A740 off, responsive 30/1/display30.
+No old cap/FEX/binning/SYS matrix or new game-quality changes. CPU copying, Xvnc
+copying and RFB still exist, and no dominant bottleneck or stable-30 result is
+established. [CLIENT-PERFORMANCE.md](CLIENT-PERFORMANCE.md) records the research;
+[TESTING.md](TESTING.md) supplies the one-run instructions.
+Build qualification is recorded here after CI and APK inspection complete.
+
+## Historical 0.1.17 continuation: direct GPU rendering alongside linear
 
 [The October 8 evening exports](DEVICE-20261008-EVENING.md) are a true A/B:
 baseline `sw`/linear=false versus `sw,linear`/linear=true, with the original

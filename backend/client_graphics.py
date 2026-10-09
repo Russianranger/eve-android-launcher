@@ -27,6 +27,8 @@ FILES = {*KNOWN_BINARY_HASHES, *DLLS.values(), "eve-d3d11-probe.exe"}
 A740_DRIVER = "turnip-26.0.0-a740-pc-mode.so"
 A740_PROBE = "a740-driver-probe"
 A740_FILES = {A740_DRIVER, A740_PROBE}
+SHM_DRIVER = "turnip-26.0.0-x11-shm.so"
+SHM_FILES = {SHM_DRIVER, A740_PROBE}
 A740_DEVICE_ID = 0x43050a01
 # Pin the exact checked recipe/source inputs used by the optional build.
 # No experimental binary replaces the immutable baseline driver.
@@ -40,6 +42,15 @@ A740_EXPERIMENT = {
     "sourceFileSha256": "25206d1bae7e650e7266b50e107d6656e69cb640aadcb0c8e50e900241df3d09",
     "patchedSourceFileSha256": "a59ac4f80c0109ebffa7cd766bf91661ced97bdae35771af084ce6e73831bfdc",
     "deviceId": A740_DEVICE_ID, "registerOffset": 0x9804, "originalValue": 0x3f, "value": 0x1f1f,
+}
+SHM_EXPERIMENT = {
+    "format": 1, "name": "turnip-x11-shm-staging-1", "driver": SHM_DRIVER,
+    "mesaSourceSha256": "2a44e98e64d5c36cec64633de2d0ec7eff64703ee25b35364ba8fcaa84f33f72",
+    "patchSha256": "3ec5f29a7bee6328b824cc98a47228b9fc5ec63751d7e5d005703e999f0bc83c",
+    "transportSourceSha256": "cdbe77e8091afe06b2689d82c1cf39eb9bcb498912b3a66e5814c4b021369685",
+    "probeSourceSha256": "00030ef619ccb6f4b170f5ae48fff3e90062751ef7ff711ec1c833780ae0182b",
+    "sourceFileSha256": "92831b74c892f1795c489fc14f1c05afa362ad857b4959e1e28c13932cba52e5",
+    "patchedSourceFileSha256": "18281444fd6639f4a6a672d543685f99ba282cdba25ba204e0c5a52062cc74fd",
 }
 MODES = ("turnip-dxvk", "software")
 LIMIT = 64 * 1024**2
@@ -136,6 +147,12 @@ def verify_bundle(folder: Path) -> dict:
                 or experiment != A740_EXPERIMENT):
             raise ValueError("A740 driver experiment source provenance does not match its pinned inputs")
         allowed = FILES | A740_FILES
+    if "shmPresentationExperiment" in value:
+        shm = value["shmPresentationExperiment"]
+        if (not isinstance(shm, dict) or type(shm.get("format")) is not int
+                or shm != SHM_EXPERIMENT):
+            raise ValueError("SHM presentation source provenance does not match its pinned inputs")
+        allowed = allowed | SHM_FILES
     if not isinstance(files, dict) or set(files) != allowed:
         raise ValueError("Graphics bundle must contain exactly the selected assets")
     for name, info in files.items():
@@ -150,9 +167,10 @@ def verify_bundle(folder: Path) -> dict:
         if name in KNOWN_BINARY_HASHES and sha != KNOWN_BINARY_HASHES[name]:
             raise ValueError("Graphics asset differs from the immutable selected driver/probe")
         data = asset.read_bytes()
-        if name in KNOWN_BINARY_HASHES or name in A740_FILES:
+        if name in KNOWN_BINARY_HASHES or name in A740_FILES or name in SHM_FILES:
             machine = struct.unpack_from("<H", data, 18)[0] if len(data) >= 64 else None
-            if data[:6] != b"\x7fELF\x02\x01" or machine != 183 or info.get("machine") != 183:
+            if (data[:6] != b"\x7fELF\x02\x01" or machine != 183
+                    or type(info.get("machine")) is not int or info["machine"] != 183):
                 raise ValueError("Graphics native component must be ARM64 glibc ELF")
         elif name in DLLS.values():
             native = arm64ec_metadata(data)
@@ -184,11 +202,14 @@ def verify_mapped(folder: Path, state: Path) -> dict:
     return manifest
 
 
-def cache_directories(state: Path, a740_pc_mode=False) -> tuple[Path, Path]:
-    if type(a740_pc_mode) is not bool:
-        raise ValueError("A740 driver selection must be a boolean")
+def cache_directories(state: Path, a740_pc_mode=False, shm_presentation=False) -> tuple[Path, Path]:
+    if any(type(value) is not bool for value in (a740_pc_mode, shm_presentation)):
+        raise ValueError("Driver selections must be booleans")
+    if a740_pc_mode and shm_presentation:
+        raise ValueError("A740 PC mode and SHM presentation drivers are mutually exclusive")
+    suffix = "-a740-pc-mode-1" if a740_pc_mode else "-x11-shm" if shm_presentation else ""
     return (state / ("cache/dxvk-" + DXVK_VERSION + "-arm64ec"),
-            state / ("cache/mesa-" + MESA_VERSION + ("-a740-pc-mode-1" if a740_pc_mode else "")))
+            state / ("cache/mesa-" + MESA_VERSION + suffix))
 
 
 def prepare(folder: Path, state: Path, content: Path, mode: str,
@@ -244,19 +265,24 @@ def a740_identity_command(folder: Path) -> tuple[str, ...]:
 
 
 def select_driver(folder: Path, state: Path, enabled: bool,
-                  baseline_vulkan: dict | None = None, identity: dict | None = None) -> dict:
+                  baseline_vulkan: dict | None = None, identity: dict | None = None,
+                  shm_presentation=False) -> dict:
     """Switch only this session's ICD after an explicit native A740 gate.
 
     Both current-session baseline presentation and checked native identity are
     required. Device names alone never authorize the experiment, and a saved
     previous-session report is not used.
     """
-    if type(enabled) is not bool:
-        raise ValueError("A740 driver selection must be a boolean")
+    if any(type(value) is not bool for value in (enabled, shm_presentation)):
+        raise ValueError("Driver selections must be booleans")
+    if enabled and shm_presentation:
+        raise ValueError("A740 PC mode and SHM presentation drivers are mutually exclusive")
     manifest = verify_bundle(folder)
-    if enabled:
-        if manifest.get("a740PcModeExperiment") != A740_EXPERIMENT:
-            raise ValueError("This graphics bundle does not contain the pinned A740 driver experiment")
+    experiment = enabled or shm_presentation
+    if experiment:
+        metadata, expected = ("shmPresentationExperiment", SHM_EXPERIMENT) if shm_presentation else ("a740PcModeExperiment", A740_EXPERIMENT)
+        if manifest.get(metadata) != expected:
+            raise ValueError("This graphics bundle does not contain the pinned selected driver experiment")
         if not isinstance(baseline_vulkan, dict):
             raise ValueError("The A740 experiment requires current-session native hardware identity")
         parse_vulkan(json.dumps(baseline_vulkan))
@@ -269,17 +295,18 @@ def select_driver(folder: Path, state: Path, enabled: bool,
     for directory in (state, state / "run", state / "cache"):
         if not directory.is_dir() or directory.is_symlink():
             raise ValueError("Missing or linked driver selection state directory")
-    driver = A740_DRIVER if enabled else "turnip-26.0.0.so"
-    _, mesa_cache = cache_directories(state, enabled)
+    driver = A740_DRIVER if enabled else SHM_DRIVER if shm_presentation else "turnip-26.0.0.so"
+    _, mesa_cache = cache_directories(state, enabled, shm_presentation)
     if mesa_cache.is_symlink():
         raise ValueError("Linked graphics cache directory is not supported")
     mesa_cache.mkdir(parents=True, exist_ok=True)
     atomic_json(state / "run/turnip-icd.json", {"file_format_version": "1.0.0", "ICD": {
         "library_path": str(folder / driver), "api_version": "1.3.0"}})
     return {"requestedA740PcMode": enabled, "a740PcMode": enabled,
+            "requestedShmPresentation": shm_presentation, "shmPresentation": shm_presentation,
             "driver": driver, "driverSha256": manifest["files"][driver]["sha256"],
-            "mesaShaderCache": str(mesa_cache), "experimental": enabled,
-            "deviceGated": True, "hardwareGatePassed": enabled,
+            "mesaShaderCache": str(mesa_cache), "experimental": experiment,
+            "deviceGated": True, "hardwareGatePassed": experiment,
             "binaryIdentityVerified": True, "nativeEffectVerified": False}
 
 
@@ -290,13 +317,15 @@ def d3d_command(folder: Path, manifest: dict, wine: str = "/opt/wine/bin/wine") 
 
 
 def optimization_settings(mode, disable_concurrent_binning=False, disable_lrcpc2=False, a740_pc_mode=False,
-                          linear_presentation=False, sysmem_rendering=False):
+                          linear_presentation=False, sysmem_rendering=False, shm_presentation=False):
     """Describe only fixed session assignments, not measured native effects."""
     if mode not in MODES:
         raise ValueError("Unsupported client renderer")
     if any(type(value) is not bool for value in
-           (disable_concurrent_binning, disable_lrcpc2, a740_pc_mode, linear_presentation, sysmem_rendering)):
+           (disable_concurrent_binning, disable_lrcpc2, a740_pc_mode, linear_presentation, sysmem_rendering, shm_presentation)):
         raise ValueError("Client optimization selections must be booleans")
+    if a740_pc_mode and shm_presentation:
+        raise ValueError("A740 PC mode and SHM presentation drivers are mutually exclusive")
     gpu = mode == "turnip-dxvk"
     binning = disable_concurrent_binning and gpu
     lrcpc2 = disable_lrcpc2 and gpu
@@ -311,6 +340,8 @@ def optimization_settings(mode, disable_concurrent_binning=False, disable_lrcpc2
             "linearPresentationExperimental": True, "linearPresentationDeviceGated": True,
             "requestedSysmemRendering": sysmem_rendering, "sysmemRendering": sysmem,
             "sysmemRenderingExperimental": True, "sysmemRenderingDeviceGated": True,
+            "requestedShmPresentation": shm_presentation, "shmPresentation": shm_presentation and gpu,
+            "shmPresentationExperimental": True, "shmPresentationDeviceGated": True,
             "mesaWsiDebug": ("sw,linear" if linear_presentation else "sw") if gpu else None,
             "disableConcurrentBinning": binning, "disableLrcpc2": lrcpc2,
             "turnipDebug": turnip_debug,
@@ -351,21 +382,21 @@ def cpu_topology(root=Path("/sys/devices/system/cpu")):
 def configure_environment(base, mode, folder, state,
                           performance_profile=DEFAULT_PERFORMANCE_PROFILE, diagnostic_hud=False,
                           disable_concurrent_binning=False, disable_lrcpc2=False, a740_pc_mode=False,
-                          linear_presentation=False, sysmem_rendering=False):
+                          linear_presentation=False, sysmem_rendering=False, shm_presentation=False):
     """Prove graphics options cannot leak between software/GPU sessions."""
     performance = performance_settings(mode, performance_profile, diagnostic_hud)
     optimizations = optimization_settings(mode, disable_concurrent_binning, disable_lrcpc2, a740_pc_mode,
-                                         linear_presentation, sysmem_rendering)
+                                         linear_presentation, sysmem_rendering, shm_presentation)
     env = {k:v for k,v in base.items()
            if not k.startswith(("DXVK_", "VK_", "MESA_", "LIBGL_", "TU_"))
            and k not in ("WINE_D3D_CONFIG", "GALLIUM_DRIVER", "LP_NUM_THREADS", "mesa_glthread",
-                         "FEX_HOSTFEATURES")}
+                         "FEX_HOSTFEATURES", "EVE_X11_SHM_STAGING")}
     env["WINEDLLOVERRIDES"] = "winemenubuilder,mshtml,mscoree=;crypt32=b;d3d11,dxgi=" + ("n" if mode == "turnip-dxvk" else "b")
     if mode == "software":
         env.update(LIBGL_ALWAYS_SOFTWARE="1", GALLIUM_DRIVER="llvmpipe", LP_NUM_THREADS="4")
     else:
         icd = str(state / "run/turnip-icd.json")
-        dxvk_cache, mesa_cache = cache_directories(state, optimizations["a740PcMode"])
+        dxvk_cache, mesa_cache = cache_directories(state, optimizations["a740PcMode"], optimizations["shmPresentation"])
         env.update(VK_DRIVER_FILES=icd, VK_ICD_FILENAMES=icd, MESA_VK_WSI_DEBUG=optimizations["mesaWsiDebug"],
                    DXVK_LOG_LEVEL="info", DXVK_LOG_PATH="Z:" + str(state / "logs").replace("/", "\\"),
                    DXVK_HUD=DIAGNOSTIC_HUD if performance["diagnosticHud"] else DEFAULT_HUD,
@@ -377,6 +408,8 @@ def configure_environment(base, mode, folder, state,
             env["TU_DEBUG"] = optimizations["turnipDebug"]
         if optimizations["disableLrcpc2"]:
             env["FEX_HOSTFEATURES"] = "disablelrcpc2"
+        if optimizations["shmPresentation"]:
+            env["EVE_X11_SHM_STAGING"] = "1"
     return env
 
 
@@ -483,6 +516,61 @@ def parse_sysmem_rendering(text, baseline_vulkan):
             "visibleRfbFramesPassed": False, "identity": identity, "baselineVulkan": baseline_vulkan,
             "nativeEffectVerified": False,
             "qualificationScope": "native A740 identity and selected helper environment; render mode and EVE performance require independent observation"}
+
+
+def parse_shm_presentation(text):
+    """Require completed transfers from fresh native D3D stderr, not an env flag."""
+    if not isinstance(text, str) or len(text.encode("utf-8")) > 65536:
+        raise ValueError("SHM transport evidence exceeds its byte bound")
+
+    def unique_fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Ambiguous SHM transport evidence")
+            result[key] = value
+        return result
+
+    reports, stages = [], {}
+    for line in text.splitlines():
+        if not line.startswith("EVE_X11_SHM "):
+            continue
+        try:
+            report = json.loads(line[len("EVE_X11_SHM "):], object_pairs_hook=unique_fields)
+        except (ValueError, RecursionError) as error:
+            raise ValueError("Malformed SHM transport evidence") from error
+        if (not isinstance(report, dict) or report.get("format") != "eve-x11-shm-1"
+                or report.get("mode") != "active"
+                or not integer(report.get("stageId"), 1, 2**64-1)
+                or not integer(report.get("width"), 1, 4096)
+                or not integer(report.get("height"), 1, 2160)
+                or report["width"] * report["height"] > 4194304
+                or not integer(report.get("rowPitch"), report["width"] * 4, 65536)
+                or report["rowPitch"] % 4
+                or not integer(report.get("sizeBytes"), 1, 32 * 1024**2)
+                or report["sizeBytes"] != report["rowPitch"] * report["height"]
+                or not integer(report.get("completedPresents"), 1, 2**64-1)
+                or report.get("pendingBeforeOverwrite") is not False
+                or report.get("barrierAfterPut") is not True
+                or not integer(report.get("copyNs"), 0, 2**64-1)
+                or not integer(report.get("serverWaitNs"), 0, 2**64-1)):
+            raise ValueError("Native SHM transport did not complete safely without fallback")
+        stage = report["stageId"]
+        previous = stages.get(stage)
+        if previous and (report["completedPresents"] <= previous["completedPresents"]
+                         or any(report[key] != previous[key] for key in ("width", "height", "rowPitch", "sizeBytes"))):
+            raise ValueError("SHM transport completion evidence repeats, regresses or changes its image")
+        stages[stage] = report
+        reports.append(report)
+        if len(reports) > 256:
+            raise ValueError("Too many SHM transport evidence entries")
+    completed = sum(report["completedPresents"] for report in stages.values())
+    if completed < 3:
+        raise ValueError("Three completed native SHM presents were not verified")
+    return {"transportActivationVerified": True, "completedPresents": completed,
+            "stageCount": len(stages), "activeReports": reports,
+            "nativeEffectVerified": False, "physicalBenefitVerified": False,
+            "qualificationScope": "completed native SHM helper transfers and local display; physical-device EVE benefit requires observation"}
 
 
 def parse_d3d(text, manifest):

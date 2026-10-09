@@ -30,7 +30,7 @@ final class ClientRuntime {
     private static final long MAX_ARCHIVE = 160L * 1024 * 1024 * 1024;
     private static final long MIN_FREE_MEMORY = 1024L * 1024 * 1024;
     private static final List<String> PERFORMANCE_OPTIONS = Arrays.asList("early-display-requests", "disable-concurrent-binning",
-            "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering");
+            "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation");
     private final Context context;
     private final RuntimeManager manager;
     private static volatile Process session;
@@ -71,6 +71,7 @@ final class ClientRuntime {
     boolean a740PcMode() { return renderer().equals("turnip-dxvk") && performanceOption("a740-pc-mode"); }
     boolean linearPresentation() { return renderer().equals("turnip-dxvk") && performanceOption("linear-presentation"); }
     boolean sysmemRendering() { return renderer().equals("turnip-dxvk") && performanceOption("sysmem-rendering"); }
+    boolean shmPresentation() { return renderer().equals("turnip-dxvk") && performanceOption("shm-presentation"); }
 
     boolean performanceOption(String key) {
         try { return context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).getBoolean(key, false); }
@@ -81,7 +82,11 @@ final class ClientRuntime {
         if (!PERFORMANCE_OPTIONS.contains(key))
             throw new IllegalArgumentException("Choose a supported performance option");
         if (alive() || RuntimeService.busy) throw new IllegalStateException("Stop the client before changing its performance settings");
-        context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE).edit().putBoolean(key, enabled).apply();
+        android.content.SharedPreferences.Editor edit = context.getSharedPreferences("client-graphics", Context.MODE_PRIVATE)
+                .edit().putBoolean(key, enabled);
+        if (enabled && key.equals("shm-presentation")) edit.putBoolean("a740-pc-mode", false);
+        if (enabled && key.equals("a740-pc-mode")) edit.putBoolean("shm-presentation", false);
+        edit.apply();
     }
 
     void restoreBaselineSettings() {
@@ -101,7 +106,7 @@ final class ClientRuntime {
         String caps = (software ? "Saved GPU caps: " : profile.equals("responsive") ? "Baseline caps: " : "Selected caps: ")
                 + "render " + render + " FPS · queue " + queue + (queue == 1 ? " frame" : " frames") + " · display " + display + " FPS";
         String[] labels = {"Early display requests", "Concurrent binning disabled", "Alternate CPU load instructions",
-                "A740 driver", "Reduce GPU frame copies", "Direct GPU rendering"};
+                "A740 driver", "Reduce GPU frame copies", "Direct GPU rendering", "Shared-memory frame transport"};
         List<String> selected = new ArrayList<>();
         for (int index = 0; index < PERFORMANCE_OPTIONS.size(); index++) {
             String key = PERFORMANCE_OPTIONS.get(index);
@@ -140,6 +145,7 @@ final class ClientRuntime {
                 .put("disableLrcpc2", disableLrcpc2()).put("a740PcMode", a740PcMode())
                 .put("linearPresentation", linearPresentation()).put("requestedLinearPresentation", performanceOption("linear-presentation"))
                 .put("sysmemRendering", sysmemRendering()).put("requestedSysmemRendering", performanceOption("sysmem-rendering"))
+                .put("shmPresentation", shmPresentation()).put("requestedShmPresentation", performanceOption("shm-presentation"))
                 .put("supported_build", 3396210).put("client_launch_qualified", false)
                 .put("phase", "missing_client").put("message", "Import the complete EVE build 3396210 shared cache first");
         File status = new File(manager.clientState, "status.json");
@@ -352,6 +358,7 @@ final class ClientRuntime {
                 .put("disableLrcpc2", disableLrcpc2()).put("a740PcMode", a740PcMode())
                 .put("linearPresentation", linearPresentation()).put("requestedLinearPresentation", performanceOption("linear-presentation"))
                 .put("sysmemRendering", sysmemRendering()).put("requestedSysmemRendering", performanceOption("sysmem-rendering"))
+                .put("shmPresentation", shmPresentation()).put("requestedShmPresentation", performanceOption("shm-presentation"))
                 .put("login_qualified", false).put("graphics_qualified", false);
         RuntimeManager.text(new File(manager.clientState, "run/status.json"), pending.toString());
         List<String> launch = launchCommand(graphicsMode, performanceProfile, diagnosticHud);
@@ -387,6 +394,7 @@ final class ClientRuntime {
         if (graphicsMode.equals("turnip-dxvk") && a740PcMode()) launch.add("--a740-pc-mode");
         if (graphicsMode.equals("turnip-dxvk") && linearPresentation()) launch.add("--linear-presentation");
         if (graphicsMode.equals("turnip-dxvk") && sysmemRendering()) launch.add("--sysmem-rendering");
+        if (graphicsMode.equals("turnip-dxvk") && shmPresentation()) launch.add("--shm-presentation");
         return launch;
     }
 
@@ -489,7 +497,7 @@ final class ClientRuntime {
                 || !manifest.optString("mesa").equals("26.0.0") || !manifest.optString("dxvk").equals("2.4.1"))
             throw new IOException("GPU assets do not match the pinned runtime");
         JSONObject files = manifest.getJSONObject("files");
-        String[] names = graphicsAssetNames(manifest, a740PcMode());
+        String[] names = graphicsAssetNames(manifest, a740PcMode(), shmPresentation());
         for (String name : names) {
             File source = new File(manager.backend, name);
             JSONObject item = files.getJSONObject(name);
@@ -507,6 +515,10 @@ final class ClientRuntime {
     }
 
     static String[] graphicsAssetNames(JSONObject manifest, boolean experimentEnabled) throws Exception {
+        return graphicsAssetNames(manifest, experimentEnabled, false);
+    }
+
+    static String[] graphicsAssetNames(JSONObject manifest, boolean a740Enabled, boolean shmEnabled) throws Exception {
         List<String> names = new ArrayList<>(Arrays.asList("turnip-26.0.0.so", "vulkan-probe", "dxvk-d3d11-arm64ec.dll",
                 "dxvk-dxgi-arm64ec.dll", "eve-d3d11-probe.exe"));
         if (manifest.has("a740PcModeExperiment")) {
@@ -519,7 +531,17 @@ final class ClientRuntime {
                 throw new IOException("A740 driver experiment does not match the pinned change");
             names.add("turnip-26.0.0-a740-pc-mode.so");
             names.add("a740-driver-probe");
-        } else if (experimentEnabled) throw new IOException("GPU bundle does not contain the A740 driver experiment");
+        } else if (a740Enabled) throw new IOException("GPU bundle does not contain the A740 driver experiment");
+        if (manifest.has("shmPresentationExperiment")) {
+            JSONObject experiment = manifest.optJSONObject("shmPresentationExperiment");
+            if (experiment == null || !Integer.valueOf(1).equals(experiment.opt("format"))
+                    || !experiment.optString("name").equals("turnip-x11-shm-staging-1")
+                    || !experiment.optString("driver").equals("turnip-26.0.0-x11-shm.so")
+                    || !experiment.optString("mesaSourceSha256").equals("2a44e98e64d5c36cec64633de2d0ec7eff64703ee25b35364ba8fcaa84f33f72"))
+                throw new IOException("Shared-memory frame transport experiment does not match the pinned change");
+            names.add("turnip-26.0.0-x11-shm.so");
+            if (!names.contains("a740-driver-probe")) names.add("a740-driver-probe");
+        } else if (shmEnabled) throw new IOException("GPU bundle does not contain the shared-memory frame transport experiment");
         JSONObject files = manifest.getJSONObject("files");
         if (files.length() != names.size()) throw new IOException("Incomplete GPU bundle");
         for (String name : names) if (!files.has(name)) throw new IOException("Missing GPU asset: " + name);

@@ -84,6 +84,7 @@ final class RuntimeManager {
             boolean graphicsDll = name.equals("dxvk-d3d11-arm64ec.dll") || name.equals("dxvk-dxgi-arm64ec.dll");
             if (name.endsWith(".py") || name.endsWith(".sh") || name.endsWith(".json") || name.endsWith(".exe") || name.startsWith("wine-crypt32-") && name.endsWith(".dll")
                     || graphicsDll || name.equals("turnip-26.0.0.so") || name.equals("turnip-26.0.0-a740-pc-mode.so")
+                    || name.equals("turnip-26.0.0-x11-shm.so")
                     || name.equals("vulkan-probe") || name.equals("a740-driver-probe")) {
                 File target = new File(backend, name);
                 File staging = File.createTempFile("asset-", ".tmp", backend);

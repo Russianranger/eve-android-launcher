@@ -150,6 +150,8 @@ public final class MainActivity extends Activity {
             performance.addView(label("Tries to avoid an extra GPU frame copy. It can also slow rendering; compare it in the same scene.", 13, 0xffb9ced1));
             performanceOption(performance, "Use direct GPU rendering (experiment)", "sysmem-rendering");
             performance.addView(label("Tries an alternative GPU rendering mode. FPS and heat may improve or worsen. Compare one change at a time.", 13, 0xffb9ced1));
+            performanceOption(performance, "Use shared-memory frame transport (experiment)", "shm-presentation");
+            performance.addView(label("Sends frames through shared memory. FPS and heat may improve or worsen.", 13, 0xffb9ced1));
             diagnosticHud = new CheckBox(this); diagnosticHud.setText("Show frame-time and GPU diagnostics"); diagnosticHud.setTextColor(0xffeef8fa);
             diagnosticHud.setChecked(new ClientRuntime(this).diagnosticHud()); performance.addView(diagnosticHud);
             diagnosticHud.setOnCheckedChangeListener((button, checked) -> {
@@ -197,6 +199,7 @@ public final class MainActivity extends Activity {
                 stateText.setText(text);
             } else if (stateText != null && tab.equals("Client")) {
                 ClientRuntime client = new ClientRuntime(this);
+                syncPerformanceSettings(client);
                 boolean stopped = !RuntimeService.busy && !client.alive();
                 if (useAdreno != null) useAdreno.setEnabled(stopped);
                 boolean adrenoSettings = stopped && client.renderer().equals("turnip-dxvk");

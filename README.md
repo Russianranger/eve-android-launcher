@@ -64,6 +64,14 @@ rendering](docs/TESTING.md); stable 30 FPS and lower heat remain physical gates.
 See [the evening evidence](docs/DEVICE-20261008-EVENING.md) and
 [the source-backed optimization review](docs/CLIENT-PERFORMANCE.md).
 
+The 0.1.17 direct GPU rendering run showed no user-observed improvement, and
+[its log](docs/DEVICE-20261008-SYSMEM.md) confirms the intended SYS+linear settings
+and no current crash evidence. 0.1.18 moves to optional **Use shared-memory frame
+transport (experiment)**: a separate Mesa 26 WSI-only driver sends pixels to Xvnc
+through bounded shared buffers, retaining GPU fences and full RGB. It is default
+off and remains a physical FPS/heat candidate. Follow [the single new experiment
+run](docs/TESTING.md); no repeat of the completed baseline/SYS comparisons is needed.
+
 ## Fullscreen controls in 0.1.11
 
 The display fills the screen; a top-right space-themed gear opens the controls

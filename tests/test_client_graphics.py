@@ -143,6 +143,17 @@ def linear_identity() -> dict:
     return value
 
 
+def shm_report(stage_id=1, completed=1) -> dict:
+    return {"format": "eve-x11-shm-1", "mode": "active", "stageId": stage_id,
+            "width": 160, "height": 160, "rowPitch": 640, "sizeBytes": 102400,
+            "completedPresents": completed, "pendingBeforeOverwrite": False,
+            "barrierAfterPut": True, "copyNs": 1200, "serverWaitNs": 1800}
+
+
+def shm_log(reports) -> str:
+    return "".join("EVE_X11_SHM " + json.dumps(report) + "\n" for report in reports)
+
+
 def module_info(name: str, digest: str) -> dict:
     return {"path": "C:\\windows\\system32\\" + name + ".dll",
             "sha256": digest, "disk_machine": 0x8664, "loaded_machine": 0x8664,
@@ -418,6 +429,14 @@ class GraphicsTests(unittest.TestCase):
             self.manifest["files"][name] = {"sha256": digest(image), "sizeBytes": len(image), "machine": 183}
         self.write_manifest()
 
+    def add_shm_experiment(self):
+        self.manifest["shmPresentationExperiment"] = copy.deepcopy(graphics.SHM_EXPERIMENT)
+        for name in graphics.SHM_FILES:
+            image = elf_image() + name.encode("ascii")
+            (self.folder / name).write_bytes(image)
+            self.manifest["files"][name] = {"sha256": digest(image), "sizeBytes": len(image), "machine": 183}
+        self.write_manifest()
+
     def prepare_driver_selection(self):
         self.map_dlls()
         graphics.prepare(self.folder, self.state, self.content, "turnip-dxvk")
@@ -461,6 +480,82 @@ class GraphicsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             graphics.verify_bundle(self.folder)
         self.write_manifest(accepted)
+
+    def test_shm_bundle_is_independently_optional_exact_and_requires_native_assets(self):
+        self.add_shm_experiment()
+        accepted = copy.deepcopy(self.manifest)
+        self.assertEqual(graphics.verify_bundle(self.folder)["shmPresentationExperiment"], graphics.SHM_EXPERIMENT)
+        self.assertEqual(set(accepted["files"]), graphics.FILES | graphics.SHM_FILES)
+        for field in graphics.SHM_EXPERIMENT:
+            value = copy.deepcopy(accepted)
+            value["shmPresentationExperiment"][field] = True if field == "format" else "unverified"
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.write_manifest(value)
+                graphics.verify_bundle(self.folder)
+        for name in graphics.SHM_FILES:
+            value = copy.deepcopy(accepted)
+            value["files"].pop(name)
+            with self.subTest(missing=name), self.assertRaises(ValueError):
+                self.write_manifest(value)
+                graphics.verify_bundle(self.folder)
+            value = copy.deepcopy(accepted)
+            value["files"][name]["machine"] = 183.0
+            with self.subTest(machine=name), self.assertRaises(ValueError):
+                self.write_manifest(value)
+                graphics.verify_bundle(self.folder)
+        self.write_manifest(accepted)
+        self.add_a740_experiment()
+        self.assertEqual(set(graphics.verify_bundle(self.folder)["files"]), graphics.FILES | graphics.A740_FILES | graphics.SHM_FILES)
+        value = copy.deepcopy(self.manifest)
+        value.pop("shmPresentationExperiment")
+        with self.assertRaises(ValueError):
+            self.write_manifest(value)
+            graphics.verify_bundle(self.folder)
+
+    def test_shm_driver_gate_is_current_exact_cache_isolated_and_default_restores_baseline(self):
+        self.add_shm_experiment()
+        icd = self.prepare_driver_selection()
+        baseline = icd.read_bytes()
+        protected = {self.state / "cache/mesa-26.0.0/warm": b"original warm cache",
+                     self.state / "cache/dxvk-2.4.1-arm64ec/keep.dxvk-cache": b"shared DXVK cache"}
+        for path, data in protected.items():
+            path.write_bytes(data)
+        selected = graphics.select_driver(self.folder, self.state, False, vulkan_success(), a740_identity(), shm_presentation=True)
+        self.assertTrue(selected["shmPresentation"])
+        self.assertFalse(selected["a740PcMode"])
+        self.assertFalse(selected["nativeEffectVerified"])
+        self.assertEqual(json.loads(icd.read_text())["ICD"]["library_path"], str(self.folder / graphics.SHM_DRIVER))
+        self.assertEqual(selected["mesaShaderCache"], str(self.state / "cache/mesa-26.0.0-x11-shm"))
+        (self.state / "cache/mesa-26.0.0-x11-shm/warm").write_bytes(b"SHM warm cache")
+        restored = graphics.select_driver(self.folder, self.state, False)
+        self.assertFalse(restored["shmPresentation"])
+        self.assertEqual(icd.read_bytes(), baseline)
+        self.assertEqual(protected, {path: path.read_bytes() for path in protected})
+        self.assertEqual((self.state / "cache/mesa-26.0.0-x11-shm/warm").read_bytes(), b"SHM warm cache")
+        for invalid in (None, {}, modified(a740_identity(), ("device_id",), 0x740),
+                        modified(a740_identity(), ("software",), True),
+                        modified(a740_identity(), ("device",), "Adreno alternate adapter")):
+            with self.subTest(identity=invalid), self.assertRaises(ValueError):
+                graphics.select_driver(self.folder, self.state, False, vulkan_success(), invalid, shm_presentation=True)
+            self.assertEqual(icd.read_bytes(), baseline)
+        for invalid in (None, {}, modified(vulkan_success(), ("software",), True)):
+            with self.subTest(vulkan=invalid), self.assertRaises(ValueError):
+                graphics.select_driver(self.folder, self.state, False, invalid, a740_identity(), shm_presentation=True)
+        with self.assertRaises(ValueError):
+            graphics.select_driver(self.folder, self.state, True, vulkan_success(), a740_identity(), shm_presentation=True)
+        self.assertEqual(icd.read_bytes(), baseline)
+
+    def test_shm_selection_refuses_old_bundle_and_linked_private_cache(self):
+        icd = self.prepare_driver_selection()
+        baseline = icd.read_bytes()
+        with self.assertRaises(ValueError):
+            graphics.select_driver(self.folder, self.state, False, vulkan_success(), a740_identity(), shm_presentation=True)
+        self.add_shm_experiment()
+        cache = self.state / "cache/mesa-26.0.0-x11-shm"
+        cache.symlink_to(self.root, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            graphics.select_driver(self.folder, self.state, False, vulkan_success(), a740_identity(), shm_presentation=True)
+        self.assertEqual(icd.read_bytes(), baseline)
 
     def test_a740_driver_selection_requires_current_matching_native_hardware_and_resets_each_session(self):
         self.add_a740_experiment()
@@ -732,6 +827,71 @@ class GraphicsTests(unittest.TestCase):
         for invalid in (1, "sysmem", "nocb,sysmem", None, [], {}):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state, sysmem_rendering=invalid)
+
+    def test_shm_environment_is_fixed_gpu_only_cache_isolated_and_driver_conflicts_reject(self):
+        base = {"KEEP": "value", "EVE_X11_SHM_STAGING": "arbitrary", "TU_DEBUG": "gmem"}
+        baseline = graphics.configure_environment(base, "turnip-dxvk", self.folder, self.state)
+        self.assertNotIn("EVE_X11_SHM_STAGING", baseline)
+        for linear, sysmem, binning in ((False, False, False), (True, False, False), (True, True, True)):
+            options = {"shm_presentation": True, "linear_presentation": linear, "sysmem_rendering": sysmem,
+                       "disable_concurrent_binning": binning}
+            env = graphics.configure_environment(base, "turnip-dxvk", self.folder, self.state, **options)
+            self.assertEqual(env["EVE_X11_SHM_STAGING"], "1")
+            self.assertEqual(env["MESA_SHADER_CACHE_DIR"], str(self.state / "cache/mesa-26.0.0-x11-shm"))
+            self.assertEqual(env["DXVK_STATE_CACHE_PATH"], baseline["DXVK_STATE_CACHE_PATH"])
+            self.assertEqual(env["MESA_VK_WSI_DEBUG"], "sw,linear" if linear else "sw")
+            self.assertEqual(env.get("TU_DEBUG"), "nocb,sysmem" if sysmem else None)
+            receipt = graphics.optimization_settings("turnip-dxvk", **options)
+            self.assertTrue(receipt["requestedShmPresentation"])
+            self.assertTrue(receipt["shmPresentation"])
+            self.assertTrue(receipt["shmPresentationExperimental"])
+            self.assertTrue(receipt["shmPresentationDeviceGated"])
+            self.assertFalse(receipt["nativeEffectVerified"])
+            self.assertEqual(graphics.configure_environment(env, "turnip-dxvk", self.folder, self.state), baseline)
+            software = graphics.configure_environment(env, "software", self.folder, self.state, **options)
+            self.assertNotIn("EVE_X11_SHM_STAGING", software)
+            self.assertFalse(graphics.optimization_settings("software", **options)["shmPresentation"])
+        self.assertEqual(base["EVE_X11_SHM_STAGING"], "arbitrary")
+        for invalid in (1, "1", "true", None, []):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state, shm_presentation=invalid)
+        for mode in graphics.MODES:
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                graphics.optimization_settings(mode, a740_pc_mode=True, shm_presentation=True)
+        with self.assertRaises(ValueError):
+            graphics.cache_directories(self.state, True, True)
+
+    def test_shm_receipts_prove_three_completed_transfers_across_image_stages(self):
+        for reports in ([shm_report(completed=n) for n in (1, 2, 3)],
+                        [shm_report(stage_id=n) for n in (1, 2, 3)]):
+            observed = graphics.parse_shm_presentation("Wine diagnostic noise\n" + shm_log(reports))
+            self.assertTrue(observed["transportActivationVerified"])
+            self.assertEqual(observed["completedPresents"], 3)
+            self.assertEqual(observed["activeReports"], reports)
+            self.assertFalse(observed["nativeEffectVerified"])
+            self.assertFalse(observed["physicalBenefitVerified"])
+
+    def test_shm_receipts_reject_missing_duplicate_unsafe_fallback_and_malformed_evidence(self):
+        good = [shm_report(completed=n) for n in (1, 2, 3)]
+        rejected = ["", json.dumps(shm_report(completed=3)), shm_log(good[:2]),
+                    shm_log([shm_report(), shm_report(), shm_report()]),
+                    shm_log([shm_report(completed=2), shm_report()]),
+                    "EVE_X11_SHM broken-json\n" + shm_log(good),
+                    shm_log([{"format": "eve-x11-shm-1", "mode": "fallback", "reason": "attach-failed"}]) + shm_log(good),
+                    shm_log(good) + shm_log([modified(shm_report(completed=4), ("width",), 161)]),
+                    shm_log(good) + "EVE_X11_SHM " + '{"mode":"active","mode":"fallback"}\n',
+                    "X" * 65537 + shm_log(good)]
+        changes = {"format": 1, "mode": "fallback", "stageId": True, "width": 0, "height": "160",
+                   "rowPitch": 639, "sizeBytes": 102401, "completedPresents": "3",
+                   "pendingBeforeOverwrite": 0, "barrierAfterPut": 1, "copyNs": -1, "serverWaitNs": None}
+        for field, value in changes.items():
+            rejected.append(shm_log([modified(shm_report(completed=3), (field,), value)]))
+            missing = shm_report(completed=3)
+            missing.pop(field)
+            rejected.append(shm_log([missing]))
+        for text in rejected:
+            with self.subTest(text=text[:120]), self.assertRaises(ValueError):
+                graphics.parse_shm_presentation(text)
 
     def test_cpu_topology_is_bounded_numeric_evidence_and_allows_missing_permissions(self):
         topology = self.root / "sysfs"

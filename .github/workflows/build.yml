@@ -5,7 +5,7 @@ on:
   pull_request:
   workflow_dispatch:
 env:
-  EVE_APP_VERSION: '0.1.17'
+  EVE_APP_VERSION: '0.1.18'
 permissions:
   contents: read
 defaults:
@@ -131,6 +131,7 @@ jobs:
       - name: Prepare pinned native PRoot network policy fixtures
         run: bash scripts/check-proot-network-host.sh --prepare "$PWD/runtime-work/proot-network" 2>&1 | tee out/proot-network-prepare.log
       - name: Qualify native PRoot network policy without external networking
+        id: proot_qualified
         run: |
           docker run --rm --init --network none --cap-add SYS_PTRACE \
             --security-opt seccomp=unconfined -v "$PWD:$PWD" -w "$PWD" \
@@ -139,7 +140,7 @@ jobs:
             --run "$PWD/runtime-work/proot-network" 2>&1 | tee out/proot-network-build.log
       - name: Build native ARM64EC DXVK and qualify shaders through Xvnc
         id: graphics_qualified
-        if: ${{ !cancelled() && steps.wine_qualified.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.wine_qualified.outcome == 'success' && steps.proot_qualified.outcome == 'success' }}
         run: bash scripts/build-client-graphics.sh 2>&1 | tee out/client-graphics-build.log
       - uses: actions/upload-artifact@v4
         if: always()
@@ -174,6 +175,9 @@ jobs:
             out/a740-identity*.json
             out/a740-identity*.log
             out/a740-link-compatibility.json
+            out/shm*.json
+            out/shm*.log
+            out/turnip-shm-no-kgsl.*
             out/turnip-a740-no-kgsl.*
             out/dxvk.conf
             out/qualified-runtime-identity.json
@@ -203,6 +207,7 @@ jobs:
             backend/client-graphics-bundle.json
             backend/turnip-26.0.0.so
             backend/turnip-26.0.0-a740-pc-mode.so
+            backend/turnip-26.0.0-x11-shm.so
             backend/a740-driver-probe
             backend/vulkan-probe
             backend/dxvk-d3d11-arm64ec.dll

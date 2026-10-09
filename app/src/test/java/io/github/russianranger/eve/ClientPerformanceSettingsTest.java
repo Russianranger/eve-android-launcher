@@ -105,11 +105,12 @@ public final class ClientPerformanceSettingsTest {
         assertFalse(runtime.a740PcMode());
         assertFalse(runtime.linearPresentation());
         assertFalse(runtime.sysmemRendering());
+        assertFalse(runtime.shmPresentation());
         for (String profile : new String[]{"render60", "queue2", "display60", "throughput", "responsive"}) {
             runtime.setPerformanceProfile(profile);
             assertEquals(profile, new ClientRuntime(context).performanceProfile());
         }
-        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering"}) {
+        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation"}) {
             runtime.setPerformanceOption(option, true);
             assertTrue(new ClientRuntime(context).performanceOption(option));
             RuntimeService.busy = true;
@@ -255,8 +256,88 @@ public final class ClientPerformanceSettingsTest {
                 runtime.performanceSummary());
     }
 
+    @Test public void shmPresentationDefaultsOffPersistsAndOnlyLaunchesWithGpuRendering() throws Exception {
+        assertTrue(preferences.edit().putBoolean("linear-presentation", true).putBoolean("sysmem-rendering", true)
+                .putString("performance-profile-v2", "queue2").putBoolean("diagnostic-hud", true).commit());
+        ClientRuntime runtime = new ClientRuntime(context);
+        assertFalse(runtime.shmPresentation());
+        assertFalse(runtime.status().getBoolean("requestedShmPresentation"));
+        assertFalse(runtime.launchCommand("turnip-dxvk", "queue2", true).contains("--shm-presentation"));
+        assertTrue(runtime.linearPresentation()); assertTrue(runtime.sysmemRendering());
+        runtime.setPerformanceOption("shm-presentation", true);
+        ClientRuntime restored = new ClientRuntime(context);
+        assertTrue(restored.shmPresentation());
+        assertTrue(restored.status().getBoolean("requestedShmPresentation"));
+        assertTrue(restored.status().getBoolean("shmPresentation"));
+        assertTrue(restored.launchCommand("turnip-dxvk", "queue2", true).contains("--shm-presentation"));
+        assertFalse(restored.launchCommand("software", "queue2", true).contains("--shm-presentation"));
+        assertTrue(restored.linearPresentation()); assertTrue(restored.sysmemRendering());
+        assertTrue(restored.performanceSummary().endsWith("Selected experiments: Reduce GPU frame copies, Direct GPU rendering, Shared-memory frame transport"));
+        restored.setPerformanceOption("sysmem-rendering", false);
+        assertTrue(restored.performanceSummary().endsWith("Selected experiments: Reduce GPU frame copies, Shared-memory frame transport"));
+        assertTrue(restored.launchCommand("turnip-dxvk", "queue2", true).contains("--linear-presentation"));
+        assertFalse(restored.launchCommand("turnip-dxvk", "queue2", true).contains("--sysmem-rendering"));
+        restored.setPerformanceOption("linear-presentation", false);
+        assertTrue(restored.performanceSummary().endsWith("Selected experiments: Shared-memory frame transport"));
+        restored.useAdreno(false);
+        assertTrue(restored.performanceOption("shm-presentation"));
+        assertTrue(restored.status().getBoolean("requestedShmPresentation"));
+        assertFalse(restored.shmPresentation());
+        assertFalse(restored.status().getBoolean("shmPresentation"));
+        assertFalse(restored.launchCommand("software", "queue2", true).contains("--shm-presentation"));
+        assertTrue(restored.performanceSummary().endsWith("Saved experiments: Shared-memory frame transport (inactive in software)"));
+        restored.useAdreno(true);
+        assertTrue(new ClientRuntime(context).shmPresentation());
+        assertEquals("queue2", restored.performanceProfile()); assertTrue(restored.diagnosticHud());
+        restored.setPerformanceOption("shm-presentation", false);
+        assertFalse(new ClientRuntime(context).shmPresentation());
+    }
+
+    @Test public void shmAndA740DriverChoicesAreMutuallyExclusiveInOnePreferenceTransaction() {
+        ClientRuntime runtime = new ClientRuntime(context);
+        runtime.setPerformanceProfile("render60"); runtime.setDiagnosticHud(true);
+        runtime.setPerformanceOption("linear-presentation", true);
+        runtime.setPerformanceOption("sysmem-rendering", true);
+        runtime.setPerformanceOption("a740-pc-mode", true);
+        List<Map<String, ?>> snapshots = new ArrayList<>();
+        SharedPreferences.OnSharedPreferenceChangeListener observe = (changed, key) -> snapshots.add(changed.getAll());
+        preferences.registerOnSharedPreferenceChangeListener(observe);
+        try {
+            for (String chosen : new String[]{"shm-presentation", "a740-pc-mode"}) {
+                String other = chosen.equals("shm-presentation") ? "a740-pc-mode" : "shm-presentation";
+                snapshots.clear();
+                runtime.setPerformanceOption(chosen, true); idle();
+                assertFalse("Driver choice publishes its changes", snapshots.isEmpty());
+                for (Map<String, ?> snapshot : snapshots) {
+                    assertEquals(true, snapshot.get(chosen));
+                    assertEquals("Every notification sees the other driver disabled", false, snapshot.get(other));
+                    assertEquals(true, snapshot.get("linear-presentation"));
+                    assertEquals(true, snapshot.get("sysmem-rendering"));
+                    assertEquals("render60", snapshot.get("performance-profile-v2"));
+                    assertEquals(true, snapshot.get("diagnostic-hud"));
+                }
+                ClientRuntime restored = new ClientRuntime(context);
+                assertTrue(restored.performanceOption(chosen)); assertFalse(restored.performanceOption(other));
+                runtime.setPerformanceOption(other, false);
+                assertTrue("Disabling the other option keeps the chosen driver", runtime.performanceOption(chosen));
+            }
+        } finally { preferences.unregisterOnSharedPreferenceChangeListener(observe); }
+    }
+
+    @Test public void invalidShmPreferenceFallsBackWithoutResettingExistingSelections() {
+        assertTrue(preferences.edit().putString("shm-presentation", "true").putBoolean("a740-pc-mode", true)
+                .putBoolean("linear-presentation", true).putBoolean("sysmem-rendering", true).commit());
+        ClientRuntime runtime = new ClientRuntime(context);
+        assertFalse(runtime.shmPresentation());
+        assertFalse(runtime.launchCommand("turnip-dxvk", "responsive", false).contains("--shm-presentation"));
+        assertTrue(runtime.a740PcMode()); assertTrue(runtime.linearPresentation()); assertTrue(runtime.sysmemRendering());
+        runtime.setPerformanceOption("shm-presentation", true);
+        assertTrue(new ClientRuntime(context).shmPresentation());
+        assertFalse(runtime.a740PcMode());
+    }
+
     @Test public void explicitBaselineRestoreClearsEveryExperimentTogetherAndPreservesOtherSettings() {
-        String[] options = {"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering"};
+        String[] options = {"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation"};
         for (boolean adreno : new boolean[]{true, false}) {
             SharedPreferences.Editor setup = preferences.edit().putString("performance-profile-v2", "throughput")
                     .putBoolean("use-adreno", adreno).putBoolean("diagnostic-hud", true).putString("unrelated-setting", "preserved");
@@ -304,7 +385,7 @@ public final class ClientPerformanceSettingsTest {
     @Test public void baselineCapsKeepExperimentsVisibleUntilExplicitRestoreUpdatesAllControls() {
         ClientRuntime runtime = new ClientRuntime(context);
         runtime.setPerformanceProfile("render60"); runtime.setDiagnosticHud(true);
-        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering"})
+        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation"})
             runtime.setPerformanceOption(option, true);
         ActivityController<MainActivity> owned = Robolectric.buildActivity(MainActivity.class).create().start().resume().visible();
         try {
@@ -321,7 +402,7 @@ public final class ClientPerformanceSettingsTest {
             assertEquals(0, profile(root).getSelectedItemPosition());
             for (String label : new String[]{"Request next display frame early", "Disable concurrent binning (Adreno experiment)",
                     "Use alternate CPU load instructions (FEX experiment)", "Use A740 driver experiment", "Reduce GPU frame copies (experiment)",
-                    "Use direct GPU rendering (experiment)"})
+                    "Use direct GPU rendering (experiment)", "Use shared-memory frame transport (experiment)"})
                 assertFalse("Reset immediately clears " + label, checkBox(root, label).isChecked());
             assertEquals("Baseline caps: render 30 FPS · queue 1 frame · display 30 FPS\nSelected experiments: none",
                     performanceSummary(root).getText().toString());
@@ -368,6 +449,46 @@ public final class ClientPerformanceSettingsTest {
         expectInvalidGraphicsAssets(manifest, false);
     }
 
+    @Test public void shmGraphicsAssetsRequireSharedIdentityProbeAndFormAnExactUnion() throws Exception {
+        JSONObject manifest = baselineGraphicsManifest();
+        expectInvalidGraphicsAssets(manifest, false, true);
+        JSONObject shm = new JSONObject().put("format", 1).put("name", "turnip-x11-shm-staging-1")
+                .put("driver", "turnip-26.0.0-x11-shm.so")
+                .put("mesaSourceSha256", "2a44e98e64d5c36cec64633de2d0ec7eff64703ee25b35364ba8fcaa84f33f72");
+        manifest.put("shmPresentationExperiment", shm);
+        JSONObject files = manifest.getJSONObject("files");
+        expectInvalidGraphicsAssets(manifest, false, true);
+        files.put("turnip-26.0.0-x11-shm.so", new JSONObject());
+        expectInvalidGraphicsAssets(manifest, false, true);
+        files.put("a740-driver-probe", new JSONObject());
+        String[] shmOnly = ClientRuntime.graphicsAssetNames(manifest, false, true);
+        assertEquals(7, shmOnly.length);
+        assertTrue(Arrays.asList(shmOnly).contains("turnip-26.0.0.so"));
+        assertTrue(Arrays.asList(shmOnly).contains("turnip-26.0.0-x11-shm.so"));
+        assertTrue(Arrays.asList(shmOnly).contains("a740-driver-probe"));
+        assertArrayEquals(shmOnly, ClientRuntime.graphicsAssetNames(manifest, false, false));
+        expectInvalidGraphicsAssets(manifest, true, false);
+        manifest.put("a740PcModeExperiment", new JSONObject().put("format", 1).put("name", "turnip-a740-pc-mode-1")
+                .put("driver", "turnip-26.0.0-a740-pc-mode.so").put("identityProbe", "a740-driver-probe")
+                .put("upstreamCommit", "23f94c692cb1d41a2193a80fa531922d386e8d5d"));
+        expectInvalidGraphicsAssets(manifest, false, true);
+        files.put("turnip-26.0.0-a740-pc-mode.so", new JSONObject());
+        String[] both = ClientRuntime.graphicsAssetNames(manifest, false, true);
+        assertEquals(8, both.length);
+        assertEquals(1, java.util.Collections.frequency(Arrays.asList(both), "a740-driver-probe"));
+        assertTrue(Arrays.asList(both).containsAll(Arrays.asList(shmOnly)));
+        assertArrayEquals(both, ClientRuntime.graphicsAssetNames(manifest, true, false));
+        assertArrayEquals(both, ClientRuntime.graphicsAssetNames(manifest, false, false));
+        shm.put("format", "1"); expectInvalidGraphicsAssets(manifest, false, true);
+        shm.put("format", 1).put("name", "unqualified-transport"); expectInvalidGraphicsAssets(manifest, false, true);
+        shm.put("name", "turnip-x11-shm-staging-1").put("driver", "turnip-unqualified.so");
+        expectInvalidGraphicsAssets(manifest, false, true);
+        shm.put("driver", "turnip-26.0.0-x11-shm.so").put("mesaSourceSha256", "unqualified-source");
+        expectInvalidGraphicsAssets(manifest, false, true);
+        shm.put("mesaSourceSha256", "2a44e98e64d5c36cec64633de2d0ec7eff64703ee25b35364ba8fcaa84f33f72");
+        files.put("unqualified-probe", new JSONObject()); expectInvalidGraphicsAssets(manifest, false, true);
+    }
+
     private static JSONObject baselineGraphicsManifest() throws Exception {
         JSONObject files = new JSONObject();
         for (String name : new String[]{"turnip-26.0.0.so", "vulkan-probe", "dxvk-d3d11-arm64ec.dll", "dxvk-dxgi-arm64ec.dll", "eve-d3d11-probe.exe"})
@@ -377,6 +498,11 @@ public final class ClientPerformanceSettingsTest {
 
     private static void expectInvalidGraphicsAssets(JSONObject manifest, boolean experimentEnabled) throws Exception {
         try { ClientRuntime.graphicsAssetNames(manifest, experimentEnabled); fail("Invalid graphics asset selection accepted"); }
+        catch (IOException expected) { }
+    }
+
+    private static void expectInvalidGraphicsAssets(JSONObject manifest, boolean a740Enabled, boolean shmEnabled) throws Exception {
+        try { ClientRuntime.graphicsAssetNames(manifest, a740Enabled, shmEnabled); fail("Invalid graphics asset selection accepted"); }
         catch (IOException expected) { }
     }
 
@@ -391,11 +517,14 @@ public final class ClientPerformanceSettingsTest {
         catch (IllegalStateException expected) { }
         try { runtime.setPerformanceOption("sysmem-rendering", true); fail("Active client rendering experiment changed"); }
         catch (IllegalStateException expected) { }
+        try { runtime.setPerformanceOption("shm-presentation", true); fail("Active client transport experiment changed"); }
+        catch (IllegalStateException expected) { }
         assertEquals("responsive", runtime.performanceProfile());
         assertFalse(runtime.diagnosticHud());
         assertFalse(runtime.a740PcMode());
         assertFalse(runtime.linearPresentation());
         assertFalse(runtime.sysmemRendering());
+        assertFalse(runtime.shmPresentation());
     }
 
     @Test public void busyAndLiveSessionsRejectChangesWithoutMutatingPreferences() {
@@ -450,6 +579,38 @@ public final class ClientPerformanceSettingsTest {
         } finally { owned.pause().stop().destroy(); }
     }
 
+    @Test public void launcherDriverChoicesImmediatelyUpdateTheOtherCheckboxAndSummary() {
+        ClientRuntime runtime = new ClientRuntime(context);
+        runtime.setPerformanceOption("linear-presentation", true);
+        runtime.setPerformanceOption("sysmem-rendering", true);
+        ActivityController<MainActivity> owned = Robolectric.buildActivity(MainActivity.class).create().start().resume().visible();
+        try {
+            View root = owned.get().findViewById(android.R.id.content);
+            button(root, "Client").performClick(); idle();
+            checkBox(root, "Use A740 driver experiment").performClick();
+            assertTrue(checkBox(root, "Use A740 driver experiment").isChecked());
+            assertFalse(checkBox(root, "Use shared-memory frame transport (experiment)").isChecked());
+            checkBox(root, "Use shared-memory frame transport (experiment)").performClick();
+            assertTrue(checkBox(root, "Use shared-memory frame transport (experiment)").isChecked());
+            assertFalse(checkBox(root, "Use A740 driver experiment").isChecked());
+            assertTrue(checkBox(root, "Reduce GPU frame copies (experiment)").isChecked());
+            assertTrue(checkBox(root, "Use direct GPU rendering (experiment)").isChecked());
+            assertTrue(performanceSummary(root).getText().toString().endsWith(
+                    "Selected experiments: Reduce GPU frame copies, Direct GPU rendering, Shared-memory frame transport"));
+            button(root, "Server").performClick(); idle();
+            button(root, "Client").performClick(); idle();
+            assertTrue(checkBox(root, "Use shared-memory frame transport (experiment)").isChecked());
+            assertFalse(checkBox(root, "Use A740 driver experiment").isChecked());
+            checkBox(root, "Use A740 driver experiment").performClick();
+            assertTrue(checkBox(root, "Use A740 driver experiment").isChecked());
+            assertFalse(checkBox(root, "Use shared-memory frame transport (experiment)").isChecked());
+            assertTrue(performanceSummary(root).getText().toString().endsWith(
+                    "Selected experiments: A740 driver, Reduce GPU frame copies, Direct GPU rendering"));
+            assertFalse(new ClientRuntime(context).shmPresentation());
+            assertTrue(new ClientRuntime(context).a740PcMode());
+        } finally { owned.pause().stop().destroy(); }
+    }
+
     @Test public void launcherDisablesPerformanceControlsWhileBusyRunningOrUsingSoftware() {
         ActivityController<MainActivity> owned = Robolectric.buildActivity(MainActivity.class).create().start().resume().visible();
         try {
@@ -459,6 +620,7 @@ public final class ClientPerformanceSettingsTest {
             assertTrue(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
             assertTrue(button(root, "Restore baseline settings").isEnabled());
             assertTrue(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
+            assertTrue(checkBox(root, "Use shared-memory frame transport (experiment)").isEnabled());
             RuntimeService.busy = true; refresh();
             assertFalse(profile(root).isEnabled());
             assertFalse(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
@@ -468,6 +630,7 @@ public final class ClientPerformanceSettingsTest {
             assertFalse(checkBox(root, "Use A740 driver experiment").isEnabled());
             assertFalse(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
             assertFalse(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
+            assertFalse(checkBox(root, "Use shared-memory frame transport (experiment)").isEnabled());
             assertFalse(button(root, "Restore baseline settings").isEnabled());
             RuntimeService.busy = false;
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", new LiveProcess());
@@ -477,6 +640,7 @@ public final class ClientPerformanceSettingsTest {
             assertFalse(checkBox(root, "Use A740 driver experiment").isEnabled());
             assertFalse(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
             assertFalse(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
+            assertFalse(checkBox(root, "Use shared-memory frame transport (experiment)").isEnabled());
             assertFalse(button(root, "Restore baseline settings").isEnabled());
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", null); refresh();
             checkBox(root, "Use Adreno GPU rendering").performClick();
@@ -486,6 +650,7 @@ public final class ClientPerformanceSettingsTest {
             assertFalse(checkBox(root, "Use A740 driver experiment").isEnabled());
             assertFalse(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
             assertFalse(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
+            assertFalse(checkBox(root, "Use shared-memory frame transport (experiment)").isEnabled());
             assertFalse(button(root, "Restore baseline settings").isEnabled());
             checkBox(root, "Use Adreno GPU rendering").performClick();
             assertTrue(profile(root).isEnabled());
@@ -493,6 +658,7 @@ public final class ClientPerformanceSettingsTest {
             assertTrue(checkBox(root, "Use A740 driver experiment").isEnabled());
             assertTrue(checkBox(root, "Reduce GPU frame copies (experiment)").isEnabled());
             assertTrue(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
+            assertTrue(checkBox(root, "Use shared-memory frame transport (experiment)").isEnabled());
             assertTrue(button(root, "Restore baseline settings").isEnabled());
         } finally {
             RuntimeService.busy = false;

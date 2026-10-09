@@ -1,6 +1,45 @@
-# EVE Android Launcher 0.1.17: linear versus linear plus direct GPU rendering
+# EVE Android Launcher 0.1.18: one shared-memory transport experiment
 
-## Current 0.1.17 test
+## Current 0.1.18 test
+
+Your SYS+linear run showed no improvement. That result is accepted; no repeat of
+linear-only or the old baseline/SYS matrix is required. The log records no
+current crash evidence and directly validates the repaired ample-memory guard.
+
+Install **EVE-Android-Launcher-0.1.18.apk** over the existing app with client and
+server stopped. Keep app data, import, installed runtime, prefix, shader caches,
+account/world and mappings. No reimport or validation is needed; signing identity
+remains the same. This adds a separate WSI-only shared-memory driver and leaves
+the original available. Its cache starts separately, so allow shader warm-up.
+
+1. With the client stopped, keep **Use Adreno GPU rendering** enabled. Press
+   **Restore baseline settings**, then enable **Reduce GPU frame copies
+   (experiment)**, **Use shared-memory frame transport (experiment)** and the HUD.
+   Confirm render 30/queue 1/display 30 and only **Reduce GPU frame copies,
+   Shared-memory frame transport** in the experiment summary. Direct GPU rendering,
+   A740, binning, alternate CPU instructions and early requests should be off.
+2. Keep FSR off and the same 1280×720 station, character, game settings,
+   camera/windows and Thor fan/power mode. Start server → **SERVER READY** → EVE
+   client → Open client display. Check geometry, ships, text, transparency,
+   fullscreen and controls. Startup also checks actual SHM use; if it fails,
+   export immediately and report the stage rather than reimporting anything.
+3. Warm three minutes, then observe two, checking static camera and movement
+   separately. Record warm HUD FPS range, stutter/input delay and starting/ending
+   SoC temperature. Export while running as **0.1.18-linear-shm**, reopen the
+   display and confirm the same session and controls remain usable.
+4. Quit normally, then save and stop the server. If the new path is worse or shows
+   faults, disable only **Use shared-memory frame transport** after stopping;
+   that restores the original driver and its cache while retaining linear.
+
+Return this single labeled ZIP, FPS range, starting/ending temperatures and
+visible/input/export faults. Display updates are not engine FPS. Shared-memory
+activation/phase timing proves the transport path, not a sustained FPS/heat gain.
+If a crash occurs, reopen and export before restarting; a baseline rerun is only
+needed if that fault requires isolating the new path.
+
+Earlier instructions remain below as historical evidence.
+
+## Completed 0.1.17 SYS experiment
 
 Install **EVE-Android-Launcher-0.1.17.apk** over the existing app with client and
 server stopped. Preserve app data, imported client, runtime, prefix, shader

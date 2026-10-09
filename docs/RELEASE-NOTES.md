@@ -1,3 +1,24 @@
+# EVE Android Launcher 0.1.18 — optional shared-memory frame transport
+
+The direct GPU rendering experiment showed no physical improvement. It is
+complete; this update does not ask for another baseline comparison.
+
+Default-off **Use shared-memory frame transport (experiment)** selects a separate
+Mesa 26 WSI-only driver that shares a staged image with Xvnc instead of sending
+its full pixels through the X11 socket. It retains GPU completion, full RGB,
+IMMEDIATE presentation, VNC filtering and the Android display/controls. A reply
+queued after each SHM request protects stage reuse/cleanup without holding the
+independent Vulkan image until Xvnc finishes reading it. Safe socket fallback
+remains, but the experiment's startup gate requires actual successful SHM use.
+
+The new driver is independent of the neutral A740 register experiment; selecting
+one clears the other. **Restore baseline settings** clears seven experiments.
+Original driver/cache, runtime versions, import, prefix, world/account and mappings
+remain available. The new driver has a separate shader cache and needs warm-up.
+
+Install in place and follow [the single linear+SHM run](TESTING.md). FPS and heat
+benefit remain unproven; no game-quality tuning is included.
+
 # EVE Android Launcher 0.1.17 — optional direct GPU rendering
 
 The latest true baseline/linear comparison gave a small user-observed FPS gain

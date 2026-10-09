@@ -20,6 +20,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
+import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
 import org.robolectric.annotation.GraphicsMode;
 import org.robolectric.util.ReflectionHelpers;
@@ -88,7 +89,8 @@ public final class RfbSurfaceViewTest {
         try (Fixture f = new Fixture()) {
             SurfaceView child = ReflectionHelpers.getField(f.display, "surface");
             assertNull("The SurfaceView has no background covering its punch-through hole", child.getBackground());
-            assertEquals(PixelFormat.RGBX_8888, (int) ReflectionHelpers.getField(child, "mRequestedFormat"));
+            // Robolectric intercepts getHolder(): its fake owns the requested format, not SurfaceView's private field.
+            assertEquals(PixelFormat.RGBX_8888, Shadows.shadowOf(child).getFakeSurfaceHolder().getRequestedFormat());
             f.pixel(0xff123456); f.start(); int[] first = f.frame();
             assertEquals(0xff123456, first[4]); assertEquals(Color.BLACK, first[0]);
             f.pixel(0xffabcdef); int[] second = f.frame(); assertEquals(0xffabcdef, second[4]);

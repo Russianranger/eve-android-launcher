@@ -36,7 +36,38 @@ or request a completed baseline repeat solely for that reason.
 limits; [MESA-26.2-CANDIDATE.md](MESA-26.2-CANDIDATE.md) preserves the next primary-
 source GPU/compiler candidate if the display experiment is also neutral.
 
-Build qualification is recorded here after CI and APK inspection complete.
+### 0.1.19 build and delivery qualification
+
+Qualified source `e658702e8ee33a4526a90517609b78e5a6ba9773` on
+`codex/wine-localhost-tls`. [Actions run 37874742414](https://github.com/Russianranger/eve-android-launcher/actions/runs/37874742414)
+passed backend/host regressions, server reuse, native Wine trust/PRoot/graphics,
+Android release build/tests/lint and APK content/signing checks. Publication is
+skipped on this branch; main remains unchanged.
+
+- Backend: 209 tests and the RFB/controller host checks passed locally and in CI.
+- Android: all 120 cases passed on API 33 and 35, with no failures/errors/skips:
+  surface 20, display activity 14, settings 50, pressure 30, support export 6.
+  Release lint has 38 warnings and no errors. The initial build exposed a test
+  assertion reading SurfaceView's real private field instead of Robolectric's
+  fake holder; the final source checks the requested RGBX8888 format on that
+  holder. The production format request and full-RGB requirement are unchanged.
+- Native: all nine ARM64EC shader/readback fixtures and three visible RFB frames
+  per fixture passed. Production-source PRoot SHM passed 640×480 and 1280×720,
+  reuse/resize/delayed teardown/cleanup and negative controls. Original driver
+  dependencies/ABI and IMMEDIATE presentation policy remain qualified. These
+  are Linux software-rendering CI checks; physical Adreno surface composition,
+  HWC use, sustained FPS and temperature benefit remain unverified.
+- Delivered APK: `EVE-Android-Launcher-0.1.19.apk`, package
+  `io.github.russianranger.eve`, versionCode 20, 13,530,138 bytes; SHA-256
+  `cd06ee499161de53d0aaab870a67c4afa59c4692df7359063da9cf42078c88e1`.
+  Signing certificate SHA-256 remains
+  `456c617128420fd315e1aa453d154e3d08f71a9b593d91966d21f75eed3a2c15`.
+  CI verified signatures and manifest/content policy. Local inspection verified
+  APK ZIP integrity, certificate identity, version, new option/receipt strings,
+  and all ten packaged backend Python/shell sources against the checkout.
+
+Deliver only the focused 0.1.19 test above. The user's neutral 0.1.18 result is
+accepted; no baseline performance rerun is required.
 
 ## Historical 0.1.18 continuation: shared-memory frame transport
 

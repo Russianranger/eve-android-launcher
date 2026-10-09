@@ -46,7 +46,7 @@ following leads. Their applicability and benefit to EVE remain unmeasured.
 
 | Change | Concrete mechanism | Qualification limit |
 |---|---|---|
-| IR3 limits large predicated blocks | In `ir3_compiler_nir.c`, `block_can_be_predicated` counts NIR instructions and switches to ordinary branches above 32 instructions. Even a divergent condition can be uniform within a wave; predication otherwise executes instructions in the untaken block. | Requires EVE shaders containing affected branches. Do not promise a shader-wide speedup. |
+| IR3 limits large predicated blocks | In `ir3_compiler_nir.c`, `block_can_be_predicated` counts NIR instructions and switches to ordinary branches above 32 instructions. Even a divergent condition can be uniform within a wave; predication still traverses the untaken block instead of jumping over it, with effects disabled by predicates. | Requires EVE shaders containing affected branches. Do not promise a shader-wide speedup. |
 | IR3 constant-vector propagation and global-address optimizations | 26.2 adds constant-vector propagation, constant source handling for global loads/stores, and global-offset lowering/optimization. | Changes generated shader code, so existing cached shaders must use a distinct versioned cache and visual correctness needs Thor. |
 | A7xx interpolation state | The 26.2 list includes avoiding forced `IJ_LINEAR_PIXEL` for `FragFace`/`FragCoord`. | A relevant A7xx state correction, not a measured EVE FPS fix. |
 | Turnip autotuning preference | 26.1 prefers SYSMEM for DXVK/vkd3d as part of revised autotuning rather than the old unconditional debug override. | The prior forced SYS trial was neutral. This is bundled policy in the newer driver, not a reason to repeat that old flag. |

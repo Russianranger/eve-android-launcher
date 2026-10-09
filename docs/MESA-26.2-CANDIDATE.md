@@ -76,8 +76,16 @@ glibc builder can attempt a pure Turnip build without LLVM, Gallium, EGL, GLX or
 GBM. These source observations do not establish compatibility: the ELF must pass
 the current SONAME and symbol-version guards against the accepted runtime.
 Optional dependencies such as libelf or SPIRV-Tools must not be accidentally
-picked up and introduced into the driver. Use existing source/compiler/tool
-pins where compatible, and record every necessary build-only change.
+picked up and introduced into the driver. The first native build exposed one
+mandatory new upstream X11 dependency, `libxcb-shm.so.0`; Mesa has no supported
+build option to disable it. This sole additional dependency requires proof from
+the actual checksum-pinned existing runtime archive, including its ELF,
+exported functions and dependency closure. Builder-installed libraries alone
+are insufficient; all other added libraries and newer ABI requirements remain
+rejected. No new library or runtime is installed on Android. New-driver-only
+`noshm` WSI policy keeps transport ordinary even though upstream was built with
+SHM support. Use existing source/compiler/tool pins where compatible, and record
+every necessary build-only change.
 
 Before a device experiment:
 

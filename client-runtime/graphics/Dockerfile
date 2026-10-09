@@ -12,6 +12,7 @@ RUN test "$(uname -m)" = aarch64 \
       libx11-xcb-dev libxcb-dri3-dev libxcb-present-dev libxcb-randr0-dev \
       libxcb-shm0-dev libxcb-sync-dev libxcb-xfixes0-dev libxshmfence-dev
 COPY client-runtime/graphics/fetch-sources.py /graphics-recipe/fetch-sources.py
+COPY scripts/check-mesa262-runtime-libraries.py /graphics-recipe/
 COPY client-runtime/graphics/arm64ec.txt /graphics-recipe/arm64ec.txt
 COPY client-runtime/graphics/a740-pc-mode.patch native/a740-driver-probe.c /graphics-recipe/
 COPY native/mesa262-driver-probe.c /graphics-recipe/
@@ -90,6 +91,9 @@ RUN bash /graphics-tests/scripts/build-client-graphics-probe.sh /graphics-out/as
  && cp /graphics-out/a740-link-compatibility.json /graphics-src/ \
  && cp /graphics-out/shm-link-compatibility.json /graphics-src/ \
  && cp /graphics-out/mesa262-link-compatibility.json /graphics-src/ \
+ && cp /runtime-proof/mesa262-xcb-shm/actual-runtime-libraries.json \
+      /graphics-out/mesa262-actual-runtime-libraries.json \
+ && cp /graphics-out/mesa262-actual-runtime-libraries.json /graphics-src/ \
  && python3 /graphics-recipe/fetch-sources.py runtime-identity /graphics-out/qualified-runtime-identity.json \
  && cp /graphics-out/qualified-runtime-identity.json /graphics-src/
 COPY backend/graphics_present.py /graphics-tests/graphics_present.py

@@ -77,9 +77,11 @@ RUN tar --exclude=.git --sort=name --owner=0 --group=0 --numeric-owner \
 # Qualification runs the native ARM64 test helper with the exact already
 # qualified runtime. This test-only copy never becomes a runtime update.
 FROM builder AS qualification
+COPY scripts/check-mesa262-runtime-libraries.py /wine-tests/check-mesa262-runtime-libraries.py
 RUN curl -fL --retry 3 https://github.com/Russianranger/uo-android-launcher/releases/download/v0.2.0/client-runtime-arm64.tar.gz -o /tmp/baseline.tar.gz \
  && echo 'f036c00a290abb953bec26be80c4d8fe492fd986e7a589c51008124432c8641e  /tmp/baseline.tar.gz' | sha256sum -c - \
  && tar -xzf /tmp/baseline.tar.gz -C / opt/wine \
+ && python3 /wine-tests/check-mesa262-runtime-libraries.py extract /tmp/baseline.tar.gz /runtime-proof/mesa262-xcb-shm \
  && rm /tmp/baseline.tar.gz
 COPY native/eve-wine-trust-test.c /wine-tests/eve-wine-trust-test.c
 COPY tests/wine_trust_fixtures.py /wine-tests/wine_trust_fixtures.py

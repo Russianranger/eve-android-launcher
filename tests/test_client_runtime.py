@@ -79,7 +79,7 @@ if mode in ('graphicsVulkan', 'graphicsD3d', 'graphicsIdentity'):
             if behavior == 'mesa262-old-probe': report['helper'] = 'eve-a740-driver-probe-1'
             if behavior == 'mesa262-wrong-info': report['driver_info'] = 'Mesa 26.2.40'
             if behavior == 'mesa262-linear-unsupported': report['linear_presentation']['supported'] = False
-        if mode == 'graphicsVulkan' and behavior == 'mesa262-final-bad' and os.environ.get('MESA_VK_WSI_DEBUG') == 'sw,linear': report['software'] = True
+        if mode == 'graphicsVulkan' and behavior == 'mesa262-final-bad' and os.environ.get('MESA_VK_WSI_DEBUG') == 'sw,noshm,linear': report['software'] = True
     if behavior == mode + '-bad':
         if mode == 'graphicsVulkan': report['software'] = True
         elif mode == 'graphicsIdentity': report['device_id'] = 0x740
@@ -824,15 +824,15 @@ class ClientRuntimeTests(unittest.TestCase):
                 identity_history = json.loads((self.state / "graphicsIdentity.environment-history.json").read_text())[-2:]
                 self.assertEqual([Path(item["driverLibrary"]).name for item in identity_history],
                                  ["turnip-26.0.0.so", "turnip-26.2.4.so"])
-                self.assertEqual([item["MESA_VK_WSI_DEBUG"] for item in identity_history], ["sw", "sw"])
+                self.assertEqual([item["MESA_VK_WSI_DEBUG"] for item in identity_history], ["sw", "sw,noshm"])
                 vulkan_history = json.loads((self.state / "graphicsVulkan.environment-history.json").read_text())[-(3 if linear else 2):]
                 self.assertEqual([item["MESA_VK_WSI_DEBUG"] for item in vulkan_history],
-                                 ["sw", "sw", "sw,linear"] if linear else ["sw", "sw"])
+                                 ["sw", "sw,noshm", "sw,noshm,linear"] if linear else ["sw", "sw,noshm"])
                 for role in ("graphicsD3d", "client"):
                     environment = json.loads((self.state / (role + ".environment.json")).read_text())
                     self.assertEqual(Path(environment["driverLibrary"]).name, "turnip-26.2.4.so")
                     self.assertEqual(environment["MESA_SHADER_CACHE_DIR"], str(self.state / "cache/mesa-26.2.4"))
-                    self.assertEqual(environment["MESA_VK_WSI_DEBUG"], "sw,linear" if linear else "sw")
+                    self.assertEqual(environment["MESA_VK_WSI_DEBUG"], "sw,noshm,linear" if linear else "sw,noshm")
                     self.assertIsNone(environment["EVE_X11_SHM_STAGING"])
                 if linear:
                     self.assertEqual(report["linearPresentationQualification"]["identity"]["helper"], "eve-mesa262-driver-probe-1")

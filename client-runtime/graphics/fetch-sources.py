@@ -8,6 +8,7 @@ the new build recipe. No TRASC Wine/D3D9/game patch bytes are deployed.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import io
 import json
 from pathlib import Path
@@ -453,16 +454,35 @@ def verify_mesa262_link_compatibility(assets: Path) -> dict:
     for original, variant in pairs:
         baseline = native_link_requirements(assets / original)
         selected = native_link_requirements(assets / variant)
-        if not set(selected["needed"]).issubset(baseline["needed"]):
-            raise ValueError("Optional Mesa 26.2.4 component adds a dynamic library requirement: " + variant)
+        added = sorted(set(selected["needed"]) - set(baseline["needed"]))
+        runtime_proof = None
+        if added:
+            # Only the new driver's upstream XCB-SHM import may extend the
+            # original ELF's NEEDED list, after checking the exact unchanged
+            # runtime archive. The native probe still has a strict subset gate.
+            if variant != MESA262_EXPERIMENT["driver"] or added != ["libxcb-shm.so.0"]:
+                raise ValueError("Optional Mesa 26.2.4 component adds unapproved dynamic libraries: "
+                                 + variant + " " + repr(added))
+            helper_path = Path(__file__).with_name("check-mesa262-runtime-libraries.py")
+            spec = importlib.util.spec_from_file_location("mesa262_runtime_libraries", helper_path)
+            if spec is None or spec.loader is None:
+                raise ValueError("Pinned runtime ELF proof helper is missing")
+            helper = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(helper)
+            runtime_proof = helper.validate_candidate(assets / variant, Path("/runtime-proof/mesa262-xcb-shm"))
         for family, version in selected["versionRequirements"].items():
             if version > baseline["versionRequirements"].get(family, (0,)):
                 raise ValueError("Optional Mesa 26.2.4 component requires a newer runtime ABI: " + variant + " " + family)
         linked = subprocess.check_output(["ldd", str(assets / variant)], text=True, stderr=subprocess.STDOUT)
         if "not found" in linked:
             raise ValueError("Optional Mesa 26.2.4 component has unresolved runtime dependencies: " + variant)
-        report[variant] = {"baseline": original, "requirements": selected,
-                           "newDynamicDependencies": False, "newRuntimeAbiRequired": False}
+        report[variant] = {"baseline": original, "requirements": selected, "newRuntimeAbiRequired": False}
+        if variant == MESA262_EXPERIMENT["driver"]:
+            report[variant]["addedDynamicDependencies"] = added
+        else:
+            report[variant]["newDynamicDependencies"] = False
+        if runtime_proof is not None:
+            report[variant]["pinnedRuntimeDependencyProof"] = runtime_proof
     symbols = subprocess.check_output([
         "readelf", "--dyn-syms", "--wide", str(assets / MESA262_EXPERIMENT["driver"])], text=True)
     # Only a defined, externally visible dynamic function can be called by the

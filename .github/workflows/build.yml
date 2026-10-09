@@ -14,9 +14,9 @@ defaults:
     # disappear behind the diagnostic tee pipelines below.
     shell: bash
 concurrency:
-  # Do not cancel a first main build before its stable preview key is cached.
+  # Preserve main's first signing-key build; supersede obsolete branch builds.
   group: eve-android-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   verify:
     runs-on: ubuntu-24.04

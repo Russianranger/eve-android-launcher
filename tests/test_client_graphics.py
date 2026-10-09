@@ -550,7 +550,12 @@ class GraphicsTests(unittest.TestCase):
         selected = graphics.configure_environment(base, "turnip-dxvk", self.folder, self.state,
                                                   mesa262_driver=True, linear_presentation=True)
         self.assertEqual(selected["MESA_SHADER_CACHE_DIR"], str(self.state / "cache/mesa-26.2.4"))
-        self.assertEqual(selected["MESA_VK_WSI_DEBUG"], "sw,linear")
+        self.assertEqual(selected["MESA_VK_WSI_DEBUG"], "sw,noshm,linear")
+        ordinary = graphics.configure_environment(base, "turnip-dxvk", self.folder, self.state, mesa262_driver=True)
+        self.assertEqual(ordinary["MESA_VK_WSI_DEBUG"], "sw,noshm")
+        self.assertEqual(base["MESA_VK_WSI_DEBUG"], "sw")
+        self.assertEqual(graphics.configure_environment({}, "turnip-dxvk", self.folder, self.state,
+                                                       shm_presentation=True, linear_presentation=True)["MESA_VK_WSI_DEBUG"], "sw,linear")
         self.assertNotIn("EVE_X11_SHM_STAGING", selected)
         self.assertEqual(graphics.configure_environment(selected, "turnip-dxvk", self.folder, self.state), base)
         software = graphics.configure_environment(selected, "software", self.folder, self.state, mesa262_driver=True)
@@ -586,6 +591,7 @@ class GraphicsTests(unittest.TestCase):
 
     def test_mesa262_linear_capability_comes_from_the_selected_driver(self):
         qualification = graphics.parse_linear_presentation(json.dumps(mesa262_identity()), mesa262_vulkan(), "26.2.4")
+        self.assertEqual(qualification["mesaWsiDebug"], "sw,noshm,linear")
         self.assertEqual(qualification["originalDriver"], graphics.MESA262_DRIVER)
         self.assertTrue(qualification["hardwareCapabilityGatePassed"])
         with self.assertRaises(ValueError):

@@ -364,6 +364,9 @@ def optimization_settings(mode, disable_concurrent_binning=False, disable_lrcpc2
     lrcpc2 = disable_lrcpc2 and gpu
     sysmem = sysmem_rendering and gpu
     turnip_debug = ",".join(flag for flag, enabled in (("nocb", binning), ("sysmem", sysmem)) if enabled) or None
+    # Keep the candidate on ordinary X11 transfers even when upstream can
+    # discover MIT-SHM. The patched 26.0.0 SHM transport remains a separate trial.
+    wsi_debug = "sw" + (",noshm" if mesa262_driver else "") + (",linear" if linear_presentation else "")
     return {"requestedDisableConcurrentBinning": disable_concurrent_binning,
             "requestedDisableLrcpc2": disable_lrcpc2,
             "requestedA740PcMode": a740_pc_mode, "a740PcMode": a740_pc_mode and gpu,
@@ -378,7 +381,7 @@ def optimization_settings(mode, disable_concurrent_binning=False, disable_lrcpc2
             "requestedMesa262Driver": mesa262_driver, "mesa262Driver": mesa262_driver and gpu,
             "mesa262DriverExperimental": True, "mesa262DriverDeviceGated": True,
             "selectedMesaVersion": MESA262_VERSION if mesa262_driver and gpu else MESA_VERSION if gpu else None,
-            "mesaWsiDebug": ("sw,linear" if linear_presentation else "sw") if gpu else None,
+            "mesaWsiDebug": wsi_debug if gpu else None,
             "disableConcurrentBinning": binning, "disableLrcpc2": lrcpc2,
             "turnipDebug": turnip_debug,
             "fexHostFeatures": "disablelrcpc2" if lrcpc2 else None,
@@ -570,7 +573,8 @@ def parse_linear_presentation(text, baseline_vulkan, expected_mesa=MESA_VERSION)
                    for key in ("supported", "bgra8_unorm", "rgba8_unorm"))):
         raise ValueError("The original driver does not qualify native linear presentation formats")
     return {"requestedLinearPresentation": True, "linearPresentation": True,
-            "mesaWsiDebug": "sw,linear", "originalDriver": MESA262_DRIVER if expected_mesa == MESA262_VERSION else "turnip-26.0.0.so",
+            "mesaWsiDebug": "sw,noshm,linear" if expected_mesa == MESA262_VERSION else "sw,linear",
+            "originalDriver": MESA262_DRIVER if expected_mesa == MESA262_VERSION else "turnip-26.0.0.so",
             "mesaVersion": expected_mesa,
             "hardwareCapabilityGatePassed": True, "identity": identity,
             "baselineVulkan": baseline_vulkan, "nativeEffectVerified": False,

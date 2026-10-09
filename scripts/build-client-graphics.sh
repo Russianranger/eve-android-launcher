@@ -362,12 +362,12 @@ Path('/graphics-out/turnip-mesa262-icd.json').write_text(json.dumps({
     'library_path': '/graphics-out/assets/turnip-26.2.4.so', 'api_version': '1.3.0'}}))
 PY
 export VK_DRIVER_FILES=/graphics-out/turnip-mesa262-icd.json VK_ICD_FILENAMES=/graphics-out/turnip-mesa262-icd.json
-if /graphics-out/assets/mesa262-driver-probe --fixture \
+if MESA_VK_WSI_DEBUG=sw,noshm /graphics-out/assets/mesa262-driver-probe --fixture \
     > /graphics-out/mesa262-identity-no-kgsl.json 2> /graphics-out/mesa262-identity-no-kgsl.log; then
   echo 'Pristine Mesa 26.2.4 driver incorrectly accepted a software fallback without KGSL' >&2
   exit 1
 fi
-if /graphics-out/assets/vulkan-probe --allow-software \
+if MESA_VK_WSI_DEBUG=sw,noshm /graphics-out/assets/vulkan-probe --allow-software \
     > /graphics-out/turnip-mesa262-no-kgsl.json 2> /graphics-out/turnip-mesa262-no-kgsl.log; then
   echo 'Pristine Mesa 26.2.4 driver unexpectedly rendered without KGSL' >&2
   exit 1
@@ -487,6 +487,7 @@ report['mesa262DriverExperiment'] = {
     'driverWithoutKgslRejected': True,
     'sourceProvenance': mesa262_metadata,
     'linkCompatibility': one_json('mesa262-link-compatibility.json'),
+    'pinnedRuntimeLibraries': one_json('mesa262-actual-runtime-libraries.json'),
     'clientDriver': 'turnip-26.2.4.so',
     'clientDriverSha256': graphics_manifest['files']['turnip-26.2.4.so']['sha256'],
     'upstreamNotices': one_json('mesa262-notices-provenance.json'),
@@ -684,6 +685,31 @@ assert mesa262['newReleaseRenderingVerified'] is False
 assert mesa262['nativeEffectVerified'] is False and mesa262['physicalThorQualified'] is False
 assert mesa262['cpuHardwareGateRejected'] is True and mesa262['driverWithoutKgslRejected'] is True
 assert mesa262['linkCompatibility'][client_graphics.MESA262_DRIVER]['icdEntryPoint'] == 'vk_icdGetInstanceProcAddr'
+mesa262_driver_links = mesa262['linkCompatibility'][client_graphics.MESA262_DRIVER]
+assert mesa262_driver_links['addedDynamicDependencies'] == ['libxcb-shm.so.0']
+assert mesa262_driver_links['newRuntimeAbiRequired'] is False
+assert 'newDynamicDependencies' not in mesa262_driver_links
+mesa262_probe_links = mesa262['linkCompatibility'][client_graphics.MESA262_PROBE]
+assert mesa262_probe_links['newDynamicDependencies'] is False and mesa262_probe_links['newRuntimeAbiRequired'] is False
+runtime_libraries_bytes = Path('out/mesa262-actual-runtime-libraries.json').read_bytes()
+runtime_libraries = json.loads(runtime_libraries_bytes)
+assert mesa262['pinnedRuntimeLibraries'] == runtime_libraries
+assert runtime_libraries['baselineRuntimeSha256'] == client_graphics.BASELINE_SHA256
+assert runtime_libraries['approvedAdditionalSonames'] == ['libxcb-shm.so.0']
+assert runtime_libraries['runtimeLibrariesInstalled'] is False
+for field in ('transitiveDependenciesVerified', 'loaderVerified', 'symbolVersionsVerified', 'requiredSymbolsVerified'):
+    assert runtime_libraries[field] is True
+runtime_proof = mesa262_driver_links['pinnedRuntimeDependencyProof']
+assert runtime_proof['baselineRuntimeSha256'] == client_graphics.BASELINE_SHA256
+assert runtime_proof['report'] == 'actual-runtime-libraries.json'
+assert runtime_proof['reportSha256'] == hashlib.sha256(runtime_libraries_bytes).hexdigest()
+assert runtime_proof['additionalSoname'] == 'libxcb-shm.so.0'
+assert runtime_proof['actualRuntimeLibrary'] == runtime_libraries['libraries']['libxcb-shm.so.0']
+assert runtime_proof['runtimeLibrariesInstalled'] is False
+assert runtime_proof['candidateRequiredSymbols']
+assert all(symbol['name'].startswith('xcb_shm_') for symbol in runtime_proof['candidateRequiredSymbols'])
+for field in ('candidateSymbolsVerified', 'transitiveDependenciesVerified', 'loaderVerified', 'symbolVersionsVerified'):
+    assert runtime_proof[field] is True
 try:
     client_graphics.parse_mesa262_identity(Path('out/mesa262-identity-cpu-fixture.json').read_text())
 except ValueError:
@@ -700,7 +726,7 @@ mesa262['productionEnvironment'] = {
     if key in ('EVE_X11_SHM_STAGING', 'MESA_VK_WSI_DEBUG', 'TU_DEBUG', 'FEX_HOSTFEATURES',
                'MESA_SHADER_CACHE_DIR')}
 assert mesa262['productionEnvironment'] == {
-    'MESA_VK_WSI_DEBUG': 'sw,linear', 'MESA_SHADER_CACHE_DIR': str(Path('out/cache/mesa-26.2.4'))}
+    'MESA_VK_WSI_DEBUG': 'sw,noshm,linear', 'MESA_SHADER_CACHE_DIR': str(Path('out/cache/mesa-26.2.4'))}
 mesa262['productionOptimizations'] = client_graphics.optimization_settings(
     'turnip-dxvk', mesa262_driver=True, linear_presentation=True)
 assert mesa262['productionOptimizations']['mesa262Driver'] is True

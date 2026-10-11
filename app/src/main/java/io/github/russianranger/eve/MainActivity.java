@@ -156,6 +156,12 @@ public final class MainActivity extends Activity {
             performance.addView(label("Sends frames through shared memory. FPS and heat may improve or worsen.", 13, 0xffb9ced1));
             performanceOption(performance, "Use separate display surface (experiment)", "separate-display-surface");
             performance.addView(label("Tries to reduce display composition work. FPS and heat may improve or worsen. Close and reopen the display after changing it.", 13, 0xffb9ced1));
+            performanceOption(performance, "Use bulk pixel decoding (experiment)", "bulk-pixel-decode");
+            performance.addView(label("Processes display pixels in larger blocks while preserving full color.", 13, 0xffb9ced1));
+            performanceOption(performance, "Use idle-aware controller updates (experiment)", "idle-controller-ticks");
+            performance.addView(label("Pauses repeated pointer updates while the controls are centered.", 13, 0xffb9ced1));
+            performanceOption(performance, "Use lighter diagnostic recording (experiment)", "lean-diagnostics");
+            performance.addView(label("Reduces background recording work while keeping the same measurements and memory protection.", 13, 0xffb9ced1));
             diagnosticHud = new CheckBox(this); diagnosticHud.setText("Show frame-time and GPU diagnostics"); diagnosticHud.setTextColor(0xffeef8fa);
             diagnosticHud.setChecked(new ClientRuntime(this).diagnosticHud()); performance.addView(diagnosticHud);
             diagnosticHud.setOnCheckedChangeListener((button, checked) -> {

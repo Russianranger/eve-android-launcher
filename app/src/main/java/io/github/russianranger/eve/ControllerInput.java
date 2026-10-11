@@ -169,12 +169,21 @@ final class ControllerInput {
         if(command.equals("ClientMenu"))sink.button(command,true);
     }
     void axis(String negative,String positive,float value){float amount=Math.abs(value)<=deadzone?0:(Math.abs(value)-deadzone)/(1-deadzone);value(negative,value<0?amount:0);value(positive,value>0?amount:0);}
-    void tick(float seconds){
-        if(!active||!Float.isFinite(seconds)||seconds<=0)return;float dx=0,dy=0;
+    // Buttons, wheel pulses and layer switches are dispatched by value(), not by ticks.
+    // Use the same resolved vector for scheduling and dispatch, including opposing holds.
+    boolean needsPointerTicks(){return active&&pointerMotion(0,false);}
+    private boolean pointerMotion(float seconds,boolean dispatch){
+        float dx=0,dy=0;
         for(Map.Entry<String,Float> e:held.entrySet())switch(controls.containsKey(e.getKey())?"None":action(e.getKey())){
             case "PointerLeft":dx-=e.getValue();break;case "PointerRight":dx+=e.getValue();break;case "PointerUp":dy-=e.getValue();break;case "PointerDown":dy+=e.getValue();break;
         }
-        if(dx!=0||dy!=0)sink.pointer(dx*sensitivity*Math.min(seconds,.05f),dy*sensitivity*Math.min(seconds,.05f));
+        boolean moving=dx!=0||dy!=0;
+        if(moving&&dispatch)sink.pointer(dx*sensitivity*Math.min(seconds,.05f),dy*sensitivity*Math.min(seconds,.05f));
+        return moving;
+    }
+    void tick(float seconds){
+        if(!active||!Float.isFinite(seconds)||seconds<=0)return;
+        pointerMotion(seconds,true);
     }
     void releaseAll(){int before=currentLayer();releaseOutputs();held.clear();controls.clear();temporary.clear();if(before!=currentLayer())sink.layer(currentLayer(),layerName());}
 }

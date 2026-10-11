@@ -82,6 +82,7 @@ class Settings:
     sysmem_rendering: bool = False
     shm_presentation: bool = False
     mesa262_driver: bool = False
+    lean_diagnostics: bool = False
     graphics_folder: Path = Path("/opt/eve-android")
     graphics_timeout: float = 90
     window_start_timeout: float = 20
@@ -157,7 +158,7 @@ class Runtime:
         self.diagnostics = client_diagnostics.PerformanceHistory(
             self.s.state, client_graphics.cache_directories(
                 self.s.state, self.optimizations["a740PcMode"], self.optimizations["shmPresentation"],
-                self.optimizations["mesa262Driver"]))
+                self.optimizations["mesa262Driver"]), lean_writes=self.s.lean_diagnostics)
 
     def request_stop(self, *_: Any) -> None:
         self.cancelled = True
@@ -243,6 +244,7 @@ class Runtime:
                   "graphicsMode": self.s.graphics_mode,
                   "performance": self.performance,
                   "optimizations": self.optimizations, "cpuTopology": self.cpu_topology,
+                  "leanDiagnostics": self.s.lean_diagnostics,
                   "renderer": "DXVK / Turnip (Adreno)" if self.s.graphics_mode == "turnip-dxvk" else "WineD3D / llvmpipe",
                   "graphicsPreflight": self.graphics_reports, "processCpu": process_cpu,
                   "clientWindow": self.window_report,
@@ -762,6 +764,7 @@ class Runtime:
                   "mesa262DriverQualification": mesa262,
                   "performance": self.performance,
                   "optimizations": self.optimizations, "cpuTopology": self.cpu_topology,
+                  "leanDiagnostics": self.s.lean_diagnostics,
                   "qualificationScope": "native hardware D3D11 helper and local display; EVE performance requires observation"}
         self.cancellation_point()
         atomic_json(self.s.state / "graphics-preflight.json", report)
@@ -1081,6 +1084,7 @@ def main(argv=None) -> int:
     parser.add_argument("--performance-profile", choices=client_graphics.PERFORMANCE_PROFILES,
                         default=client_graphics.DEFAULT_PERFORMANCE_PROFILE)
     parser.add_argument("--diagnostic-hud", action="store_true")
+    parser.add_argument("--lean-diagnostics", action="store_true")
     parser.add_argument("--disable-concurrent-binning", action="store_true")
     parser.add_argument("--disable-lrcpc2", action="store_true")
     driver_options = parser.add_mutually_exclusive_group()
@@ -1098,7 +1102,8 @@ def main(argv=None) -> int:
                                linear_presentation=options.linear_presentation,
                                sysmem_rendering=options.sysmem_rendering,
                                shm_presentation=options.shm_presentation,
-                               mesa262_driver=options.mesa262_driver))
+                               mesa262_driver=options.mesa262_driver,
+                               lean_diagnostics=options.lean_diagnostics))
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, runtime.request_stop)
     try:

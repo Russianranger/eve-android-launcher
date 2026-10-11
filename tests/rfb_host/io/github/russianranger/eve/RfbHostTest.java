@@ -31,20 +31,26 @@ public final class RfbHostTest {
         return bytes.toByteArray();
     }
     private static byte[] update(int width, int height, int x, byte[] pixels) throws IOException {
+        return updateAt(width, height, x, 0, pixels);
+    }
+    private static byte[] updateAt(int width, int height, int x, int y, byte[] pixels) throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream(); DataOutputStream peer = new DataOutputStream(bytes);
-        peer.writeByte(0); peer.writeByte(0); peer.writeShort(1); peer.writeShort(x); peer.writeShort(0); peer.writeShort(width); peer.writeShort(height); peer.writeInt(0); peer.write(pixels); return bytes.toByteArray();
+        peer.writeByte(0); peer.writeByte(0); peer.writeShort(1); peer.writeShort(x); peer.writeShort(y); peer.writeShort(width); peer.writeShort(height); peer.writeInt(0); peer.write(pixels); return bytes.toByteArray();
     }
     private static byte[] together(byte[] first, byte[] second) throws IOException { ByteArrayOutputStream bytes = new ByteArrayOutputStream(); bytes.write(first); bytes.write(second); return bytes.toByteArray(); }
     private static InputStream fragmented(byte[] bytes) {
         return new ByteArrayInputStream(bytes) { @Override public synchronized int read(byte[] b, int off, int len) { return super.read(b, off, Math.min(3, len)); } };
     }
-    private static void rawFrameAndInput() throws Exception {
+    private static void rawFrameAndInput(boolean bulkDecode) throws Exception {
         byte[] data = together(hello(2, 1), update(2, 1, 0, new byte[]{0x56, 0x34, 0x12, 0, (byte) 0xef, (byte) 0xcd, (byte) 0xab, 0}));
         Screen screen = new Screen(); ByteArrayOutputStream output = new ByteArrayOutputStream();
-        RfbClient client = new RfbClient(fragmented(data), output, screen);
+        DisplayPerformance performance = new DisplayPerformance();
+        RfbClient client = new RfbClient(fragmented(data), output, screen, performance, false, bulkDecode);
         client.handshake(); client.readUpdate(); client.key(0xff0d, true); client.key(0xff0d, false); client.pointer(999, -4, 1); client.pointer(1, 0, 0);
         check(screen.width == 2 && screen.height == 1 && screen.updates == 1, "frame publication");
         check(Arrays.equals(screen.pixels, new int[]{0xff123456, 0xffabcdef}), "raw RGB byte order and alpha");
+        check(performance.json().contains("\"pixel_decoder_policy\": \"" + (bulkDecode ? "bulk-little-endian-64k" : "scanline") + "\""),
+            "support metrics identify this connection's actual decoder");
         DataInputStream wire = new DataInputStream(new ByteArrayInputStream(output.toByteArray()));
         check(new String(wire.readNBytes(12), StandardCharsets.US_ASCII).equals("RFB 003.008\n"), "protocol negotiation");
         check(wire.readUnsignedByte() == 1 && wire.readUnsignedByte() == 1, "local security and shared display");
@@ -58,21 +64,24 @@ public final class RfbHostTest {
         for (int mask = 1; mask >= 0; mask--) check(wire.readUnsignedByte() == 5 && wire.readUnsignedByte() == mask && wire.readUnsignedShort() == 1 && wire.readUnsignedShort() == 0, "clamped pointer and button release");
         check(wire.available() == 0, "no unexpected input payload");
     }
-    private static void malformedFrames() throws Exception {
+    private static void malformedFrames(boolean bulkDecode) throws Exception {
         Screen screen = new Screen();
-        rejects(() -> new RfbClient(new ByteArrayInputStream(hello(0, 720)), new ByteArrayOutputStream(), screen).handshake(), "zero width accepted");
-        rejects(() -> new RfbClient(new ByteArrayInputStream(hello(4096, 2160)), new ByteArrayOutputStream(), screen).handshake(), "excess framebuffer allocation accepted");
-        malformedFrameDoesNotRequest(update(2, 1, 0, new byte[7]), "truncated pixel bytes accepted");
-        malformedFrameDoesNotRequest(update(2, 1, 1, new byte[8]), "out-of-bounds rectangle accepted");
+        rejects(() -> new RfbClient(new ByteArrayInputStream(hello(0, 720)), new ByteArrayOutputStream(), screen, new DisplayPerformance(), false, bulkDecode).handshake(), "zero width accepted");
+        rejects(() -> new RfbClient(new ByteArrayInputStream(hello(4096, 2160)), new ByteArrayOutputStream(), screen, new DisplayPerformance(), false, bulkDecode).handshake(), "excess framebuffer allocation accepted");
+        malformedFrameDoesNotRequest(update(2, 1, 0, new byte[7]), "truncated pixel bytes accepted", bulkDecode);
+        malformedFrameDoesNotRequest(update(2, 1, 1, new byte[8]), "out-of-bounds rectangle accepted", bulkDecode);
         byte[] unsupported = update(2, 1, 0, new byte[8]); unsupported[15] = 5;
-        malformedFrameDoesNotRequest(unsupported, "unsupported rectangle encoding accepted");
+        malformedFrameDoesNotRequest(unsupported, "unsupported rectangle encoding accepted", bulkDecode);
         ByteArrayOutputStream clipboard = new ByteArrayOutputStream(); DataOutputStream peer = new DataOutputStream(clipboard); peer.writeByte(3); peer.write(new byte[3]); peer.writeInt(Integer.MAX_VALUE);
-        RfbClient oversized = new RfbClient(new ByteArrayInputStream(together(hello(2, 1), clipboard.toByteArray())), new ByteArrayOutputStream(), screen);
+        RfbClient oversized = new RfbClient(new ByteArrayInputStream(together(hello(2, 1), clipboard.toByteArray())), new ByteArrayOutputStream(), screen, new DisplayPerformance(), false, bulkDecode);
         oversized.handshake(); rejects(oversized::readUpdate, "unbounded clipboard allocation accepted");
     }
-    private static void malformedFrameDoesNotRequest(byte[] packet, String message) throws Exception {
+    private static void malformedFrameDoesNotRequest(byte[] packet, String message, boolean bulkDecode) throws Exception {
+        malformedFrameDoesNotRequest(packet, message, bulkDecode, 2, 1);
+    }
+    private static void malformedFrameDoesNotRequest(byte[] packet, String message, boolean bulkDecode, int width, int height) throws Exception {
         CountingOutput output = new CountingOutput(); DisplayPerformance performance = new DisplayPerformance();
-        RfbClient client = new RfbClient(new ByteArrayInputStream(together(hello(2, 1), packet)), output, new Screen(), performance);
+        RfbClient client = new RfbClient(new ByteArrayInputStream(together(hello(width, height), packet)), output, new Screen(), performance, false, bulkDecode);
         client.handshake(); output.clear(); rejects(client::readUpdate, message);
         check(output.size() == 0 && performance.incrementalRequests.get() == 0 && performance.fullRequests.get() == 1,
             "malformed baseline update sends no additional request");
@@ -135,7 +144,7 @@ public final class RfbHostTest {
             check(performance.json().contains("\"socket_read_ms\"") && !performance.json().contains("password"), "content-free diagnostic schema");
         } finally { peer.close(); pipe.close(); threads.shutdownNow(); }
     }
-    private static void socketReceiveDoesNotBlockInput(boolean partialPixels) throws Exception {
+    private static void socketReceiveDoesNotBlockInput(boolean partialPixels, boolean bulkDecode) throws Exception {
         byte[] packet = update(2, 1, 0, new byte[]{0x56, 0x34, 0x12, 0, (byte)0xef, (byte)0xcd, (byte)0xab, 0});
         int prefix = partialPixels ? packet.length - 5 : 0;
         CountDownLatch ready = new CountDownLatch(1), waiting = new CountDownLatch(1);
@@ -183,7 +192,7 @@ public final class RfbHostTest {
                     }
                 };
                 Screen screen = new Screen(); DisplayPerformance performance = new DisplayPerformance();
-                RfbClient client = new RfbClient(monitored, socket.getOutputStream(), screen, performance, true);
+                RfbClient client = new RfbClient(monitored, socket.getOutputStream(), screen, performance, true, bulkDecode);
                 client.handshake(); watching.set(true); ready.countDown();
                 Future<?> receiving = threads.submit(() -> { client.readUpdate(); return null; });
                 check(waiting.await(2, TimeUnit.SECONDS), partialPixels ? "native socket waits for remaining raw pixels" : "native socket waits for message header");
@@ -204,7 +213,7 @@ public final class RfbHostTest {
             check(threads.awaitTermination(2, TimeUnit.SECONDS), "socket fixture threads stopped");
         }
     }
-    private static void requestPipelinesBlockedPixelPayload() throws Exception {
+    private static void requestPipelinesBlockedPixelPayload(boolean bulkDecode) throws Exception {
         byte[] packet = update(2, 1, 0, new byte[]{0x56, 0x34, 0x12, 0, (byte)0xef, (byte)0xcd, (byte)0xab, 0});
         CountDownLatch[] ahead = new CountDownLatch[3], inputSeen = new CountDownLatch[3], pixelsAllowed = new CountDownLatch[3];
         for (int i = 0; i < ahead.length; i++) {
@@ -237,7 +246,7 @@ public final class RfbHostTest {
             try (Socket socket = new Socket("127.0.0.1", listener.getLocalPort())) {
                 socket.setSoTimeout(5000); socket.setTcpNoDelay(true);
                 Screen screen = new Screen(); DisplayPerformance performance = new DisplayPerformance();
-                RfbClient client = new RfbClient(socket.getInputStream(), socket.getOutputStream(), screen, performance, true); client.handshake();
+                RfbClient client = new RfbClient(socket.getInputStream(), socket.getOutputStream(), screen, performance, true, bulkDecode); client.handshake();
                 for (int i = 0; i < ahead.length; i++) {
                     Future<?> receiving = threads.submit(() -> { client.readUpdate(); return null; });
                     check(ahead[i].await(2, TimeUnit.SECONDS), "next request arrives while framebuffer payload is withheld");
@@ -266,7 +275,7 @@ public final class RfbHostTest {
         }
         return bytes.toByteArray();
     }
-    private static void baselineRequestsFollowCompleteUpdates() throws Exception {
+    private static void baselineRequestsFollowCompleteUpdates(boolean bulkDecode) throws Exception {
         byte[] rectangle = update(2, 1, 0, new byte[]{0x56, 0x34, 0x12, 0, (byte)0xef, (byte)0xcd, (byte)0xab, 0});
         byte[] packet = together(rectangle, Arrays.copyOfRange(rectangle, 4, rectangle.length)); packet[3] = 2;
         int prefix = packet.length - 1; // One rectangle and all but the last pixel byte of the second.
@@ -314,8 +323,10 @@ public final class RfbHostTest {
                         return count;
                     }
                 };
-                // Four-argument constructor exercises the restored default.
-                RfbClient client = new RfbClient(monitored, socket.getOutputStream(), screen, performance);
+                // Keep the existing constructor covered for the original baseline.
+                RfbClient client = bulkDecode
+                    ? new RfbClient(monitored, socket.getOutputStream(), screen, performance, false, true)
+                    : new RfbClient(monitored, socket.getOutputStream(), screen, performance);
                 client.handshake(); watching.set(true); ready.countDown();
                 Future<?> receiving = threads.submit(() -> { client.readUpdate(); return null; });
                 check(waiting.await(2, TimeUnit.SECONDS), "baseline waits for every pixel byte of every rectangle");
@@ -339,7 +350,7 @@ public final class RfbHostTest {
             check(threads.awaitTermination(2, TimeUnit.SECONDS), "baseline fixture threads stopped");
         }
     }
-    private static void resizeRefreshesOnlyOnceAndFetchesNewArea() throws Exception {
+    private static void resizeRefreshesOnlyOnceAndFetchesNewArea(boolean bulkDecode) throws Exception {
         ExecutorService threads = Executors.newFixedThreadPool(2);
         try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
             Future<?> peer = threads.submit(() -> {
@@ -379,7 +390,7 @@ public final class RfbHostTest {
                             "full resize refresh reaches the newly grown area in both axes"); observed[2]++;
                     }
                     public void updated() { observed[3]++; }
-                }, performance, true);
+                }, performance, true, bulkDecode);
                 client.handshake(); client.readUpdate(); client.readUpdate();
                 check(observed[0] == 5 && observed[1] == 4 && observed[2] == 1, "growing framebuffer does not stall with only new-region damage");
                 client.readUpdate(); client.readUpdate(); client.tap(0xff09);
@@ -405,6 +416,109 @@ public final class RfbHostTest {
         client.readUpdate();
         DataInputStream wire = new DataInputStream(new ByteArrayInputStream(output.toByteArray())); request(wire, true, 2, 1);
         check(wire.available() == 0 && performance.updates.get() == 0, "empty framebuffer advances one request without publishing pixels");
+    }
+    private static byte[] patternedPixels(int count, int seed) {
+        byte[] pixels = new byte[count * 4];
+        for (int at = 0; at < pixels.length; at++) pixels[at] = (byte)(at * 37 + (at >>> 7) + seed);
+        return pixels;
+    }
+    private static void variedRectanglesAndResize(boolean bulkDecode) throws Exception {
+        int[][] bounds = {{7,9,257,129}, {0,0,17,3}, {0,20,513,7}};
+        byte[][] expected = {patternedPixels(257*129, 13), patternedPixels(17*3, 27), patternedPixels(513*7, 39)};
+        ByteArrayOutputStream data = new ByteArrayOutputStream(); data.write(hello(300, 150));
+        data.write(updateAt(257, 129, 7, 9, expected[0])); data.write(updateAt(17, 3, 0, 0, expected[1]));
+        data.write(resizedUpdate(new int[][]{{513, 30}})); data.write(updateAt(513, 7, 0, 20, expected[2]));
+        int[] observed = new int[4];
+        RfbClient.Screen screen = new RfbClient.Screen() {
+            public void resize(int width, int height) { observed[0] = width; observed[1] = height; }
+            public void pixels(int x, int y, int width, int height, int[] values) {
+                int index = observed[2]++;
+                check(Arrays.equals(bounds[index], new int[]{x,y,width,height}), "odd-width, multi-row rectangle coordinates survive resize");
+                byte[] bytes = expected[index];
+                for (int at = 0; at < width * height; at++) {
+                    int offset = at * 4;
+                    int rgb = 0xff000000 | ((bytes[offset+2] & 255) << 16) | ((bytes[offset+1] & 255) << 8) | (bytes[offset] & 255);
+                    check(values[at] == rgb, "every RGB channel and opaque alpha survive fragmented/chunked decode at " + at);
+                }
+            }
+            public void updated() { observed[3]++; }
+        };
+        RfbClient client = new RfbClient(fragmented(data.toByteArray()), new ByteArrayOutputStream(), screen, new DisplayPerformance(), false, bulkDecode);
+        client.handshake(); for (int i = 0; i < 4; i++) client.readUpdate();
+        check(Arrays.equals(observed, new int[]{513,30,3,4}), "large/small raw rectangles and resize publish completely");
+        malformedFrameDoesNotRequest(update(65535, 65535, 0, new byte[0]), "oversized raw rectangle accepted", bulkDecode);
+        malformedFrameDoesNotRequest(update(0, 1, 0, new byte[0]), "zero-width raw rectangle accepted", bulkDecode);
+        malformedFrameDoesNotRequest(update(257, 129, 0, Arrays.copyOf(expected[0], expected[0].length - 1)),
+            "truncation after complete decode chunks accepted", bulkDecode, 300, 150);
+    }
+    private static byte[] benchmarkFrame(int workload) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream(); DataOutputStream peer = new DataOutputStream(bytes);
+        int rectangles = workload == 0 ? 1 : 43;
+        peer.writeByte(0); peer.writeByte(0); peer.writeShort(rectangles);
+        for (int i = 0; i < rectangles; i++) {
+            int width = workload == 0 ? 1280 : workload == 1 ? 256 : 128;
+            int height = workload == 0 ? 720 : workload == 1 ? 64 : 104;
+            int columns = 1280 / width;
+            peer.writeShort((i % columns) * width); peer.writeShort((i / columns) * height);
+            peer.writeShort(width); peer.writeShort(height); peer.writeInt(0);
+            peer.write(patternedPixels(width * height, i));
+        }
+        return bytes.toByteArray();
+    }
+    private static final class DecodeBenchmark {
+        final RfbClient client;
+        long checksum;
+        DecodeBenchmark(byte[] packet, boolean bulkDecode) throws IOException {
+            byte[] greeting = hello(1280, 720);
+            InputStream repeating = new InputStream() {
+                private byte[] current = greeting;
+                private int position;
+                @Override public int read() {
+                    if (position == current.length) { current = packet; position = 0; }
+                    return current[position++] & 255;
+                }
+                @Override public int read(byte[] bytes, int offset, int length) {
+                    if (length == 0) return 0;
+                    if (position == current.length) { current = packet; position = 0; }
+                    int count = Math.min(length, current.length - position);
+                    System.arraycopy(current, position, bytes, offset, count); position += count; return count;
+                }
+            };
+            client = new RfbClient(repeating, OutputStream.nullOutputStream(), new RfbClient.Screen() {
+                public void resize(int width, int height) { }
+                public void pixels(int x, int y, int width, int height, int[] values) {
+                    checksum += values[0] + values[width * height - 1];
+                }
+                public void updated() { }
+            }, new DisplayPerformance(), false, bulkDecode);
+            client.handshake();
+        }
+        long run(int count) throws IOException {
+            long started = System.nanoTime();
+            for (int i = 0; i < count; i++) client.readUpdate();
+            return System.nanoTime() - started;
+        }
+    }
+    private static void benchmarkDecode() throws Exception {
+        // Informational host microbenchmark, never a timing assertion or a
+        // substitute for ART/device FPS and thermal measurements. Alternate
+        // order per round after warmup and report medians to reduce JIT noise.
+        int rounds = 7, samples = 150;
+        for (int workload = 0; workload < 3; workload++) {
+            byte[] packet = benchmarkFrame(workload);
+            DecodeBenchmark baseline = new DecodeBenchmark(packet, false), bulk = new DecodeBenchmark(packet, true);
+            baseline.run(350); bulk.run(350);
+            long[] original = new long[rounds], candidate = new long[rounds];
+            for (int round = 0; round < rounds; round++) {
+                if (round % 2 == 0) { original[round] = baseline.run(samples); candidate[round] = bulk.run(samples); }
+                else { candidate[round] = bulk.run(samples); original[round] = baseline.run(samples); }
+            }
+            check(baseline.checksum == bulk.checksum, "benchmark paths produce identical consumed pixels");
+            Arrays.sort(original); Arrays.sort(candidate);
+            double originalMs = original[rounds/2] / (samples * 1e6), candidateMs = candidate[rounds/2] / (samples * 1e6);
+            System.out.printf(java.util.Locale.ROOT, "%s: scanline %.3f ms/update, bulk %.3f ms/update, %.1f%% lower; %d rounds x %d samples after 350 warmups%n",
+                workload == 0 ? "1280x720 full frame" : workload == 1 ? "43 rectangles 256x64" : "43 rectangles 128x104", originalMs, candidateMs, (1-candidateMs/originalMs)*100, rounds, samples);
+        }
     }
     private static void motionKeepsButtonEdges() {
         List<String> delivered = new ArrayList<>(); List<Runnable> callbacks = new ArrayList<>();
@@ -475,10 +589,15 @@ public final class RfbHostTest {
         check(events(output).equals(Arrays.asList("pointer:600:400:0")), "wire release is idempotent");
     }
     public static void main(String[] args) throws Exception {
-        rawFrameAndInput(); malformedFrames(); compoundInput(); blockedReceiveDoesNotBlockInput();
-        socketReceiveDoesNotBlockInput(false); socketReceiveDoesNotBlockInput(true); motionKeepsButtonEdges();
-        requestPipelinesBlockedPixelPayload(); baselineRequestsFollowCompleteUpdates();
-        resizeRefreshesOnlyOnceAndFetchesNewArea(); nonFramebufferMessagesDoNotRequestUpdates();
+        if (args.length == 1 && args[0].equals("--benchmark")) { benchmarkDecode(); return; }
+        for (boolean bulkDecode : new boolean[]{false, true}) {
+            rawFrameAndInput(bulkDecode); malformedFrames(bulkDecode); variedRectanglesAndResize(bulkDecode);
+            socketReceiveDoesNotBlockInput(false, bulkDecode); socketReceiveDoesNotBlockInput(true, bulkDecode);
+            requestPipelinesBlockedPixelPayload(bulkDecode); baselineRequestsFollowCompleteUpdates(bulkDecode);
+            resizeRefreshesOnlyOnceAndFetchesNewArea(bulkDecode);
+        }
+        compoundInput(); blockedReceiveDoesNotBlockInput(); motionKeepsButtonEdges();
+        nonFramebufferMessagesDoNotRequestUpdates();
         controllerAndSharedInputReachWire();
         System.out.println("Client display RFB/controller/shared-hold/release/motion/performance host fixtures passed");
     }

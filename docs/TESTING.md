@@ -1,3 +1,58 @@
+# EVE Android Launcher 0.1.21: three overhead experiments
+
+## Current 0.1.21 test
+
+The user reports meaningful progress with 0.1.20: lower temperatures and a higher
+sustained FPS rate. Accept that result and keep **Mesa 26.2.4 + Reduce GPU frame
+copies** as the working configuration. No previous baseline rerun is requested.
+The new experiments preserve full RGB, resolution, driver version, shader caches,
+Wine/FEX/DXVK, completion fences, game settings and memory protection.
+
+1. Stop client and server, then install **EVE-Android-Launcher-0.1.21.apk** over
+   the existing app. Keep all data; no uninstall, import, validation or runtime
+   replacement is required.
+2. Keep **Use Adreno GPU rendering**, **Reduce GPU frame copies (experiment)**,
+   **Use newer Turnip driver (26.2.4 experiment)** and the HUD enabled.
+   Keep **30 FPS / queue 1 / display 30**, FSR off and 1280×720. Do not press
+   Restore baseline settings: that button clears the successful driver choices.
+3. Enable the next three switches together:
+   - **Use bulk pixel decoding (experiment)**: decodes full-color display pixels
+     in bounded blocks instead of one scanline at a time.
+   - **Use idle-aware controller updates (experiment)**: stops periodic pointer
+     callbacks when there is no pointer movement; buttons and layer changes
+     remain event-driven.
+   - **Use lighter diagnostic recording (experiment)**: serializes retained
+     samples once and avoids forcing each disposable periodic sample to storage.
+     Sample rates, final reports, process journals and world saves are retained.
+   Leave the older SHM, separate display surface, SYS, A740, early-request,
+   binning and alternate-CPU experiments off.
+4. Use the same station, character, graphics settings, fan and power mode. Start
+   server → SERVER READY → Start EVE client → Open client display. Confirm the
+   HUD still reports Mesa 26.2.4. Allow three minutes for warm-up, then observe
+   two minutes with a static camera/centered sticks and two minutes moving the
+   camera. Record the engine HUD FPS range and starting/ending temperatures.
+5. Check colors/text/transparency and test small stick movements across the
+   deadzone, continuous turns, direction reversals, controller layers, buttons,
+   mouse/touch and text entry. Open/close the gear menu and leave/reopen the
+   display; pointer motion should resume without a jump or stuck direction.
+6. Export while running as **0.1.21-three-overhead**, reopen the display and
+   confirm the same session/controls work. Quit normally, then save/stop server.
+   Return that ZIP with FPS, temperatures, stutter/input delay and any faults.
+
+The normal CI build rebuilds native assets from the unchanged source pins; the
+resulting bytes may differ. This is one batch of three independent experiments,
+not a controlled attribution
+of each switch. No specific FPS/temperature gain is promised. If the batch
+regresses, stop and disable these three switches to recover the accepted setup.
+A display/color fault can be isolated by disabling bulk decoding; a controller
+fault by disabling idle-aware updates. Export a crash/startup failure immediately
+before restarting. No data deletion is needed. Display-update rate is not engine
+FPS. In lighter recording mode an abrupt device power loss may lose the latest
+disposable performance sample; world/account data and process ownership records
+retain their original durability.
+
+---
+
 # EVE Android Launcher 0.1.20: one newer Turnip driver experiment
 
 ## Current 0.1.20 test

@@ -16,6 +16,9 @@ final class DisplayPerformance {
     private final Object receiveLock = new Object();
     private long readingStarted;
     private volatile String updateRequestPolicy = "after-complete-with-resize-refresh";
+    volatile boolean bulkPixelDecode, idleControllerTicks;
+    private volatile String pixelDecoderPolicy = "scanline";
+    void decoderPolicy(boolean bulkDecode) { pixelDecoderPolicy = bulkDecode ? "bulk-little-endian-64k" : "scanline"; }
     final AtomicLong width = new AtomicLong(), height = new AtomicLong();
     final AtomicLong socketBytes = new AtomicLong(), socketReads = new AtomicLong(), socketNanos = new AtomicLong();
     final AtomicLong updates = new AtomicLong(), rectangles = new AtomicLong(), pixels = new AtomicLong();
@@ -82,6 +85,9 @@ final class DisplayPerformance {
     String json(boolean connected) {
         StringBuilder out = new StringBuilder(1024).append("{\n  \"format\": 1,\n  \"connection_id\": ").append(id)
             .append(",\n  \"active\": ").append(connected);
+        out.append(",\n  \"bulk_pixel_decode_requested\": ").append(bulkPixelDecode);
+        out.append(",\n  \"idle_controller_ticks_requested\": ").append(idleControllerTicks);
+        out.append(",\n  \"pixel_decoder_policy\": \"").append(pixelDecoderPolicy).append('"');
         number(out, "elapsed_ms", (sampleTime() - started) / 1000000);
         number(out, "width", width.get()); number(out, "height", height.get());
         number(out, "socket_bytes", socketBytes.get()); number(out, "socket_reads", socketReads.get());

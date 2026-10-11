@@ -9,4 +9,4 @@ if command -v javac >/dev/null 2>&1; then
 else
     java --module jdk.compiler/com.sun.tools.javac.Main --release 17 -d "$task_build" "${task_sources[@]}"
 fi
-java -cp "$task_build" io.github.russianranger.eve.RfbHostTest
+java -cp "$task_build" io.github.russianranger.eve.RfbHostTest "$@"

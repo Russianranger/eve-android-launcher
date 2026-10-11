@@ -30,7 +30,7 @@ final class ClientRuntime {
     private static final long MAX_ARCHIVE = 160L * 1024 * 1024 * 1024;
     private static final long MIN_FREE_MEMORY = 1024L * 1024 * 1024;
     private static final List<String> PERFORMANCE_OPTIONS = Arrays.asList("early-display-requests", "disable-concurrent-binning",
-            "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface", "mesa262-driver");
+            "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface", "mesa262-driver", "bulk-pixel-decode", "idle-controller-ticks", "lean-diagnostics");
     private static final List<String> DRIVER_OPTIONS = Arrays.asList("a740-pc-mode", "shm-presentation", "mesa262-driver");
     private static final String MESA262_PROBE_SOURCE_SHA256 = "bb96b8e0721e167d20d8b15e433d180b79447b0bdb8f85dfaa614aa867c09d37";
     private final Context context;
@@ -75,6 +75,9 @@ final class ClientRuntime {
     boolean sysmemRendering() { return renderer().equals("turnip-dxvk") && performanceOption("sysmem-rendering"); }
     boolean shmPresentation() { return renderer().equals("turnip-dxvk") && performanceOption("shm-presentation"); }
     boolean separateDisplaySurface() { return performanceOption("separate-display-surface"); }
+    boolean bulkPixelDecode() { return performanceOption("bulk-pixel-decode"); }
+    boolean idleControllerTicks() { return performanceOption("idle-controller-ticks"); }
+    boolean leanDiagnostics() { return performanceOption("lean-diagnostics"); }
     boolean mesa262Driver() { return renderer().equals("turnip-dxvk") && performanceOption("mesa262-driver"); }
 
     boolean performanceOption(String key) {
@@ -110,12 +113,12 @@ final class ClientRuntime {
         String caps = (software ? "Saved GPU caps: " : profile.equals("responsive") ? "Baseline caps: " : "Selected caps: ")
                 + "render " + render + " FPS · queue " + queue + (queue == 1 ? " frame" : " frames") + " · display " + display + " FPS";
         String[] labels = {"Early display requests", "Concurrent binning disabled", "Alternate CPU load instructions",
-                "A740 driver", "Reduce GPU frame copies", "Direct GPU rendering", "Shared-memory frame transport", "Separate display surface", "Newer Turnip driver (26.2.4)"};
+                "A740 driver", "Reduce GPU frame copies", "Direct GPU rendering", "Shared-memory frame transport", "Separate display surface", "Newer Turnip driver (26.2.4)", "Bulk pixel decoding", "Idle-aware controller updates", "Lighter diagnostic recording"};
         List<String> selected = new ArrayList<>();
         for (int index = 0; index < PERFORMANCE_OPTIONS.size(); index++) {
             String key = PERFORMANCE_OPTIONS.get(index);
             if (performanceOption(key)) selected.add(labels[index] + (software
-                    ? key.equals("early-display-requests") || key.equals("separate-display-surface") ? " (active)" : " (inactive in software)" : ""));
+                    ? key.equals("early-display-requests") || key.equals("separate-display-surface") || key.equals("bulk-pixel-decode") || key.equals("idle-controller-ticks") || key.equals("lean-diagnostics") ? " (active)" : " (inactive in software)" : ""));
         }
         return caps + "\n" + (software ? "Saved experiments: " : "Selected experiments: ")
                 + (selected.isEmpty() ? "none" : String.join(", ", selected));
@@ -151,6 +154,7 @@ final class ClientRuntime {
                 .put("sysmemRendering", sysmemRendering()).put("requestedSysmemRendering", performanceOption("sysmem-rendering"))
                 .put("shmPresentation", shmPresentation()).put("requestedShmPresentation", performanceOption("shm-presentation"))
                 .put("separateDisplaySurface", separateDisplaySurface())
+                .put("bulkPixelDecode", bulkPixelDecode()).put("idleControllerTicks", idleControllerTicks()).put("leanDiagnostics", leanDiagnostics())
                 .put("mesa262Driver", mesa262Driver()).put("requestedMesa262Driver", performanceOption("mesa262-driver"))
                 .put("supported_build", 3396210).put("client_launch_qualified", false)
                 .put("phase", "missing_client").put("message", "Import the complete EVE build 3396210 shared cache first");
@@ -366,6 +370,7 @@ final class ClientRuntime {
                 .put("sysmemRendering", sysmemRendering()).put("requestedSysmemRendering", performanceOption("sysmem-rendering"))
                 .put("shmPresentation", shmPresentation()).put("requestedShmPresentation", performanceOption("shm-presentation"))
                 .put("separateDisplaySurface", separateDisplaySurface())
+                .put("bulkPixelDecode", bulkPixelDecode()).put("idleControllerTicks", idleControllerTicks()).put("leanDiagnostics", leanDiagnostics())
                 .put("mesa262Driver", mesa262Driver()).put("requestedMesa262Driver", performanceOption("mesa262-driver"))
                 .put("login_qualified", false).put("graphics_qualified", false);
         RuntimeManager.text(new File(manager.clientState, "run/status.json"), pending.toString());
@@ -397,6 +402,7 @@ final class ClientRuntime {
                 "--content", "/client", "--state", "/client-state", "--server-state", "/server-state", "--graphics-mode", graphicsMode,
                 "--performance-profile", performanceProfile));
         if (diagnosticHud) launch.add("--diagnostic-hud");
+        if (leanDiagnostics()) launch.add("--lean-diagnostics");
         if (disableConcurrentBinning()) launch.add("--disable-concurrent-binning");
         if (disableLrcpc2()) launch.add("--disable-lrcpc2");
         if (graphicsMode.equals("turnip-dxvk") && a740PcMode()) launch.add("--a740-pc-mode");

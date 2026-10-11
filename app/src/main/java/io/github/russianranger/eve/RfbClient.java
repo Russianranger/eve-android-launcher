@@ -1,6 +1,9 @@
 package io.github.russianranger.eve;
 
 import java.io.*;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.IntBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.Set;
@@ -17,9 +20,14 @@ final class RfbClient {
     private final Screen screen;
     private final DisplayPerformance performance;
     private final boolean earlyDisplayRequests;
+    private final boolean bulkDecode;
     private volatile int width, height;
     private int[] pixelBuffer = new int[0];
     private byte[] rowBuffer = new byte[0];
+    // Independent of framebuffer size; retained only when the experiment is used.
+    private static final int DECODE_CHUNK_BYTES = 65536;
+    private byte[] chunkBuffer;
+    private IntBuffer chunkPixels;
     private final Set<Integer> heldKeys = new HashSet<>();
     private int pointerX, pointerY;
 
@@ -30,9 +38,14 @@ final class RfbClient {
         this(input, output, screen, performance, false);
     }
     RfbClient(InputStream input, OutputStream output, Screen screen, DisplayPerformance performance, boolean earlyDisplayRequests) {
+        this(input, output, screen, performance, earlyDisplayRequests, false);
+    }
+    RfbClient(InputStream input, OutputStream output, Screen screen, DisplayPerformance performance, boolean earlyDisplayRequests, boolean bulkDecode) {
         this.performance = performance;
         this.earlyDisplayRequests = earlyDisplayRequests;
+        this.bulkDecode = bulkDecode;
         performance.requestPolicy(earlyDisplayRequests);
+        performance.decoderPolicy(bulkDecode);
         in = new DataInputStream(new BufferedInputStream(performance.measure(input), 65536));
         out = new DataOutputStream(new BufferedOutputStream(output, 8192));
         this.screen = screen;
@@ -109,12 +122,31 @@ final class RfbClient {
             if (encoding != 0) throw new IOException("Unsupported display encoding: " + encoding);
             int length = w * h;
             if (pixelBuffer.length < length) pixelBuffer = new int[length];
-            if (rowBuffer.length < w * 4) rowBuffer = new byte[w * 4];
-            for (int row = 0; row < h; row++) {
-                in.readFully(rowBuffer, 0, w * 4);
-                for (int column = 0; column < w; column++) {
-                    int at = column * 4;
-                    pixelBuffer[row * w + column] = 0xff000000 | ((rowBuffer[at + 2] & 255) << 16) | ((rowBuffer[at + 1] & 255) << 8) | (rowBuffer[at] & 255);
+            if (bulkDecode) {
+                if (chunkBuffer == null) {
+                    chunkBuffer = new byte[DECODE_CHUNK_BYTES];
+                    chunkPixels = ByteBuffer.wrap(chunkBuffer).order(ByteOrder.LITTLE_ENDIAN).asIntBuffer();
+                }
+                // A chunk may cross scanlines (including odd widths). All wire
+                // pixels are four bytes, so no partial pixel spans chunks.
+                for (int offset = 0; offset < length;) {
+                    int countPixels = Math.min(length - offset, DECODE_CHUNK_BYTES / 4);
+                    in.readFully(chunkBuffer, 0, countPixels * 4);
+                    chunkPixels.position(0);
+                    chunkPixels.get(pixelBuffer, offset, countPixels);
+                    int end = offset + countPixels;
+                    // The server's fourth byte is unused, never trusted alpha.
+                    for (int at = offset; at < end; at++) pixelBuffer[at] |= 0xff000000;
+                    offset = end;
+                }
+            } else {
+                if (rowBuffer.length < w * 4) rowBuffer = new byte[w * 4];
+                for (int row = 0; row < h; row++) {
+                    in.readFully(rowBuffer, 0, w * 4);
+                    for (int column = 0; column < w; column++) {
+                        int at = column * 4;
+                        pixelBuffer[row * w + column] = 0xff000000 | ((rowBuffer[at + 2] & 255) << 16) | ((rowBuffer[at + 1] & 255) << 8) | (rowBuffer[at] & 255);
+                    }
                 }
             }
             long publishing = System.nanoTime();

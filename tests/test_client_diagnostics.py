@@ -470,6 +470,121 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(self.history.samples[-1]["clientThreads"]["unavailable"], 1)
         self.assertGreater(self.history.report["writeFailures"], 0)
 
+    def test_lean_periodic_writes_skip_fsync_but_stopping_and_terminal_are_durable(self):
+        self.history.lean_writes = True
+        self.task()
+        self.history.begin()
+        with mock.patch.object(os, "fsync") as sync:
+            self.history.sample(self.snapshot(1), {"client": 20}, "starting")
+            self.history.sample(self.snapshot(6), {"client": 20}, "running")
+            self.assertEqual(sync.call_count, 0)
+            self.history.sample(self.snapshot(7), {"client": 20}, "stopping", force=True)
+            self.assertEqual(sync.call_count, 1)
+            self.history.finish("stopped")
+            self.assertEqual(sync.call_count, 2)
+        policy = self.read()["diagnosticWritePolicy"]
+        self.assertEqual(policy["effectivePolicy"], "cached-samples-terminal-fsync")
+        self.assertTrue(policy["requestedLeanWrites"])
+        self.assertFalse(policy["periodicFsync"])
+        self.assertTrue(policy["terminalFsync"])
+        self.assertEqual(policy["counters"], {"writeAttempts": 4, "sampleSerializations": 3,
+            "fullHistorySerializations": 0, "headerSerializations": 4,
+            "fsyncRequests": 2, "periodicWritesWithoutFsync": 2})
+
+    def test_lean_sampling_and_hardware_cache_cadences_do_not_change(self):
+        self.history.lean_writes = True
+        self.task()
+        self.history.begin()
+        with mock.patch.object(diagnostics, "hardware_metrics", wraps=diagnostics.hardware_metrics) as hardware, \
+                mock.patch.object(diagnostics, "cache_metadata", wraps=diagnostics.cache_metadata) as cache:
+            for at in (1, 2, 6, 7, 11):
+                self.history.sample(self.snapshot(at), {"client": 20}, "running")
+            self.assertEqual(len(self.read()["samples"]), 3)
+            self.assertEqual(hardware.call_count, 2)
+            self.assertEqual(cache.call_count, 2)
+
+    def test_lean_cached_encodings_preserve_samples_and_exact_byte_and_count_bounds(self):
+        self.history.lean_writes = True
+        self.history.begin()
+        expected = []
+        # Both a sample-count eviction and later byte evictions must remove the
+        # matching cached bytes; non-ASCII values exercise UTF-8/JSON accounting.
+        for index in range(diagnostics.SAMPLE_LIMIT + 5):
+            sample = {"at": index, "phase": "running", "value": "\u00e9\U0001f680" * 8}
+            expected.append(sample)
+            self.history._append_sample(sample)
+        self.history._write()
+        self.assertEqual(self.read()["samples"], expected[-diagnostics.SAMPLE_LIMIT:])
+        self.assertEqual(self.history.encoded_sample_bytes, sum(map(len, self.history.encoded_samples)))
+        self.history.file_limit = 2000
+        self.history.finish("failed")
+        report = self.read()
+        self.assertEqual(report["phase"], "failed")
+        self.assertLessEqual(self.history.path.stat().st_size, 2000)
+        self.assertGreater(report["samplesDroppedForBytes"], 0)
+        self.assertEqual(report["samples"], expected[-len(report["samples"]):])
+        self.assertEqual(len(self.history.samples), len(self.history.encoded_samples))
+        self.assertEqual(self.history.encoded_sample_bytes, sum(map(len, self.history.encoded_samples)))
+        self.assertEqual(report["diagnosticWritePolicy"]["counters"]["sampleSerializations"], len(expected))
+        self.assertEqual(report["diagnosticWritePolicy"]["counters"]["fullHistorySerializations"], 0)
+        self.history.begin()
+        self.assertEqual(len(self.history.encoded_samples), 0)
+        self.assertEqual(self.history.encoded_sample_bytes, 0)
+
+    def test_lean_byte_eviction_does_not_serialize_historical_sample_objects(self):
+        self.history.lean_writes = True
+        self.history.file_limit = 2000
+        self.history.begin()
+        with mock.patch.object(diagnostics.json, "dumps", wraps=json.dumps) as dumps:
+            for at in range(20):
+                self.history._append_sample({"at": at, "payload": "x" * 200})
+                self.history._write()
+        # Sample objects are serialized exactly once. All remaining calls
+        # serialize a report header containing no list of historical samples.
+        sample_calls = [call for call in dumps.call_args_list if "payload" in call.args[0]]
+        self.assertEqual(len(sample_calls), 20)
+        self.assertFalse(any("samples" in call.args[0] for call in dumps.call_args_list))
+        self.assertGreater(self.read()["samplesDroppedForBytes"], 0)
+
+    def test_lean_atomic_failure_preserves_prior_report_and_symlink_target(self):
+        self.history.lean_writes = True
+        self.task()
+        self.history.begin()
+        self.history.sample(self.snapshot(1), {"client": 20}, "running")
+        prior = self.history.path.read_bytes()
+        with mock.patch.object(os, "replace", side_effect=OSError("replace failure")):
+            self.history.sample(self.snapshot(6), {"client": 20}, "running")
+        self.assertEqual(self.history.path.read_bytes(), prior)
+        self.assertEqual(self.history.report["writeFailures"], 1)
+        self.assertEqual(list(self.state.glob(".*.tmp")), [])
+        with mock.patch.object(os, "fsync", side_effect=OSError("terminal sync failure")):
+            self.history.finish("failed")
+        self.assertEqual(self.history.path.read_bytes(), prior)
+        self.assertEqual(self.history.report["writeFailures"], 2)
+        self.assertEqual(list(self.state.glob(".*.tmp")), [])
+        target = self.root / "unchanged"
+        target.write_text("preserve")
+        self.history.path.unlink()
+        self.history.path.symlink_to(target)
+        self.history._write()
+        self.assertEqual(target.read_text(), "preserve")
+        self.history.begin()
+        self.assertFalse(self.history.active)
+
+    def test_lean_tiny_budget_keeps_terminal_marker_without_hardware(self):
+        self.history.lean_writes = True
+        self.history.file_limit = 1400
+        self.task()
+        self.history.begin()
+        with mock.patch.object(diagnostics, "_sysfs_text", return_value=(None, "permission-denied")):
+            self.history.sample(self.snapshot(1), {"client": 20}, "running")
+        self.history.finish("failed")
+        report = self.read()
+        self.assertLessEqual(self.history.path.stat().st_size, 1400)
+        self.assertEqual(report["phase"], "failed")
+        self.assertTrue(report["latestHardwareDroppedForBytes"])
+        self.assertEqual(self.history.encoded_sample_bytes, 0)
+
     def test_runtime_status_reuses_filtered_snapshot_and_terminal_keeps_live_history(self):
         runtime = client_runtime.Runtime(client_runtime.Settings(state=self.state))
         process = mock.Mock(pid=20)

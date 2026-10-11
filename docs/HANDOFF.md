@@ -1,5 +1,35 @@
 # EVE Android Launcher handoff
 
+## Current 0.1.21: three reversible overhead experiments
+
+Accept the user's meaningful 0.1.20 improvement: lower temperatures and higher
+sustained observed FPS. See [current evidence](DEVICE-20261010-MESA262.md).
+Mesa 26.2.4 + linear remains the working configuration; no old baseline repeat.
+
+Add three default-off independent choices: `bulk-pixel-decode` (Android raw RFB
+block decoding), `idle-controller-ticks` (event-woken pointer updates), and
+`lean-diagnostics` (bounded cached sample serialization and no periodic sample
+fsync). Old paths remain selectable. Only lean diagnostics is a guest CLI flag;
+the two Android-only options never change graphics environment or assets.
+Keep full RGB, fences, resolution, compare-framebuffer policy, caps, driver
+selection, runtime/server data and ownership/memory protections intact.
+
+Follow only the new [one-batch physical test](TESTING.md). Source-level overhead
+reductions and host benchmark results do not establish Thor FPS/heat benefit.
+Local implementation commit: `e0919ac` (this documentation follow-up records
+verification). All 225 backend tests passed; the 31 diagnostic cases, RFB display
+fixtures, 15,902 controller assertions, 19 archive fixtures and ARM64EC parser
+checks passed. Python compilation and diff whitespace checks passed. Independent
+review found no code blockers. Android API 33/35 tests, signed APK build and
+content/signature checks remain required in CI; no 0.1.21 APK is delivered yet.
+
+The user explicitly approved pushing the prepared changes and future changes to
+this repository on 2026-10-11 UTC. That supersedes the earlier approval-review
+block. Use the connected GitHub app if terminal Git credentials are unavailable.
+Publish on `codex/wine-localhost-tls` and monitor the normal workflow through
+qualification. Do not present host measurements as device FPS/temperature gains.
+
+
 ## Current 0.1.20 continuation: separate pristine Mesa 26.2.4 driver
 
 Accept the user's neutral 0.1.19 FPS result and temperatures rising into the

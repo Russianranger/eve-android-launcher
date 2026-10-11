@@ -130,7 +130,7 @@ public final class ClientDisplayActivity extends Activity {
                 case "layer": showLayer(); break;
                 case "capture": if (!event.optBoolean("down")) gameInput.releaseAll(); break;
             }
-        });
+        }, new ClientRuntime(this).idleControllerTicks());
         layerStatus.setText("Layer " + controller.layerLabel());
         performanceFile = new File(RuntimeManager.get(this).clientState, "logs/display-performance.json");
         diagnostics.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
@@ -176,9 +176,15 @@ public final class ClientDisplayActivity extends Activity {
             boolean ended = !measured.active.get();
             if (measured.id < savedPerformanceId || (measured.id == savedPerformanceId && savedPerformanceEnded && !ended)) return;
             try {
-                RuntimeManager.text(performanceFile, measured.json(!ended));
+                org.json.JSONObject report = new org.json.JSONObject(measured.json(!ended));
+                if (controller != null) {
+                    report.put("controller_tick_callbacks", controller.pointerTickCallbacks());
+                    report.put("controller_tick_scheduled", controller.pointerTickScheduled());
+                    report.put("controller_tick_scope", "display-activity-lifetime");
+                }
+                RuntimeManager.text(performanceFile, report.toString());
                 savedPerformanceId = measured.id; savedPerformanceEnded = ended;
-            } catch (IOException ignored) { } // Diagnostics must not interrupt display or input.
+            } catch (IOException | org.json.JSONException ignored) { } // Diagnostics must not interrupt display or input.
         }
     }
     private void finishPerformance(DisplayPerformance measured) {
@@ -326,6 +332,8 @@ public final class ClientDisplayActivity extends Activity {
                 attempt.connect(new InetSocketAddress("127.0.0.1", 5907), 3000);
                 attempt.setTcpNoDelay(true); attempt.setSoTimeout(15000);
                 measured = new DisplayPerformance();
+                measured.bulkPixelDecode = new ClientRuntime(this).bulkPixelDecode();
+                measured.idleControllerTicks = new ClientRuntime(this).idleControllerTicks();
                 RfbClient client = new RfbClient(attempt.getInputStream(), attempt.getOutputStream(), new RfbClient.Screen() {
                     @Override public void resize(int width, int height) { if (generation == token) {
                         synchronized (screenLock) { if (generation != token || displayDestroyed) return; screen.resize(width, height); }
@@ -339,7 +347,7 @@ public final class ClientDisplayActivity extends Activity {
                         synchronized (screenLock) { if (generation != token || displayDestroyed) return; screen.updated(); }
                         if (!receivedFrame) { receivedFrame = true; displayStatus(token, "Local display connected · touch to click · use Text for login fields"); }
                     }
-                }, measured, new ClientRuntime(this).earlyDisplayRequests());
+                }, measured, new ClientRuntime(this).earlyDisplayRequests(), new ClientRuntime(this).bulkPixelDecode());
                 sessionClient = client;
                 client.handshake();
                 if (!visible || generation != token) break;

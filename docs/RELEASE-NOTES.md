@@ -1,3 +1,14 @@
+# 0.1.21 — three overhead experiments
+
+Build on the successful Mesa 26.2.4 + linear device result. Add independent,
+default-off bulk display decoding, idle-aware controller scheduling and lighter
+diagnostic recording. Keep all full-color graphics, existing assets, caps,
+cache/runtime data, synchronization and memory protection. Update in place.
+
+The next physical test enables these three switches together while retaining
+the accepted graphics settings. Benefit on Thor remains to be measured; old
+paths are available by disabling the new switches. See TESTING.md.
+
 # EVE Android Launcher 0.1.20 — optional newer Turnip driver
 
 The separate Android display surface activated successfully but did not improve

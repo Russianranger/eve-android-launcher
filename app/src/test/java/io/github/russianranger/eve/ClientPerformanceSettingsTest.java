@@ -49,6 +49,10 @@ import static org.junit.Assert.*;
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 public final class ClientPerformanceSettingsTest {
     private static final String MESA262_LABEL = "Use newer Turnip driver (26.2.4 experiment)";
+    private static final String[] EFFICIENCY_OPTIONS = {"bulk-pixel-decode", "idle-controller-ticks", "lean-diagnostics"};
+    private static final String[] EFFICIENCY_LABELS = {"Use bulk pixel decoding (experiment)",
+            "Use idle-aware controller updates (experiment)", "Use lighter diagnostic recording (experiment)"};
+    private static final String[] EFFICIENCY_STATUS_KEYS = {"bulkPixelDecode", "idleControllerTicks", "leanDiagnostics"};
     private Context context;
     private SharedPreferences preferences;
 
@@ -141,7 +145,7 @@ public final class ClientPerformanceSettingsTest {
             runtime.setPerformanceProfile(profile);
             assertEquals(profile, new ClientRuntime(context).performanceProfile());
         }
-        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface", "mesa262-driver"}) {
+        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface", "mesa262-driver", "bulk-pixel-decode", "idle-controller-ticks", "lean-diagnostics"}) {
             runtime.setPerformanceOption(option, true);
             assertTrue(new ClientRuntime(context).performanceOption(option));
             RuntimeService.busy = true;
@@ -219,6 +223,92 @@ public final class ClientPerformanceSettingsTest {
         assertTrue(new ClientRuntime(context).mesa262Driver());
         restored.setPerformanceOption("mesa262-driver", false);
         assertFalse(new ClientRuntime(context).mesa262Driver());
+    }
+
+    @Test public void efficiencyOptionsDefaultOffAndPersistIndependentlyWithoutReplacingAcceptedDriver() throws Exception {
+        ClientRuntime runtime = new ClientRuntime(context);
+        for (int index = 0; index < EFFICIENCY_OPTIONS.length; index++) {
+            assertFalse(runtime.performanceOption(EFFICIENCY_OPTIONS[index]));
+            assertFalse(runtime.status().getBoolean(EFFICIENCY_STATUS_KEYS[index]));
+        }
+        assertFalse(runtime.bulkPixelDecode());
+        assertFalse(runtime.idleControllerTicks());
+        assertFalse(runtime.leanDiagnostics());
+        runtime.setPerformanceOption("linear-presentation", true);
+        runtime.setPerformanceOption("mesa262-driver", true);
+        runtime.setDiagnosticHud(true);
+        for (int chosen = 0; chosen < EFFICIENCY_OPTIONS.length; chosen++) {
+            runtime.setPerformanceOption(EFFICIENCY_OPTIONS[chosen], true);
+            ClientRuntime restored = new ClientRuntime(context);
+            for (int index = 0; index < EFFICIENCY_OPTIONS.length; index++) {
+                assertEquals(index <= chosen, restored.performanceOption(EFFICIENCY_OPTIONS[index]));
+                assertEquals(index <= chosen, restored.status().getBoolean(EFFICIENCY_STATUS_KEYS[index]));
+            }
+            assertTrue(restored.mesa262Driver());
+            assertTrue(restored.linearPresentation());
+            assertFalse(restored.a740PcMode());
+            assertFalse(restored.shmPresentation());
+            assertTrue(restored.diagnosticHud());
+            assertEquals("responsive", restored.performanceProfile());
+        }
+        assertTrue(runtime.bulkPixelDecode());
+        assertTrue(runtime.idleControllerTicks());
+        assertTrue(runtime.leanDiagnostics());
+        for (int disabled = 0; disabled < EFFICIENCY_OPTIONS.length; disabled++) {
+            runtime.setPerformanceOption(EFFICIENCY_OPTIONS[disabled], false);
+            ClientRuntime restored = new ClientRuntime(context);
+            for (int index = 0; index < EFFICIENCY_OPTIONS.length; index++)
+                assertEquals(index > disabled, restored.performanceOption(EFFICIENCY_OPTIONS[index]));
+            assertTrue(restored.mesa262Driver());
+            assertTrue(restored.linearPresentation());
+        }
+    }
+
+    @Test public void efficiencyOptionsWorkWithEitherRendererAndOnlyDiagnosticsChangesGuestArguments() throws Exception {
+        ClientRuntime runtime = new ClientRuntime(context);
+        runtime.setPerformanceOption("linear-presentation", true);
+        runtime.setPerformanceOption("mesa262-driver", true);
+        for (boolean adreno : new boolean[]{true, false}) {
+            runtime.useAdreno(adreno);
+            String renderer = adreno ? "turnip-dxvk" : "software";
+            List<String> baseline = runtime.launchCommand(renderer, "responsive", true);
+            runtime.setPerformanceOption("bulk-pixel-decode", true);
+            runtime.setPerformanceOption("idle-controller-ticks", true);
+            assertEquals("Android display and input options do not alter the guest launch", baseline,
+                    runtime.launchCommand(renderer, "responsive", true));
+            runtime.setPerformanceOption("lean-diagnostics", true);
+            ClientRuntime restored = new ClientRuntime(context);
+            assertTrue(restored.bulkPixelDecode());
+            assertTrue(restored.idleControllerTicks());
+            assertTrue(restored.leanDiagnostics());
+            for (String key : EFFICIENCY_STATUS_KEYS) assertTrue(restored.status().getBoolean(key));
+            List<String> launch = new ArrayList<>(restored.launchCommand(renderer, "responsive", true));
+            assertTrue(launch.remove("--lean-diagnostics"));
+            assertEquals("Only the backend diagnostic mode changes", baseline, launch);
+            String suffix = adreno ? "" : " (active)";
+            assertTrue(restored.performanceSummary().endsWith("Bulk pixel decoding" + suffix
+                    + ", Idle-aware controller updates" + suffix + ", Lighter diagnostic recording" + suffix));
+            assertTrue(restored.performanceOption("mesa262-driver"));
+            assertEquals(adreno, restored.mesa262Driver());
+            assertEquals(adreno, restored.linearPresentation());
+            for (String option : EFFICIENCY_OPTIONS) runtime.setPerformanceOption(option, false);
+            assertEquals(baseline, runtime.launchCommand(renderer, "responsive", true));
+        }
+    }
+
+    @Test public void invalidEfficiencyPreferencesFallBackWithoutChangingAcceptedDriver() throws Exception {
+        SharedPreferences.Editor setup = preferences.edit().putBoolean("mesa262-driver", true)
+                .putBoolean("linear-presentation", true);
+        for (String option : EFFICIENCY_OPTIONS) setup.putString(option, "true");
+        assertTrue(setup.commit());
+        ClientRuntime runtime = new ClientRuntime(context);
+        assertFalse(runtime.bulkPixelDecode());
+        assertFalse(runtime.idleControllerTicks());
+        assertFalse(runtime.leanDiagnostics());
+        for (String key : EFFICIENCY_STATUS_KEYS) assertFalse(runtime.status().getBoolean(key));
+        assertFalse(runtime.launchCommand("turnip-dxvk", "responsive", true).contains("--lean-diagnostics"));
+        assertTrue(runtime.mesa262Driver());
+        assertTrue(runtime.linearPresentation());
     }
 
     @Test public void invalidMesa262PreferenceIsIgnoredWithoutChangingExistingSelections() throws Exception {
@@ -376,6 +466,7 @@ public final class ClientPerformanceSettingsTest {
         runtime.setPerformanceOption("sysmem-rendering", true);
         runtime.setPerformanceOption("separate-display-surface", true);
         runtime.setPerformanceOption("a740-pc-mode", true);
+        for (String option : EFFICIENCY_OPTIONS) runtime.setPerformanceOption(option, true);
         List<Map<String, ?>> snapshots = new ArrayList<>();
         SharedPreferences.OnSharedPreferenceChangeListener observe = (changed, key) -> snapshots.add(changed.getAll());
         preferences.registerOnSharedPreferenceChangeListener(observe);
@@ -394,6 +485,7 @@ public final class ClientPerformanceSettingsTest {
                     assertEquals("render60", snapshot.get("performance-profile-v2"));
                     assertEquals(true, snapshot.get("diagnostic-hud"));
                     assertEquals(true, snapshot.get("separate-display-surface"));
+                    for (String option : EFFICIENCY_OPTIONS) assertEquals(true, snapshot.get(option));
                 }
                 ClientRuntime restored = new ClientRuntime(context);
                 for (String driver : driverOptions) assertEquals(driver.equals(chosen), restored.performanceOption(driver));
@@ -418,7 +510,7 @@ public final class ClientPerformanceSettingsTest {
     }
 
     @Test public void explicitBaselineRestoreClearsEveryExperimentTogetherAndPreservesOtherSettings() {
-        String[] options = {"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface", "mesa262-driver"};
+        String[] options = {"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface", "mesa262-driver", "bulk-pixel-decode", "idle-controller-ticks", "lean-diagnostics"};
         for (boolean adreno : new boolean[]{true, false}) {
             SharedPreferences.Editor setup = preferences.edit().putString("performance-profile-v2", "throughput")
                     .putBoolean("use-adreno", adreno).putBoolean("diagnostic-hud", true).putString("unrelated-setting", "preserved");
@@ -466,7 +558,7 @@ public final class ClientPerformanceSettingsTest {
     @Test public void baselineCapsKeepExperimentsVisibleUntilExplicitRestoreUpdatesAllControls() {
         ClientRuntime runtime = new ClientRuntime(context);
         runtime.setPerformanceProfile("render60"); runtime.setDiagnosticHud(true);
-        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface", "mesa262-driver"})
+        for (String option : new String[]{"early-display-requests", "disable-concurrent-binning", "disable-lrcpc2", "a740-pc-mode", "linear-presentation", "sysmem-rendering", "shm-presentation", "separate-display-surface", "mesa262-driver", "bulk-pixel-decode", "idle-controller-ticks", "lean-diagnostics"})
             runtime.setPerformanceOption(option, true);
         ActivityController<MainActivity> owned = Robolectric.buildActivity(MainActivity.class).create().start().resume().visible();
         try {
@@ -483,7 +575,7 @@ public final class ClientPerformanceSettingsTest {
             assertEquals(0, profile(root).getSelectedItemPosition());
             for (String label : new String[]{"Request next display frame early", "Disable concurrent binning (Adreno experiment)",
                     "Use alternate CPU load instructions (FEX experiment)", "Use A740 driver experiment", "Reduce GPU frame copies (experiment)",
-                    "Use direct GPU rendering (experiment)", "Use shared-memory frame transport (experiment)", "Use separate display surface (experiment)", MESA262_LABEL})
+                    "Use direct GPU rendering (experiment)", "Use shared-memory frame transport (experiment)", "Use separate display surface (experiment)", MESA262_LABEL, EFFICIENCY_LABELS[0], EFFICIENCY_LABELS[1], EFFICIENCY_LABELS[2]})
                 assertFalse("Reset immediately clears " + label, checkBox(root, label).isChecked());
             assertEquals("Baseline caps: render 30 FPS · queue 1 frame · display 30 FPS\nSelected experiments: none",
                     performanceSummary(root).getText().toString());
@@ -717,6 +809,11 @@ public final class ClientPerformanceSettingsTest {
         catch (IllegalStateException expected) { }
         try { runtime.setPerformanceOption("mesa262-driver", true); fail("Active client newer driver changed"); }
         catch (IllegalStateException expected) { }
+        for (String option : EFFICIENCY_OPTIONS) {
+            try { runtime.setPerformanceOption(option, true); fail("Active client efficiency option changed: " + option); }
+            catch (IllegalStateException expected) { }
+            assertFalse(runtime.performanceOption(option));
+        }
         assertEquals("responsive", runtime.performanceProfile());
         assertFalse(runtime.diagnosticHud());
         assertFalse(runtime.a740PcMode());
@@ -775,6 +872,43 @@ public final class ClientPerformanceSettingsTest {
             assertSame(startServer, root.findViewWithTag("start-server"));
             assertSame(startClient, root.findViewWithTag("start-client"));
             assertTopStart(startServer); assertTopStart(startClient);
+        } finally { owned.pause().stop().destroy(); }
+    }
+
+    @Test public void launcherEfficiencyControlsPersistAndReportSelectionsWithoutChangingDriver() throws Exception {
+        ClientRuntime runtime = new ClientRuntime(context);
+        runtime.setPerformanceOption("linear-presentation", true);
+        runtime.setPerformanceOption("mesa262-driver", true);
+        ActivityController<MainActivity> owned = Robolectric.buildActivity(MainActivity.class).create().start().resume().visible();
+        try {
+            View root = owned.get().findViewById(android.R.id.content);
+            button(root, "Client").performClick(); idle();
+            for (String label : EFFICIENCY_LABELS) {
+                assertFalse(checkBox(root, label).isChecked());
+                assertTrue(checkBox(root, label).isEnabled());
+                checkBox(root, label).performClick();
+                assertTrue(checkBox(root, label).isChecked());
+                assertTrue(checkBox(root, MESA262_LABEL).isChecked());
+                assertTrue(checkBox(root, "Reduce GPU frame copies (experiment)").isChecked());
+            }
+            assertTrue(performanceSummary(root).getText().toString().endsWith(
+                    "Bulk pixel decoding, Idle-aware controller updates, Lighter diagnostic recording"));
+            button(root, "Server").performClick(); idle();
+            button(root, "Client").performClick(); idle();
+            for (int index = 0; index < EFFICIENCY_OPTIONS.length; index++) {
+                assertTrue(checkBox(root, EFFICIENCY_LABELS[index]).isChecked());
+                assertTrue(new ClientRuntime(context).status().getBoolean(EFFICIENCY_STATUS_KEYS[index]));
+            }
+            checkBox(root, EFFICIENCY_LABELS[1]).performClick();
+            assertTrue(new ClientRuntime(context).bulkPixelDecode());
+            assertFalse(new ClientRuntime(context).idleControllerTicks());
+            assertTrue(new ClientRuntime(context).leanDiagnostics());
+            assertTrue(checkBox(root, EFFICIENCY_LABELS[0]).isChecked());
+            assertFalse(checkBox(root, EFFICIENCY_LABELS[1]).isChecked());
+            assertTrue(checkBox(root, EFFICIENCY_LABELS[2]).isChecked());
+            assertTrue(checkBox(root, MESA262_LABEL).isChecked());
+            assertTrue(performanceSummary(root).getText().toString().endsWith(
+                    "Bulk pixel decoding, Lighter diagnostic recording"));
         } finally { owned.pause().stop().destroy(); }
     }
 
@@ -837,6 +971,7 @@ public final class ClientPerformanceSettingsTest {
             assertTrue(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
             assertTrue(checkBox(root, "Use shared-memory frame transport (experiment)").isEnabled());
             assertTrue(checkBox(root, MESA262_LABEL).isEnabled());
+            for (String label : EFFICIENCY_LABELS) assertTrue(checkBox(root, label).isEnabled());
             RuntimeService.busy = true; refresh();
             assertFalse(profile(root).isEnabled());
             assertFalse(checkBox(root, "Show frame-time and GPU diagnostics").isEnabled());
@@ -848,6 +983,7 @@ public final class ClientPerformanceSettingsTest {
             assertFalse(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
             assertFalse(checkBox(root, "Use shared-memory frame transport (experiment)").isEnabled());
             assertFalse(checkBox(root, MESA262_LABEL).isEnabled());
+            for (String label : EFFICIENCY_LABELS) assertFalse(checkBox(root, label).isEnabled());
             assertFalse(button(root, "Restore baseline settings").isEnabled());
             RuntimeService.busy = false;
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", new LiveProcess());
@@ -859,6 +995,7 @@ public final class ClientPerformanceSettingsTest {
             assertFalse(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
             assertFalse(checkBox(root, "Use shared-memory frame transport (experiment)").isEnabled());
             assertFalse(checkBox(root, MESA262_LABEL).isEnabled());
+            for (String label : EFFICIENCY_LABELS) assertFalse(checkBox(root, label).isEnabled());
             assertFalse(button(root, "Restore baseline settings").isEnabled());
             ReflectionHelpers.setStaticField(ClientRuntime.class, "session", null); refresh();
             checkBox(root, "Use Adreno GPU rendering").performClick();
@@ -870,6 +1007,7 @@ public final class ClientPerformanceSettingsTest {
             assertFalse(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
             assertFalse(checkBox(root, "Use shared-memory frame transport (experiment)").isEnabled());
             assertFalse(checkBox(root, MESA262_LABEL).isEnabled());
+            for (String label : EFFICIENCY_LABELS) assertFalse(checkBox(root, label).isEnabled());
             assertFalse(button(root, "Restore baseline settings").isEnabled());
             checkBox(root, "Use Adreno GPU rendering").performClick();
             assertTrue(profile(root).isEnabled());
@@ -879,6 +1017,7 @@ public final class ClientPerformanceSettingsTest {
             assertTrue(checkBox(root, "Use direct GPU rendering (experiment)").isEnabled());
             assertTrue(checkBox(root, "Use shared-memory frame transport (experiment)").isEnabled());
             assertTrue(checkBox(root, MESA262_LABEL).isEnabled());
+            for (String label : EFFICIENCY_LABELS) assertTrue(checkBox(root, label).isEnabled());
             assertTrue(button(root, "Restore baseline settings").isEnabled());
         } finally {
             RuntimeService.busy = false;

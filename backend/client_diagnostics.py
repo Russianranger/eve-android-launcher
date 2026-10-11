@@ -225,12 +225,14 @@ def cache_metadata(path: Path) -> dict[str, Any]:
 
 class PerformanceHistory:
     def __init__(self, state: Path, caches: tuple[Path, ...], *, proc: Path = Path("/proc"),
-                 sysfs: Path = Path("/sys"), file_limit: int = FILE_LIMIT):
+                 sysfs: Path = Path("/sys"), file_limit: int = FILE_LIMIT,
+                 lean_writes: bool = False):
         self.path = state / "client-performance.json"
         self.caches = caches
         self.proc = proc
         self.sysfs = sysfs
         self.file_limit = file_limit
+        self.lean_writes = bool(lean_writes)
         self.active = False
         self.wrapper_pid: int | None = None
         self.previous_snapshot = None
@@ -241,6 +243,9 @@ class PerformanceHistory:
         self.hardware_time: float | None = None
         self.hardware_report: dict[str, Any] = {}
         self.samples: deque[dict[str, Any]] = deque(maxlen=SAMPLE_LIMIT)
+        self.encoded_samples: deque[bytes] = deque()
+        self.encoded_sample_bytes = 0
+        self.write_counters: dict[str, int] = {}
         self.report: dict[str, Any] = {}
 
     def begin(self) -> None:
@@ -248,6 +253,11 @@ class PerformanceHistory:
         self.active = True
         self.wrapper_pid = None
         self.samples.clear()
+        self.encoded_samples.clear()
+        self.encoded_sample_bytes = 0
+        self.write_counters = {"writeAttempts": 0, "sampleSerializations": 0,
+                               "fullHistorySerializations": 0, "headerSerializations": 0,
+                               "fsyncRequests": 0, "periodicWritesWithoutFsync": 0}
         self.previous_snapshot = None
         self.previous_threads.clear()
         self.previous_thread_time = None
@@ -263,6 +273,12 @@ class PerformanceHistory:
                        "hardwareCpuLimit": CPU_LIMIT, "hardwareThermalZoneLimit": THERMAL_ZONE_LIMIT,
                        "fileLimitBytes": self.file_limit,
                        "cpuPercentMeaning": "100 percent is one logical CPU", "phase": "starting"}
+        self.report["diagnosticWritePolicy"] = {
+            "requestedLeanWrites": self.lean_writes,
+            "effectivePolicy": "cached-samples-terminal-fsync" if self.lean_writes else "full-history-always-fsync",
+            "periodicFsync": not self.lean_writes, "terminalFsync": True,
+            "atomicReplace": True, "physicalBenefitVerified": False,
+            "counters": self.write_counters}
         try:
             if self.path.is_symlink():
                 self.active = False
@@ -406,7 +422,7 @@ class PerformanceHistory:
             # when the byte budget has evicted the sample containing that read.
             if hardware_sample is not None:
                 sample["hardware"] = hardware_sample
-            self.samples.append(sample)
+            self._append_sample(sample)
             self.previous_snapshot = snapshot
             self.report["phase"] = phase
             self._write()
@@ -420,15 +436,55 @@ class PerformanceHistory:
             self._write()
             self.active = False
 
+    def _append_sample(self, sample: dict[str, Any]) -> None:
+        if self.lean_writes:
+            # Samples are complete at insertion and never mutated afterward.
+            # Encode before changing either deque so invalid observations cannot
+            # desynchronize the retained objects and their byte accounting.
+            self.write_counters["sampleSerializations"] += 1
+            encoded = json.dumps(sample, separators=(",", ":"), allow_nan=False).encode("utf-8")
+            if len(self.samples) == self.samples.maxlen:
+                self.encoded_sample_bytes -= len(self.encoded_samples.popleft())
+            self.encoded_samples.append(encoded)
+            self.encoded_sample_bytes += len(encoded)
+        self.samples.append(sample)
+
+    def _drop_sample(self) -> None:
+        self.samples.popleft()
+        if self.lean_writes:
+            self.encoded_sample_bytes -= len(self.encoded_samples.popleft())
+
+    def _lean_payload(self) -> bytes | None:
+        """Encode only the changing header; cached samples are byte-exact JSON.
+
+        The caller evicts an oldest sample and retries if this returns None.
+        Report counters and terminal markers are included in every size check.
+        """
+        self.write_counters["headerSerializations"] += 1
+        header = json.dumps(self.report, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        prefix = header[:-1] + b',"samples":['
+        suffix = b"]}\n"
+        size = len(prefix) + self.encoded_sample_bytes + max(0, len(self.encoded_samples) - 1) + len(suffix)
+        if size > self.file_limit:
+            return None
+        return prefix + b",".join(self.encoded_samples) + suffix
+
     def _write(self) -> None:
         temporary = self.path.with_name("." + self.path.name + "." + uuid.uuid4().hex + ".tmp")
         try:
             if self.path.is_symlink():
                 return
+            durable = not self.lean_writes or self.report.get("phase") in ("stopping", "stopped", "failed")
+            self.write_counters["writeAttempts"] += 1
+            self.write_counters["fsyncRequests" if durable else "periodicWritesWithoutFsync"] += 1
             while True:
-                payload = json.dumps({**self.report, "samples": list(self.samples)}, separators=(",", ":"),
-                                     allow_nan=False).encode("utf-8") + b"\n"
-                if len(payload) <= self.file_limit:
+                if self.lean_writes:
+                    payload = self._lean_payload()
+                else:
+                    self.write_counters["fullHistorySerializations"] += 1
+                    payload = json.dumps({**self.report, "samples": list(self.samples)}, separators=(",", ":"),
+                                         allow_nan=False).encode("utf-8") + b"\n"
+                if payload is not None and len(payload) <= self.file_limit:
                     break
                 if not self.samples:
                     if "latestHardware" in self.report:
@@ -438,12 +494,13 @@ class PerformanceHistory:
                         self.report["latestHardwareDroppedForBytes"] = True
                         continue
                     return
-                self.samples.popleft()
+                self._drop_sample()
                 self.report["samplesDroppedForBytes"] = self.report.get("samplesDroppedForBytes", 0) + 1
             with temporary.open("xb") as output:
                 output.write(payload)
                 output.flush()
-                os.fsync(output.fileno())
+                if durable:
+                    os.fsync(output.fileno())
             os.replace(temporary, self.path)
         except (OSError, ValueError, TypeError):
             self.report["writeFailures"] = self.report.get("writeFailures", 0) + 1

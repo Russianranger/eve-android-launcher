@@ -19,13 +19,25 @@ final class ControllerManager implements InputManager.InputDeviceListener {
     private final InputManager manager;
     private final Handler handler=new Handler(Looper.getMainLooper());
     private final ControllerInput input;
+    private final boolean idleControllerTicks;
     private List<ControllerInput.Layer> layers=ControllerInput.defaultLayers();
     private long lastTick;
+    private volatile boolean tickScheduled;
+    private volatile long tickCallbacks;
     private String loadError="";
     private int device=-1;
     private final Map<String,Float> digital=new HashMap<>(),analog=new HashMap<>();
-    private final Runnable tick=new Runnable(){@Override public void run(){long now=SystemClock.uptimeMillis();input.tick((now-lastTick)/1000f);lastTick=now;handler.postDelayed(this,16);}};
+    private final Runnable tick=new Runnable(){@Override public void run(){
+        tickScheduled=false;tickCallbacks++;
+        if(!wantsPointerTick())return;
+        long now=SystemClock.uptimeMillis();input.tick((now-lastTick)/1000f);lastTick=now;
+        if(wantsPointerTick()&&!tickScheduled){tickScheduled=true;handler.postDelayed(this,16);}
+    }};
     ControllerManager(Context context,File work,Events events) {
+        this(context,work,events,false);
+    }
+    ControllerManager(Context context,File work,Events events,boolean idleControllerTicks) {
+        this.idleControllerTicks=idleControllerTicks;
         this.events=events;profile=new File(work,"controller.json");
         input=new ControllerInput(new ControllerInput.Sink(){
             public void button(String action,boolean down){emit("button",action,down,0,0);}
@@ -53,7 +65,8 @@ final class ControllerManager implements InputManager.InputDeviceListener {
     JSONObject state()throws JSONException {
         return serialize(layers,input.deadzone,input.sensitivity).put("sources",new JSONArray(ControllerInput.SOURCES))
             .put("actions",new JSONArray(ControllerInput.ACTIONS)).put("presets",presets()).put("active",input.active()).put("error",loadError)
-            .put("current_layer",input.currentLayer()).put("current_layer_name",input.layerName()).put("max_layers",ControllerInput.MAX_LAYERS);
+            .put("current_layer",input.currentLayer()).put("current_layer_name",input.layerName()).put("max_layers",ControllerInput.MAX_LAYERS)
+            .put("idle_pointer_ticks",idleControllerTicks).put("pointer_tick_callbacks",tickCallbacks).put("pointer_tick_scheduled",tickScheduled);
     }
     String layerLabel(){return (input.currentLayer()+1)+"/"+input.layerCount()+" · "+input.layerName();}
     static JSONObject preset(String name)throws JSONException {
@@ -61,8 +74,8 @@ final class ControllerManager implements InputManager.InputDeviceListener {
         return serialize(ControllerInput.defaultLayers(),.2f,700);
     }
     private JSONObject presets()throws JSONException {return new JSONObject().put("thor",preset("thor"));}
-    void nextLayer(){input.nextLayer();}
-    void selectLayer(int index){input.selectLayer(index);}
+    void nextLayer(){input.nextLayer();updateTickScheduling();}
+    void selectLayer(int index){input.selectLayer(index);updateTickScheduling();}
     private static Map<String,String> bindings(JSONObject raw)throws JSONException {
         Map<String,String> result=new LinkedHashMap<>();for(String key:ControllerInput.SOURCES)result.put(key,raw.getString(key));return result;
     }
@@ -92,7 +105,18 @@ final class ControllerManager implements InputManager.InputDeviceListener {
         }
         capture(false);input.configure(next,deadzone,speed);layers=next;loadError="";
     }
-    void capture(boolean active){input.activate(false);digital.clear();analog.clear();input.activate(active);device=-1;handler.removeCallbacks(tick);if(active){lastTick=SystemClock.uptimeMillis();handler.post(tick);}emit("capture","",active,0,0);}
+    private boolean wantsPointerTick(){return input.active()&&(!idleControllerTicks||input.needsPointerTicks());}
+    long pointerTickCallbacks(){return tickCallbacks;}
+    boolean pointerTickScheduled(){return tickScheduled;}
+    private void updateTickScheduling(){
+        if(!wantsPointerTick()){handler.removeCallbacks(tick);tickScheduled=false;return;}
+        if(!tickScheduled){
+            // Starting after a centered stick or a focus change must not integrate the idle interval.
+            lastTick=SystemClock.uptimeMillis();tickScheduled=true;
+            if(idleControllerTicks)handler.postDelayed(tick,16);else handler.post(tick);
+        }
+    }
+    void capture(boolean active){input.activate(false);digital.clear();analog.clear();input.activate(active);device=-1;handler.removeCallbacks(tick);tickScheduled=false;updateTickScheduling();emit("capture","",active,0,0);}
     boolean active(){return input.active();}
     static boolean isGamepad(InputEvent event) {
         if(event.isFromSource(InputDevice.SOURCE_GAMEPAD)||event.isFromSource(InputDevice.SOURCE_JOYSTICK))return true;
@@ -119,7 +143,7 @@ final class ControllerManager implements InputManager.InputDeviceListener {
             default:return false;
         }
         if(event.getAction()==KeyEvent.ACTION_DOWN&&event.getRepeatCount()>0)return true;
-        if(event.getAction()==KeyEvent.ACTION_DOWN||event.getAction()==KeyEvent.ACTION_UP){digital.put(source,event.getAction()==KeyEvent.ACTION_DOWN?1f:0f);input.value(source,Math.max(digital.get(source),analog.getOrDefault(source,0f)));}
+        if(event.getAction()==KeyEvent.ACTION_DOWN||event.getAction()==KeyEvent.ACTION_UP){digital.put(source,event.getAction()==KeyEvent.ACTION_DOWN?1f:0f);input.value(source,Math.max(digital.get(source),analog.getOrDefault(source,0f)));updateTickScheduling();}
         return true;
     }
     boolean motion(MotionEvent event) {
@@ -131,6 +155,7 @@ final class ControllerManager implements InputManager.InputDeviceListener {
         analogValue("DpadUp",Math.max(0,-event.getAxisValue(MotionEvent.AXIS_HAT_Y)));analogValue("DpadDown",Math.max(0,event.getAxisValue(MotionEvent.AXIS_HAT_Y)));
         analogValue("L2",Math.max(event.getAxisValue(MotionEvent.AXIS_LTRIGGER),event.getAxisValue(MotionEvent.AXIS_BRAKE)));
         analogValue("R2",Math.max(event.getAxisValue(MotionEvent.AXIS_RTRIGGER),event.getAxisValue(MotionEvent.AXIS_GAS)));
+        updateTickScheduling();
         return true;
     }
     private void analogValue(String source,float value){analog.put(source,value);input.value(source,Math.max(value,digital.getOrDefault(source,0f)));}

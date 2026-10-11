@@ -1,3 +1,33 @@
+## October 10: newer Mesa improves observed play; reduce three sources of overhead
+
+The user reports meaningful progress on 0.1.20: lower temperatures and a higher
+sustained FPS rate. [Current evidence](DEVICE-20261010-MESA262.md) confirms the
+new driver + linear setup, successful live export/reopen and no current crash.
+Keep that configuration without repeating old baseline tests.
+
+The short reopened display sample contains 42.76 raw rectangles per update and
+1.974 ms decode plus 0.389 ms bitmap publication per update. 0.1.21 offers a
+bounded reusable block decoder with unchanged pixels/alpha and a baseline
+fallback. The bitmap path already coalesces draw requests; merging rectangles
+was rejected because sparse damage could become an extra full-frame copy.
+
+Controller code scheduled a 16 ms pointer callback throughout captured focus,
+even with centered controls. The second option schedules only when the net
+pointer vector is nonzero, waking from control/layer events and resetting the
+elapsed interval after idle. Buttons remain immediate, and focus/device cleanup
+continues releasing held inputs. This reduces idle callbacks, not a proven EVE
+render bottleneck.
+
+The third option caches serialized diagnostic samples and avoids per-sample
+fsync for disposable running/starting telemetry. The same sample rates, atomic
+replacement, byte bounds and terminal durability remain. Ownership journals,
+world saves, health checks and memory enforcement are unchanged. This targets
+small periodic CPU/storage work; it is not a claim of a large steady FPS gain.
+
+Native rendering/readback and translated client work still require finer
+attribution. Shader workers were idle, so compiler-count/cache-reset experiments
+are not justified. Keep full fidelity and GPU fences throughout this batch.
+
 # Client optimization evidence and qualification
 
 ## October 9: surface neutral/hotter, isolated Mesa 26.2.4 driver
@@ -687,3 +717,15 @@ The exact DXVK option would be d3d11.cachedDynamicResources=c; it is not enabled
 or exposed by this build. More invasive driver/native-presentation/PRoot changes
 remain conditional on the measured bottleneck. No FPS improvement is claimed
 before repeated warmed device runs.
+
+### 0.1.21 host qualification before device testing
+
+Two warmed JVM benchmark runs reduced raw decode CPU time by 67–80% across a
+full 720p image and 43-rectangle workloads near 572k/705k changed pixels. These
+are desktop JVM results, not Android ART performance or engine FPS gains.
+The block decoder adds one reusable 64 KiB buffer and preserves the bounded
+rectangle buffer already present. Both decoder paths pass malformed/truncated,
+fragmented/odd-width/chunk-boundary, resize and blocked-reader/input fixtures.
+Controller host tests pass 15,902 assertions including net pointer demand.
+The detailed diagnostic serialization benchmark is recorded with the device
+evidence. Full CI/device qualification is a separate gate.

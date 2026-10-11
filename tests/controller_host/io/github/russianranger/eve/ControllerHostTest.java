@@ -83,6 +83,28 @@ public final class ControllerHostTest {
         check(out.down.isEmpty()&&out.x==old,"Disabled capture cannot produce inputs");
     }
     private static void rejects(Runnable operation){try{operation.run();throw new AssertionError("Invalid profile accepted");}catch(IllegalArgumentException expected){assertions++;}}
+    private static void pointerSchedulingDemand(){
+        Recorder out=new Recorder();ControllerInput input=new ControllerInput(out);
+        List<ControllerInput.Layer> layers=new ArrayList<>(ControllerInput.defaultLayers());
+        Map<String,String> main=new LinkedHashMap<>(layers.get(0).bindings);main.put("A","PointerLeft");main.put("B","PointerRight");
+        Map<String,String> alternate=new LinkedHashMap<>(ControllerInput.inherited());alternate.put("A","KeyF");alternate.put("B","KeyC");
+        layers.set(0,new ControllerInput.Layer("Main",main));layers.set(1,new ControllerInput.Layer("Keys",alternate));
+        input.configure(layers,.2f,700);input.activate(true);
+        check(!input.needsPointerTicks(),"Captured idle input needs no pointer timer");
+        input.value("X",1);check(!input.needsPointerTicks()&&out.down.contains("Digit1"),"A held keyboard action is event-driven");input.value("X",0);
+        input.axis("RightLeft","RightRight",.2f);check(!input.needsPointerTicks(),"Deadzone input does not wake timer");
+        input.axis("RightLeft","RightRight",.6f);check(input.needsPointerTicks(),"A moving stick wakes timer");
+        input.axis("RightLeft","RightRight",0);check(!input.needsPointerTicks(),"Centering stops demand");
+        input.value("A",1);check(input.needsPointerTicks(),"A remapped pointer button wakes timer");
+        input.value("B",1);check(!input.needsPointerTicks(),"Equal opposing holds cancel timer demand");
+        input.value("B",0);check(input.needsPointerTicks(),"Releasing one opposing hold resumes motion");
+        input.selectLayer(1);check(!input.needsPointerTicks()&&out.down.contains("KeyF"),"Layer resolves held pointer to key without a timer");
+        input.selectLayer(0);check(input.needsPointerTicks()&&out.down.isEmpty(),"Layer resolves held key back to pointer");
+        float x=out.x;check(input.needsPointerTicks()&&out.x==x,"Demand checks never emit pointer movement");
+        input.releaseAll();check(!input.needsPointerTicks(),"Release-all clears timer demand");
+        input.value("A",1);input.activate(false);check(!input.needsPointerTicks(),"Focus loss clears pointer demand");
+        input.activate(true);check(!input.needsPointerTicks(),"Recapture does not restore stale holds");
+    }
     private static void validation(){
         Recorder out=new Recorder();ControllerInput input=new ControllerInput(out);input.configure(ControllerInput.defaultLayers(),.2f,700);input.activate(true);input.selectLayer(1);input.value("X",1);
         Map<String,String> bad=ControllerInput.defaults();bad.put("A","Layer6");Map<String,String> invalidTarget=bad;rejects(()->input.configure(invalidTarget,.2f,700));
@@ -140,5 +162,5 @@ public final class ControllerHostTest {
         }
         input.activate(false);check(out.down.isEmpty(),"Random focus, repeat, cycle and release sequence leaves no stuck input");
     }
-    public static void main(String[] args){defaultsAndCycle();heldLayersAndChords();referenceCountsAndOneShots();analogMotion();validation();layerNameMigration();randomizedTransitions();System.out.println("PASS: controller defaults, layer/chord/mouse holds, hysteresis, motion bounds, profile rejection/name migration and 10,000 mixed transitions ("+assertions+" assertions)");}
+    public static void main(String[] args){defaultsAndCycle();heldLayersAndChords();referenceCountsAndOneShots();analogMotion();pointerSchedulingDemand();validation();layerNameMigration();randomizedTransitions();System.out.println("PASS: controller defaults, layer/chord/mouse holds, hysteresis, motion bounds, idle pointer demand, profile rejection/name migration and 10,000 mixed transitions ("+assertions+" assertions)");}
 }

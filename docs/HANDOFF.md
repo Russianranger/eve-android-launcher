@@ -16,18 +16,45 @@ selection, runtime/server data and ownership/memory protections intact.
 
 Follow only the new [one-batch physical test](TESTING.md). Source-level overhead
 reductions and host benchmark results do not establish Thor FPS/heat benefit.
-Local implementation commit: `e0919ac` (this documentation follow-up records
-verification). All 225 backend tests passed; the 31 diagnostic cases, RFB display
-fixtures, 15,902 controller assertions, 19 archive fixtures and ARM64EC parser
-checks passed. Python compilation and diff whitespace checks passed. Independent
-review found no code blockers. Android API 33/35 tests, signed APK build and
-content/signature checks remain required in CI; no 0.1.21 APK is delivered yet.
+Qualified source: `37766ad829b5e303746e772df933930e5a5b3258` on
+`codex/wine-localhost-tls`. [Actions run 38112996625](https://github.com/Russianranger/eve-android-launcher/actions/runs/38112996625)
+completed successfully after a push. Backend/host verification, unchanged server
+runtime reuse, native Wine/PRoot/graphics and Android build/tests/lint/content/
+signing checks all passed. Release publication is skipped on this branch.
+
+- All 225 backend tests passed in 365.142 seconds, plus RFB display fixtures,
+  15,902 controller assertions, 19 archive fixtures, graphics policy and ARM64EC
+  parser checks. Python compilation and shell/whitespace checks passed.
+- All 146 Android API 33/35 cases passed with zero failures/errors/skips. Release
+  lint has zero errors and 40 warnings, unchanged in count from 0.1.20.
+- All nine native ARM64EC shader/readback/RFB fixtures, owned-window lifecycle
+  checks, CPU hardware rejection and missing-KGSL rejection passed. The rebuilt
+  Mesa 26.2.4 driver's 279 strong and 220 versioned imports resolve against 17
+  actual pinned runtime ELFs; no runtime libraries are added or replaced.
+- APK: version 0.1.21/code 22, 16,768,520 bytes, ARM64 only, non-debuggable and
+  shell-profileable. The downloaded Actions ZIP digest was verified, and all ten
+  packaged backend Python/shell files match qualified source bytes.
+- Mesa source/probe pins are unchanged, but the rebuilt driver differs from
+  0.1.20: SHA-256 `eb3500c33d9453c568a04176a069d7c642c8a94391474dbf3d8cc1a823c89272`,
+  15,349,640 bytes. This is not a binary-identical controlled A/B. Complete source
+  notices remain 2,002,532 bytes with 13 documents and 2,254 unique notice comments.
+
+Delivered `EVE-Android-Launcher-0.1.21.apk` SHA-256:
+`51990012af036720ad64f2322127d05d1fc3c9291aa846db2fe12b82f45184ed`.
+The signing certificate matches the original update anchor:
+`456c617128420fd315e1aa453d154e3d08f71a9b593d91966d21f75eed3a2c15`.
+Install in place with existing app/client/server data. Do not press Restore
+baseline: retain Mesa 26.2.4 + linear and enable only the three new experiments.
+Physical rendering and FPS/temperature benefit of this build remain to be
+verified by the single labeled `0.1.21-three-overhead` device run in TESTING.md.
 
 The user explicitly approved pushing the prepared changes and future changes to
 this repository on 2026-10-11 UTC. That supersedes the earlier approval-review
 block. Use the connected GitHub app if terminal Git credentials are unavailable.
-Publish on `codex/wine-localhost-tls` and monitor the normal workflow through
-qualification. Do not present host measurements as device FPS/temperature gains.
+Continue publishing on `codex/wine-localhost-tls` and monitor normal push builds
+through qualification. Do not present host measurements as device FPS/temperature
+gains. Push-triggered builds restore and verify the established signing key;
+manual workflow dispatch on this branch does not currently use those safeguards.
 
 
 ## Current 0.1.20 continuation: separate pristine Mesa 26.2.4 driver

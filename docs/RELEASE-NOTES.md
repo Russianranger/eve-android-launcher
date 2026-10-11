@@ -2,12 +2,14 @@
 
 Build on the successful Mesa 26.2.4 + linear device result. Add independent,
 default-off bulk display decoding, idle-aware controller scheduling and lighter
-diagnostic recording. Keep all full-color graphics, existing assets, caps,
+diagnostic recording. Keep all full-color graphics, pinned graphics sources, caps,
 cache/runtime data, synchronization and memory protection. Update in place.
 
 The next physical test enables these three switches together while retaining
 the accepted graphics settings. Benefit on Thor remains to be measured; old
-paths are available by disabling the new switches. See TESTING.md.
+paths are available by disabling the new switches. Native assets were rebuilt
+and the Mesa driver binary hash differs from 0.1.20. See TESTING.md and HANDOFF.md
+for the qualified build, APK checksum and the single physical test.
 
 # EVE Android Launcher 0.1.20 — optional newer Turnip driver
 

@@ -11,7 +11,22 @@ off, without an old baseline rerun. Native/device speed is not inferred from hos
 checks. Push/build authorization from the existing session remains in force.
 Keep the codex/wine-localhost-tls branch and published signing identity.
 
-Qualification in progress; do not claim build/device passes until verified.
+Qualified source: `65cf442148c7864e21a2fced2fab930024b4b70c`.
+[Actions run 38639809231](https://github.com/Russianranger/eve-android-launcher/actions/runs/38639809231)
+passed backend/server/native graphics and Android jobs. Publication is skipped
+on this branch. All 230 local backend tests passed; CI verification passed too.
+All 150 Android API 33/35 tests passed without failures/errors/skips. Lint has
+zero errors/fatals and 40 warnings. All 11 native shader/readback/RFB fixture
+configurations passed, including indexed dynamic-buffer drawing under cached vi.
+APK ZIP digest matched GitHub; all ten backend Python/shell entries match source.
+Packaged manifest/asset checks passed: ARM64-only, non-debuggable/profileable,
+version 0.1.22/code 23. Existing signing certificate is unchanged:
+`456c617128420fd315e1aa453d154e3d08f71a9b593d91966d21f75eed3a2c15`.
+Delivered `EVE-Android-Launcher-0.1.22.apk`, 16,771,144 bytes, SHA-256
+`030899693ceb8dd5c97fb512bdcbc182fa60beaac35f37b1efe8652c79f477cd`.
+Physical scheduling activation, EVE command-list behavior and FPS/heat benefit
+remain unqualified until the three isolated Thor runs in TESTING.md.
+
 
 ## Historical 0.1.21: three reversible overhead experiments
 

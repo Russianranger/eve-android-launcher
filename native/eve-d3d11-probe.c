@@ -373,7 +373,7 @@ int wmain(int argc, WCHAR **argv)
     ID3D11VertexShader *vertex_shader = NULL;
     ID3D11PixelShader *pixel_shader = NULL;
     ID3D11InputLayout *layout = NULL;
-    ID3D11Buffer *vertex_buffer = NULL;
+    ID3D11Buffer *vertex_buffer = NULL, *index_buffer = NULL;
     ID3D11RasterizerState *rasterizer = NULL;
     ID3DBlob *vertex_code = NULL, *pixel_code = NULL, *errors = NULL;
     IDXGISwapChain *swapchain = NULL;
@@ -390,14 +390,15 @@ int wmain(int argc, WCHAR **argv)
     ATOM registered = 0;
     UINT stride = 2 * sizeof(float), offset = 0, index, present_count = 0;
     BYTE center[4] = {0}, corner[4] = {0};
-    BOOL fixture = FALSE, success = FALSE, pixels_verified = FALSE;
+    BOOL fixture = FALSE, success = FALSE, pixels_verified = FALSE, dynamic_buffers = FALSE;
     HRESULT hr = E_INVALIDARG;
     const char *stage = "arguments";
     DWORD win32_error = 0;
     ULONGLONG begin = GetTickCount64();
 
     /* mode, exact loaded d3d11 Windows path, hash, exact loaded dxgi Windows path, hash */
-    if (argc != 6 || (wcscmp(argv[1], L"hardware") && wcscmp(argv[1], L"fixture"))) goto cleanup;
+    if ((argc != 6 && argc != 7) || (wcscmp(argv[1], L"hardware") && wcscmp(argv[1], L"fixture"))) goto cleanup;
+    if (argc == 7) { if (wcscmp(argv[6], L"dynamic-buffers")) goto cleanup; dynamic_buffers = TRUE; }
     fixture = !wcscmp(argv[1], L"fixture");
     /* The synthetic window contract uses physical X11 pixels, independent of
      * any DPI value in the existing prefix. This setting is process-local. */
@@ -478,6 +479,21 @@ int wmain(int argc, WCHAR **argv)
     buffer.ByteWidth = sizeof(vertices); buffer.Usage = D3D11_USAGE_IMMUTABLE;
     buffer.BindFlags = D3D11_BIND_VERTEX_BUFFER; initial.pSysMem = vertices;
     CHECK_OBJECT(ID3D11Device_CreateBuffer(device, &buffer, &initial, &vertex_buffer), vertex_buffer, "create_vertex_buffer");
+    if (dynamic_buffers) {
+        const UINT indices[] = {0, 1, 2};
+        RELEASE(ID3D11Buffer, vertex_buffer);
+        buffer.Usage = D3D11_USAGE_DYNAMIC; buffer.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        CHECK_OBJECT(ID3D11Device_CreateBuffer(device, &buffer, NULL, &vertex_buffer), vertex_buffer, "create_dynamic_vertex_buffer");
+        CHECK(ID3D11DeviceContext_Map(context, (ID3D11Resource *)vertex_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped), "map_dynamic_vertex_buffer");
+        memcpy(mapped.pData, vertices, sizeof(vertices));
+        ID3D11DeviceContext_Unmap(context, (ID3D11Resource *)vertex_buffer, 0);
+        buffer.ByteWidth = sizeof(indices); buffer.BindFlags = D3D11_BIND_INDEX_BUFFER;
+        CHECK_OBJECT(ID3D11Device_CreateBuffer(device, &buffer, NULL, &index_buffer), index_buffer, "create_dynamic_index_buffer");
+        CHECK(ID3D11DeviceContext_Map(context, (ID3D11Resource *)index_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped), "map_dynamic_index_buffer");
+        memcpy(mapped.pData, indices, sizeof(indices));
+        ID3D11DeviceContext_Unmap(context, (ID3D11Resource *)index_buffer, 0);
+        ID3D11DeviceContext_IASetIndexBuffer(context, index_buffer, DXGI_FORMAT_R32_UINT, 0);
+    }
     raster.FillMode = D3D11_FILL_SOLID; raster.CullMode = D3D11_CULL_NONE; raster.DepthClipEnable = TRUE;
     CHECK_OBJECT(ID3D11Device_CreateRasterizerState(device, &raster, &rasterizer), rasterizer, "create_rasterizer");
     texture.Width = texture.Height = IMAGE_SIDE; texture.MipLevels = texture.ArraySize = 1;
@@ -497,7 +513,8 @@ int wmain(int argc, WCHAR **argv)
     ID3D11DeviceContext_VSSetShader(context, vertex_shader, NULL, 0);
     ID3D11DeviceContext_PSSetShader(context, pixel_shader, NULL, 0);
     ID3D11DeviceContext_ClearRenderTargetView(context, target_view, clear);
-    ID3D11DeviceContext_Draw(context, 3, 0);
+    if (dynamic_buffers) ID3D11DeviceContext_DrawIndexed(context, 3, 0, 0);
+    else ID3D11DeviceContext_Draw(context, 3, 0);
     ID3D11DeviceContext_OMSetRenderTargets(context, 0, NULL, NULL);
     ID3D11DeviceContext_CopyResource(context, (ID3D11Resource *)staging, (ID3D11Resource *)target);
     CHECK(ID3D11DeviceContext_Map(context, (ID3D11Resource *)staging, 0, D3D11_MAP_READ, 0, &mapped), "map_readback");
@@ -532,7 +549,8 @@ int wmain(int argc, WCHAR **argv)
     for (index = 0; index < 3; ++index) {
         ID3D11DeviceContext_OMSetRenderTargets(context, 1, &back_view, NULL);
         ID3D11DeviceContext_ClearRenderTargetView(context, back_view, present_clear[index]);
-        ID3D11DeviceContext_Draw(context, 3, 0);
+        if (dynamic_buffers) ID3D11DeviceContext_DrawIndexed(context, 3, 0, 0);
+        else ID3D11DeviceContext_Draw(context, 3, 0);
         /* Exercise the game's vsync request. The private DXVK policy must
          * still present these frames in immediate mode to the local display. */
         CHECK(IDXGISwapChain_Present(swapchain, REQUESTED_SYNC_INTERVAL, 0), "present_window_frame");
@@ -561,7 +579,7 @@ cleanup:
     if (registered) UnregisterClassW(window_class.lpszClassName, window_class.hInstance);
     RELEASE(ID3D11RenderTargetView, target_view); RELEASE(ID3D11Texture2D, target);
     RELEASE(ID3D11Texture2D, staging); RELEASE(ID3D11RasterizerState, rasterizer);
-    RELEASE(ID3D11Buffer, vertex_buffer); RELEASE(ID3D11InputLayout, layout);
+    RELEASE(ID3D11Buffer, index_buffer); RELEASE(ID3D11Buffer, vertex_buffer); RELEASE(ID3D11InputLayout, layout);
     RELEASE(ID3D11VertexShader, vertex_shader); RELEASE(ID3D11PixelShader, pixel_shader);
     RELEASE(ID3D10Blob, vertex_code); RELEASE(ID3D10Blob, pixel_code); RELEASE(ID3D10Blob, errors);
     RELEASE(ID3D11DeviceContext, context); RELEASE(ID3D11Device, device);
@@ -573,6 +591,7 @@ cleanup:
         fixture ? "fixture" : "hardware", success ? "true" : "false"); json_ascii(stage);
     printf(",\"hresult\":%lu,\"win32_error\":%lu,\"d3d11\":", (unsigned long)(DWORD)hr, (unsigned long)win32_error);
     json_module(&d3d11_info); printf(",\"dxgi\":"); json_module(&dxgi_info);
+    printf(",\"dynamic_buffers_verified\":%s", dynamic_buffers && success && pixels_verified ? "true" : "false");
     printf(",\"adapter\":{\"description\":"); json_wide(description.Description);
     printf(",\"vendor_id\":%u,\"device_id\":%u,\"flags\":%u,"
         "\"dedicated_video_memory\":%llu,\"dedicated_system_memory\":%llu,\"shared_system_memory\":%llu},"

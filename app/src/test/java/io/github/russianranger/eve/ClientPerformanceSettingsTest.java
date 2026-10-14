@@ -1107,4 +1107,46 @@ public final class ClientPerformanceSettingsTest {
         @Override public void destroy() { }
         @Override public boolean isAlive() { return true; }
     }
+
+    @Test public void newClientTrialsPersistIndependentlyAndRespectSoftwareAndBusyState() throws Exception {
+        String[] keys = {"performance-cores", "immediate-context", "cached-dynamic-buffers"};
+        String[] status = {"performanceCores", "immediateContext", "cachedDynamicBuffers"};
+        ClientRuntime runtime = new ClientRuntime(context);
+        runtime.setPerformanceOption("mesa262-driver", true);
+        runtime.setPerformanceOption("linear-presentation", true);
+        for (int selected = 0; selected < keys.length; selected++) {
+            for (int n = 0; n < keys.length; n++) runtime.setPerformanceOption(keys[n], n == selected);
+            ClientRuntime restored = new ClientRuntime(context);
+            List<String> launch = restored.launchCommand("turnip-dxvk", "responsive", true);
+            for (int n = 0; n < keys.length; n++) {
+                assertEquals(n == selected, restored.status().getBoolean(status[n]));
+                assertEquals(n == selected, launch.contains("--" + keys[n]));
+            }
+            assertTrue(restored.mesa262Driver()); assertTrue(restored.linearPresentation());
+            restored.useAdreno(false);
+            for (int n = 0; n < keys.length; n++) {
+                assertFalse(restored.status().getBoolean(status[n]));
+                assertFalse(restored.launchCommand("software", "responsive", true).contains("--" + keys[n]));
+                assertEquals(n == selected, restored.performanceOption(keys[n]));
+            }
+            restored.useAdreno(true);
+            RuntimeService.busy = true;
+            try { restored.setPerformanceOption(keys[selected], false); fail("Changed busy session"); }
+            catch (IllegalStateException expected) { }
+            finally { RuntimeService.busy = false; }
+        }
+        runtime.restoreBaselineSettings();
+        for (String key : keys) assertFalse(new ClientRuntime(context).performanceOption(key));
+    }
+
+    @Test public void newClientTrialControlsHaveSeparateLabelsAndDefaults() {
+        ActivityController<MainActivity> activity = Robolectric.buildActivity(MainActivity.class).create().start().resume().visible();
+        try {
+            View root = activity.get().findViewById(android.R.id.content);
+            button(root, "Client").performClick(); idle();
+            for (String label : new String[]{"Use performance cores (experiment)",
+                    "Use immediate rendering contexts (experiment)", "Use cached dynamic buffers (experiment)"})
+                assertFalse(checkBox(root, label).isChecked());
+        } finally { activity.pause().stop().destroy(); }
+    }
 }

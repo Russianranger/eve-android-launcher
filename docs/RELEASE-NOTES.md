@@ -1,3 +1,13 @@
+# 0.1.22 — three isolated client execution experiments
+
+Accept neutral physical 0.1.21 result. Add default-off performance-core scheduling,
+immediate rendering contexts and cached dynamic vertex/index buffers. Separate
+switches, strict loaded-config readback, owned-process affinity receipts and live
+thread-mask observations make each test independently reversible. Keep all
+runtime/source pins, GPU fences, resolution, full RGB, world and import data.
+See TESTING.md for the three cases and DEVICE-20261014-OVERHEAD.md for evidence.
+No device FPS gain is established before testing.
+
 # 0.1.21 — three overhead experiments
 
 Build on the successful Mesa 26.2.4 + linear device result. Add independent,

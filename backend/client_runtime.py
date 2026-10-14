@@ -83,6 +83,9 @@ class Settings:
     shm_presentation: bool = False
     mesa262_driver: bool = False
     lean_diagnostics: bool = False
+    performance_cores: bool = False
+    cached_dynamic_buffers: bool = False
+    immediate_context: bool = False
     graphics_folder: Path = Path("/opt/eve-android")
     graphics_timeout: float = 90
     window_start_timeout: float = 20
@@ -127,6 +130,47 @@ def memory_metrics() -> dict[str, int]:
     return result
 
 
+def performance_cpu_mask(topology: dict, allowed: set[int]) -> set[int]:
+    """Select the faster capacity cluster, intersected with the Android cpuset."""
+    rows = topology.get("cpus", [])
+    capacities = {row["cpu"]: row["capacity"] for row in rows
+                  if type(row.get("cpu")) is int and 0 <= row["cpu"] < 32
+                  and type(row.get("capacity")) is int and row["capacity"] > 0
+                  and row.get("online", 1) == 1}
+    if len(set(capacities.values())) < 2 or not allowed.issubset(capacities):
+        raise RuntimeErrorDetail("Performance-core test requires readable heterogeneous CPU capacities")
+    floor = min(capacities.values())
+    selected = {cpu for cpu in allowed if capacities[cpu] > floor}
+    if len(selected) < 2 or selected == allowed:
+        raise RuntimeErrorDetail("Android cpuset does not permit a distinct performance-core test")
+    return selected
+
+
+def affinity_exec(arguments: list[str]) -> int:
+    """Apply in the single-threaded owned child before exec; no preexec_fn."""
+    if len(arguments) < 2:
+        raise RuntimeErrorDetail("Missing affinity receipt or client command")
+    receipt = Path(arguments[0])
+    report = {"format": 1, "pid": os.getpid(), "requested": True,
+              "applied": False, "physicalBenefitVerified": False}
+    try:
+        original = os.sched_getaffinity(0)
+        selected = performance_cpu_mask(client_graphics.cpu_topology(), original)
+        report.update(originalCpus=sorted(original), selectedCpus=sorted(selected))
+        os.sched_setaffinity(0, selected)
+        actual = os.sched_getaffinity(0)
+        report.update(observedCpus=sorted(actual), applied=actual == selected)
+        if actual != selected:
+            raise RuntimeErrorDetail("Kernel did not retain the selected CPU mask")
+        atomic_json(receipt, report)
+        os.execvpe(arguments[1], arguments[1:], os.environ)
+    except (OSError, ValueError, RuntimeErrorDetail) as error:
+        report.update(applied=False, error=str(error))
+        atomic_json(receipt, report)
+        print("Performance-core experiment failed: " + str(error), file=sys.stderr, flush=True)
+        return 1
+
+
 class Runtime:
     def __init__(self, settings: Settings | None = None):
         self.s = settings or Settings()
@@ -137,6 +181,17 @@ class Runtime:
             self.s.a740_pc_mode, self.s.linear_presentation, self.s.sysmem_rendering, self.s.shm_presentation,
             self.s.mesa262_driver)
         self.cpu_topology = client_graphics.cpu_topology()
+        for value in (self.s.performance_cores, self.s.cached_dynamic_buffers, self.s.immediate_context):
+            if type(value) is not bool:
+                raise ValueError("Client experiments must be booleans")
+        gpu = self.s.graphics_mode == "turnip-dxvk"
+        self.experiments = {"performanceCoresRequested": self.s.performance_cores,
+                            "cachedDynamicBuffersRequested": self.s.cached_dynamic_buffers,
+                            "immediateContextRequested": self.s.immediate_context,
+                            "performanceCores": self.s.performance_cores and gpu,
+                            "cachedDynamicBuffers": self.s.cached_dynamic_buffers and gpu,
+                            "immediateContext": self.s.immediate_context and gpu,
+                            "physicalBenefitVerified": False}
         self.run = self.s.state / "run"
         self.logs = self.s.state / "logs"
         self.status_file = self.run / "status.json"
@@ -162,6 +217,40 @@ class Runtime:
 
     def request_stop(self, *_: Any) -> None:
         self.cancelled = True
+
+    def affinity_observation(self) -> dict:
+        if not self.experiments["performanceCores"]:
+            return {"requested": self.s.performance_cores, "active": False}
+        try:
+            report = read_json(self.run / "client-affinity.json")
+            leader = self.identities.get("clientIdentity", {})
+            if report.get("pid") != leader.get("pid") or not identity_alive(leader):
+                return {"requested": True, "active": False, "reason": "no-current-owned-client"}
+            selected = set(report.get("selectedCpus", []))
+            masks = set()
+            tasks = 0
+            unavailable = 0
+            truncated = False
+            for member in self.identities.get("clientMembers", []):
+                if not identity_alive(member):
+                    unavailable += 1
+                    continue
+                for task in (Path("/proc") / str(member["pid"]) / "task").iterdir():
+                    if tasks >= 256:
+                        truncated = True
+                        break
+                    tasks += 1
+                    try:
+                        masks.add(tuple(sorted(os.sched_getaffinity(int(task.name)))))
+                    except OSError:
+                        unavailable += 1
+            verified = bool(tasks and masks and selected and not unavailable and not truncated
+                            and all(set(mask).issubset(selected) and mask for mask in masks))
+            return {**report, "active": verified, "currentThreadMasksVerified": verified,
+                    "observedThreadMasks": [list(mask) for mask in sorted(masks)],
+                    "tasksRead": tasks, "unavailable": unavailable, "truncated": truncated}
+        except (OSError, ValueError, RuntimeErrorDetail):
+            return {"requested": True, "active": False, "reason": "receipt-or-tasks-unavailable"}
 
     def default_display_command(self) -> tuple[str, ...]:
         return (self.s.display, ":" + str(self.s.display_number), "-geometry", "1280x720", "-depth", "24",
@@ -245,6 +334,8 @@ class Runtime:
                   "performance": self.performance,
                   "optimizations": self.optimizations, "cpuTopology": self.cpu_topology,
                   "leanDiagnostics": self.s.lean_diagnostics,
+                  "clientExperiments": self.experiments,
+                  "clientAffinity": self.affinity_observation(),
                   "renderer": "DXVK / Turnip (Adreno)" if self.s.graphics_mode == "turnip-dxvk" else "WineD3D / llvmpipe",
                   "graphicsPreflight": self.graphics_reports, "processCpu": process_cpu,
                   "clientWindow": self.window_report,
@@ -328,7 +419,8 @@ class Runtime:
         try:
             self.graphics_bundle = client_graphics.prepare(
                 self.s.graphics_folder, self.s.state, self.s.content, self.s.graphics_mode,
-                self.s.performance_profile)
+                self.s.performance_profile, self.experiments["cachedDynamicBuffers"],
+                self.experiments["immediateContext"])
         except (OSError, ValueError, TypeError, KeyError) as error:
             raise RuntimeErrorDetail("Client graphics bundle could not be prepared: " + str(error)) from error
         if self.s.graphics_mode == "turnip-dxvk":
@@ -544,6 +636,11 @@ class Runtime:
         self.logs.mkdir(parents=True, exist_ok=True)
         path = self.logs / ("client-" + role + ".log")
         rotate_log(path)
+        if role == "client" and self.experiments["performanceCores"]:
+            receipt = self.run / "client-affinity.json"
+            receipt.unlink(missing_ok=True)
+            command = (sys.executable, str(Path(__file__).resolve()), "_affinity_exec",
+                       str(receipt), *command)
         process = subprocess.Popen(command, env=env or self.environment(), cwd=cwd or self.s.state,
                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, start_new_session=True)
@@ -734,15 +831,22 @@ class Runtime:
         helper_env = dict(env)
         helper_env.pop("DXVK_HUD", None)
         helper_env["WINEDLLOVERRIDES"] += ";d3dcompiler_47=b"
-        helper = client_graphics.d3d_command(self.s.graphics_folder, self.graphics_bundle, self.s.wine)
+        helper = client_graphics.d3d_command(self.s.graphics_folder, self.graphics_bundle, self.s.wine,
+                                              self.experiments["cachedDynamicBuffers"])
         command = self.s.d3d_command or (
             sys.executable, str(self.s.graphics_folder / "graphics_present.py"),
             "--port", str(self.s.display_port), "--timeout", str(max(1, self.s.graphics_timeout-10)),
             "--report", str(display_report), "--stdout", str(helper_log), "--stderr", str(helper_errors), "--", *helper)
         self.wait_graphics("graphicsD3d", command, helper_env, self.s.graphics_timeout)
         d3d = client_graphics.parse_d3d(client_prepare.bounded_text(helper_log, limit=65536), self.graphics_bundle)
+        if self.experiments["cachedDynamicBuffers"] and d3d.get("dynamic_buffers_verified") is not True:
+            raise RuntimeErrorDetail("Selected cached dynamic buffers did not pass native shader/readback")
         errors = client_prepare.bounded_text(helper_errors, limit=65536)
-        presentation = client_graphics.parse_performance_policy(errors, self.s.performance_profile)
+        presentation = client_graphics.parse_performance_policy(
+            errors, self.s.performance_profile, self.experiments["cachedDynamicBuffers"],
+            self.experiments["immediateContext"])
+        presentation["selectedD3d11ConfigurationVerified"] = True
+        presentation["clientExperiments"] = self.experiments
         visible = client_graphics.parse_display(client_prepare.bounded_text(display_report, limit=65536))
         client_graphics.verify_mapped(self.s.graphics_folder, self.s.state)
         if self.optimizations["shmPresentation"]:
@@ -1075,6 +1179,9 @@ class Runtime:
 
 
 def main(argv=None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == "_affinity_exec":
+        return affinity_exec(arguments[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("start", "recover"))
     parser.add_argument("--content", type=Path, default=Path("/client"))
@@ -1085,6 +1192,9 @@ def main(argv=None) -> int:
                         default=client_graphics.DEFAULT_PERFORMANCE_PROFILE)
     parser.add_argument("--diagnostic-hud", action="store_true")
     parser.add_argument("--lean-diagnostics", action="store_true")
+    parser.add_argument("--performance-cores", action="store_true")
+    parser.add_argument("--cached-dynamic-buffers", action="store_true")
+    parser.add_argument("--immediate-context", action="store_true")
     parser.add_argument("--disable-concurrent-binning", action="store_true")
     parser.add_argument("--disable-lrcpc2", action="store_true")
     driver_options = parser.add_mutually_exclusive_group()
@@ -1103,7 +1213,10 @@ def main(argv=None) -> int:
                                sysmem_rendering=options.sysmem_rendering,
                                shm_presentation=options.shm_presentation,
                                mesa262_driver=options.mesa262_driver,
-                               lean_diagnostics=options.lean_diagnostics))
+                               lean_diagnostics=options.lean_diagnostics,
+                               performance_cores=options.performance_cores,
+                               cached_dynamic_buffers=options.cached_dynamic_buffers,
+                               immediate_context=options.immediate_context))
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, runtime.request_stop)
     try:

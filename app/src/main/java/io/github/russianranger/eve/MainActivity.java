@@ -162,6 +162,12 @@ public final class MainActivity extends Activity {
             performance.addView(label("Pauses repeated pointer updates while the controls are centered.", 13, 0xffb9ced1));
             performanceOption(performance, "Use lighter diagnostic recording (experiment)", "lean-diagnostics");
             performance.addView(label("Reduces background recording work while keeping the same measurements and memory protection.", 13, 0xffb9ced1));
+            performanceOption(performance, "Use performance cores (experiment)", "performance-cores");
+            performance.addView(label("Keeps the client on the faster CPU cores allowed by Android. May improve speed or increase heat.", 13, 0xffb9ced1));
+            performanceOption(performance, "Use immediate rendering contexts (experiment)", "immediate-context");
+            performance.addView(label("Asks the game to avoid driver command lists. Compare speed and check geometry and effects.", 13, 0xffb9ced1));
+            performanceOption(performance, "Use cached dynamic buffers (experiment)", "cached-dynamic-buffers");
+            performance.addView(label("Tries cached vertex and index buffers. May help CPU reads or slow GPU rendering.", 13, 0xffb9ced1));
             diagnosticHud = new CheckBox(this); diagnosticHud.setText("Show frame-time and GPU diagnostics"); diagnosticHud.setTextColor(0xffeef8fa);
             diagnosticHud.setChecked(new ClientRuntime(this).diagnosticHud()); performance.addView(diagnosticHud);
             diagnosticHud.setOnCheckedChangeListener((button, checked) -> {

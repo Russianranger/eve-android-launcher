@@ -28,7 +28,7 @@ final class SupportExport {
                 "graphics-preflight.json", "client-graphics-bundle.json", "client-gate.json", "launch-observation.json",
                 "launch-policy.json", "wine-trust-overlay.json", "preparation-memory.json"})
             add(result, runtime.clientState, "client/" + name, name);
-        for (String name : new String[]{"status.json", "processes.json", "client-window.json", "client-window.json.1",
+        for (String name : new String[]{"status.json", "processes.json", "client-affinity.json", "client-window.json", "client-window.json.1",
                 "dxvk.conf", "turnip-icd.json", "graphics-display.json"})
             add(result, runtime.clientState, "client/run/" + name, "run/" + name);
         for (String name : new String[]{MemoryPressure.EVENTS, MemoryPressure.LIVE, "display-performance.json",

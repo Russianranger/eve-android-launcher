@@ -257,7 +257,7 @@ unset TU_DEBUG FEX_HOSTFEATURES
 export MESA_VK_WSI_DEBUG=sw
 # Qualify each isolated profile and the allowlisted FEX instruction fallback
 # through the same native EC shaders/readback and three visible frames.
-for trial in render60 queue2 display60 fex-load; do
+for trial in render60 queue2 display60 fex-load cached-buffers immediate-context; do
   trial_rate=30; trial_latency=1; trial_display=:22; trial_port=5992
   trial_profile=$trial; trial_features=''
   case "$trial" in
@@ -265,6 +265,7 @@ for trial in render60 queue2 display60 fex-load; do
     queue2) trial_latency=2 ;;
     display60) trial_display=:21; trial_port=5991 ;;
     fex-load) trial_profile=responsive; trial_features=disablelrcpc2 ;;
+    cached-buffers|immediate-context) trial_profile=responsive ;;
   esac
   cat > "/graphics-out/dxvk-$trial.conf" <<CONFIG
 # Private performance profile: $trial_profile.
@@ -272,6 +273,12 @@ dxgi.maxFrameRate = $trial_rate
 dxgi.maxFrameLatency = $trial_latency
 dxgi.syncInterval = 0
 CONFIG
+  case "$trial" in
+    cached-buffers) echo 'd3d11.cachedDynamicResources = "vi"' >> "/graphics-out/dxvk-$trial.conf" ;;
+    immediate-context) echo 'd3d11.exposeDriverCommandLists = False' >> "/graphics-out/dxvk-$trial.conf" ;;
+  esac
+  trial_args=()
+  if [[ "$trial" == cached-buffers ]]; then trial_args+=(dynamic-buffers); fi
   trial_environment=(env -u TU_DEBUG -u FEX_HOSTFEATURES MESA_VK_WSI_DEBUG=sw)
   if [[ -n "$trial_features" ]]; then trial_environment+=("FEX_HOSTFEATURES=$trial_features"); fi
   "${trial_environment[@]}" DISPLAY="$trial_display" DXVK_CONFIG_FILE="Z:\\graphics-out\\dxvk-$trial.conf" \
@@ -282,7 +289,7 @@ CONFIG
     --stdout "/graphics-out/d3d11-$trial-fixture.json" --stderr "/graphics-out/d3d11-$trial-fixture.log" \
     -- /opt/wine/bin/wine /graphics-out/assets/eve-d3d11-probe.exe \
     fixture 'C:\windows\system32\d3d11.dll' "$d3d11_digest" \
-    'C:\windows\system32\dxgi.dll' "$dxgi_digest"
+    'C:\windows\system32\dxgi.dll' "$dxgi_digest" "${trial_args[@]}"
   timeout --kill-after=5 15 /opt/wine/bin/wineserver -k
   timeout --kill-after=5 15 /opt/wine/bin/wineserver -w
 done
@@ -612,9 +619,9 @@ for trial, linear_selected, expected_wsi in (
     }
 report['shaderReadbackRfbFixtures'] = [
     'throughput', 'responsive', 'linear', 'sysmem', 'sysmem-linear',
-    'render60', 'queue2', 'display60', 'fex-load']
+    'render60', 'queue2', 'display60', 'fex-load', 'cached-buffers', 'immediate-context']
 report['shaderReadbackRfbFixtureCount'] = len(report['shaderReadbackRfbFixtures'])
-assert report['shaderReadbackRfbFixtureCount'] == 9
+assert report['shaderReadbackRfbFixtureCount'] == 11
 (folder / 'client-graphics-check.json').write_text(json.dumps(report, indent=2) + '\n')
 PY
 QUALIFICATION
@@ -826,10 +833,10 @@ except ValueError:
     pass
 else:
     raise SystemExit('Production hardware parser accepted the linear software fixture')
-assert report['shaderReadbackRfbFixtureCount'] == 9
+assert report['shaderReadbackRfbFixtureCount'] == 11
 assert report['shaderReadbackRfbFixtures'] == [
     'throughput', 'responsive', 'linear', 'sysmem', 'sysmem-linear',
-    'render60', 'queue2', 'display60', 'fex-load']
+    'render60', 'queue2', 'display60', 'fex-load', 'cached-buffers', 'immediate-context']
 for trial, linear_selected, expected_wsi in (
         ('sysmem', False, 'sw'), ('sysmem-linear', True, 'sw,linear')):
     selected = report['sysmemRenderingExperiments'][trial]
@@ -867,12 +874,13 @@ for trial, linear_selected, expected_wsi in (
     else:
         raise SystemExit('Production SYSMEM hardware parser accepted the software fixture')
 report['isolatedTrials'] = {}
-for trial in ('render60', 'queue2', 'display60', 'fex-load'):
-    profile = 'responsive' if trial == 'fex-load' else trial
-    assert Path('out/dxvk-' + trial + '.conf').read_bytes() == client_graphics.dxvk_config(profile).encode('utf-8')
+for trial in ('render60', 'queue2', 'display60', 'fex-load', 'cached-buffers', 'immediate-context'):
+    profile = 'responsive' if trial in ('fex-load', 'cached-buffers', 'immediate-context') else trial
+    assert Path('out/dxvk-' + trial + '.conf').read_bytes() == client_graphics.dxvk_config(profile, trial == 'cached-buffers', trial == 'immediate-context').encode('utf-8')
     d3d = client_graphics.last_report(Path('out/d3d11-' + trial + '-fixture.json').read_text())
     assert d3d['mode'] == 'fixture' and d3d['passed'] is True and d3d['pixels_verified'] is True
     assert d3d['present_count'] == 3 and d3d['requested_sync_interval'] == 1
+    if trial == 'cached-buffers': assert d3d['dynamic_buffers_verified'] is True
     for name in ('d3d11', 'dxgi'):
         assert d3d[name]['identity_verified'] is True and d3d[name]['sha256'] == report['d3d11'][name]['sha256']
     environment = json.loads(Path('out/d3d11-' + trial + '-environment.json').read_text())
@@ -883,13 +891,13 @@ for trial in ('render60', 'queue2', 'display60', 'fex-load'):
     report['isolatedTrials'][trial] = {
         'd3d11': d3d,
         'rfbPresentation': client_graphics.parse_display(Path('out/d3d11-' + trial + '-rfb-presentation.json').read_text()),
-        'presentation': client_graphics.parse_performance_policy(Path('out/d3d11-' + trial + '-fixture.log').read_text(), profile),
+        'presentation': client_graphics.parse_performance_policy(Path('out/d3d11-' + trial + '-fixture.log').read_text(), profile, trial == 'cached-buffers', trial == 'immediate-context'),
         'performance': client_graphics.performance_settings('turnip-dxvk', profile),
         'effectiveEnvironment': environment,
         'fexHostFeatures': 'disablelrcpc2' if trial == 'fex-load' else None,
         'physicalThorQualified': False,
     }
-assert 3 + len(report['sysmemRenderingExperiments']) + len(report['isolatedTrials']) == 9
+assert 3 + len(report['sysmemRenderingExperiments']) + len(report['isolatedTrials']) == 11
 Path('out/client-graphics-check.json').write_text(json.dumps(report, indent=2) + '\n')
 assert type(report['d3d11'].get('requested_sync_interval')) is int and report['d3d11']['requested_sync_interval'] == 1
 window = json.loads(Path('out/client-window-check.json').read_text())

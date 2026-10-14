@@ -1,6 +1,19 @@
 # EVE Android Launcher handoff
 
-## Current 0.1.21: three reversible overhead experiments
+## Current 0.1.22: isolated client execution trials
+
+Recover from 6afc168; no newer branch changes were present. User supplied
+`eve-support-20261014-161104.zip` and reported unchanged FPS. Accept the neutral
+0.1.21 result; see DEVICE-20261014-OVERHEAD.md. Implement default-off performance
+cores, immediate contexts and cached dynamic vertex/index buffers. TESTING.md
+requests three isolated runs with the accepted Mesa26.2.4+linear setup, old trials
+off, without an old baseline rerun. Native/device speed is not inferred from host
+checks. Push/build authorization from the existing session remains in force.
+Keep the codex/wine-localhost-tls branch and published signing identity.
+
+Qualification in progress; do not claim build/device passes until verified.
+
+## Historical 0.1.21: three reversible overhead experiments
 
 Accept the user's meaningful 0.1.20 improvement: lower temperatures and higher
 sustained observed FPS. See [current evidence](DEVICE-20261010-MESA262.md).

@@ -79,14 +79,19 @@ DEFAULT_HUD = "devinfo,fps,compiler"
 DIAGNOSTIC_HUD = "devinfo,fps,frametimes,gpuload,cs,compiler"
 
 
-def dxvk_config(performance_profile=DEFAULT_PERFORMANCE_PROFILE):
+def dxvk_config(performance_profile=DEFAULT_PERFORMANCE_PROFILE, cached_dynamic_buffers=False,
+                immediate_context=False):
     if not isinstance(performance_profile, str) or performance_profile not in PERFORMANCE_PROFILES:
         raise ValueError("Unsupported client performance profile")
     frame_rate, latency, _ = _PROFILE_VALUES[performance_profile]
     comment = "# Private performance profile: " + performance_profile + ".\n"
+    if any(type(value) is not bool for value in (cached_dynamic_buffers, immediate_context)):
+        raise ValueError("D3D11 experiments must be booleans")
+    extra = ('d3d11.cachedDynamicResources = "vi"\n' if cached_dynamic_buffers else '')
+    extra += 'd3d11.exposeDriverCommandLists = False\n' if immediate_context else ''
     return (comment + "dxgi.maxFrameRate = " + str(frame_rate) + "\n"
             + "dxgi.maxFrameLatency = " + str(latency) + "\n"
-            + "dxgi.syncInterval = 0\n")
+            + "dxgi.syncInterval = 0\n" + extra)
 
 
 def performance_settings(mode, performance_profile=DEFAULT_PERFORMANCE_PROFILE, diagnostic_hud=False):
@@ -232,7 +237,8 @@ def cache_directories(state: Path, a740_pc_mode=False, shm_presentation=False,
 
 
 def prepare(folder: Path, state: Path, content: Path, mode: str,
-            performance_profile=DEFAULT_PERFORMANCE_PROFILE) -> dict:
+            performance_profile=DEFAULT_PERFORMANCE_PROFILE, cached_dynamic_buffers=False,
+            immediate_context=False) -> dict:
     performance_settings(mode, performance_profile)
     if mode == "software":
         return {"mode": mode, "renderer": "WineD3D / llvmpipe"}
@@ -257,7 +263,7 @@ def prepare(folder: Path, state: Path, content: Path, mode: str,
         "library_path": str(folder / "turnip-26.0.0.so"), "api_version": "1.3.0"}})
     config = state / "run/dxvk.conf"
     temporary = config.with_name(".dxvk.conf.tmp")
-    temporary.write_text(dxvk_config(performance_profile), encoding="utf-8")
+    temporary.write_text(dxvk_config(performance_profile, cached_dynamic_buffers, immediate_context), encoding="utf-8")
     os.replace(temporary, config)
     return manifest
 
@@ -341,10 +347,10 @@ def select_driver(folder: Path, state: Path, enabled: bool,
             "physicalBenefitVerified": False}
 
 
-def d3d_command(folder: Path, manifest: dict, wine: str = "/opt/wine/bin/wine") -> tuple[str, ...]:
+def d3d_command(folder: Path, manifest: dict, wine: str = "/opt/wine/bin/wine", dynamic_buffers=False) -> tuple[str, ...]:
     return (wine, str(folder / "eve-d3d11-probe.exe"), "hardware",
             "C:\\windows\\system32\\d3d11.dll", manifest["files"][DLLS["d3d11"]]["sha256"],
-            "C:\\windows\\system32\\dxgi.dll", manifest["files"][DLLS["dxgi"]]["sha256"])
+            "C:\\windows\\system32\\dxgi.dll", manifest["files"][DLLS["dxgi"]]["sha256"]) + (("dynamic-buffers",) if dynamic_buffers else ())
 
 
 def optimization_settings(mode, disable_concurrent_binning=False, disable_lrcpc2=False, a740_pc_mode=False,
@@ -694,7 +700,8 @@ def parse_presentation_policy(text):
             "observedPresentModes": present_modes}
 
 
-def parse_performance_policy(text, performance_profile=DEFAULT_PERFORMANCE_PROFILE):
+def parse_performance_policy(text, performance_profile=DEFAULT_PERFORMANCE_PROFILE,
+                             cached_dynamic_buffers=False, immediate_context=False):
     """Check the real helper configuration, retaining the immediate-mode gate."""
     performance = performance_settings("turnip-dxvk", performance_profile)
     for option, key in (("maxFrameRate", "targetFrameRate"), ("maxFrameLatency", "maxFrameLatency")):
@@ -702,6 +709,13 @@ def parse_performance_policy(text, performance_profile=DEFAULT_PERFORMANCE_PROFI
                             text, re.MULTILINE)
         if not values or any(value != str(performance[key]) for value in values):
             raise ValueError("Native graphics qualification used a different performance profile")
+    dxvk_config(performance_profile, cached_dynamic_buffers, immediate_context)
+    for key, expected in (("cachedDynamicResources", 'vi' if cached_dynamic_buffers else None),
+                          ("exposeDriverCommandLists", "False" if immediate_context else None)):
+        if expected is not None:
+            values = re.findall(r"^info:[ \t]+d3d11\." + key + r"[ \t]*=[ \t]*(.+?)[ \t]*\r?$", text, re.MULTILINE)
+            if not values or any(value != expected for value in values):
+                raise ValueError("Native graphics qualification did not load the selected D3D11 experiment")
     return parse_presentation_policy(text)
 
 

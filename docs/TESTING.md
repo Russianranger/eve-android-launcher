@@ -1,6 +1,45 @@
+# EVE Android Launcher 0.1.22: three client execution tests
+
+Your 0.1.21 result is accepted: all three overhead paths ran, but FPS was unchanged.
+No old baseline rerun is requested. Stop client/server and update in place to
+**EVE-Android-Launcher-0.1.22.apk**; keep data, runtimes, cache, character and mappings.
+
+Keep Adreno rendering, Mesa 26.2.4, Reduce GPU frame copies and HUD enabled;
+keep 30 FPS / queue 1 / display 30, 1280x720, FSR off and the same game/fan/power
+settings. Disable the three neutral 0.1.21 switches (bulk pixel decoding,
+idle-aware controller updates, lighter diagnostic recording). Keep older
+experiments off. Do not press Restore baseline settings, which clears the driver.
+
+Run these three **separately**, with the other two new switches off:
+
+| Test | Enable | Export label |
+| --- | --- | --- |
+| 1 | Use performance cores (experiment) | 0.1.22-performance-cores |
+| 2 | Use immediate rendering contexts (experiment) | 0.1.22-immediate-context |
+| 3 | Use cached dynamic buffers (experiment) | 0.1.22-cached-buffers |
+
+For each: start server -> SERVER READY -> start client -> open display -> same
+station/character. Warm three minutes; measure two minutes static and two moving
+camera. Record engine HUD FPS, start/end temperatures, stutter and input delay.
+Check text, geometry, ship/effects, controller reversals/layers, touch and text.
+Export while running using the label, reopen and verify session/controls.
+Quit EVE normally before switching tests; the server may stay running. Cool to a
+similar starting temperature before the next test. Save/stop the server at end.
+Return all three ZIPs and observations. Do not combine new switches yet.
+
+If startup fails, export immediately with the failing stage, then stop and disable
+that switch. If colors/geometry/controls regress or heat increases without an FPS
+benefit, disable it and report the fault. No clearing data or reimport is needed.
+Performance-core selection fails explicitly when Android denies it or topology is
+unreadable; logs distinguish initial application from live thread-mask verification.
+D3D11 configuration readback proves the setting loaded, not that EVE used it or
+that it helps. None of these candidates promises a particular FPS increase.
+
+---
+
 # EVE Android Launcher 0.1.21: three overhead experiments
 
-## Current 0.1.21 test
+## Completed 0.1.21 test
 
 The user reports meaningful progress with 0.1.20: lower temperatures and a higher
 sustained FPS rate. Accept that result and keep **Mesa 26.2.4 + Reduce GPU frame

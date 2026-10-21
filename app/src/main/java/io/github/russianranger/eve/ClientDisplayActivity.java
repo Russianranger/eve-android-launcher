@@ -11,6 +11,7 @@ import java.net.*;
 import java.io.File;
 import java.util.Locale;
 import java.util.UUID;
+import java.nio.ByteBuffer;
 import java.util.concurrent.*;
 import org.json.JSONObject;
 
@@ -141,14 +142,30 @@ public final class ClientDisplayActivity extends Activity {
                 synchronized (socketLock) { if (!visible || generation != token) break; socket = attempt; }
                 attempt.connect(new InetSocketAddress("127.0.0.1", 5907), 3000);
                 attempt.setTcpNoDelay(true); attempt.setSoTimeout(15000);
+                JSONObject profile = new JSONObject();
+                JSONObject details = new JSONObject();
                 try {
                     JSONObject active = new JSONObject(RuntimeManager.read(new File(RuntimeManager.get(this).clientState, "run/status.json"), 128 * 1024));
-                    launchDetails = new JSONObject().put("supervisorIdentity", active.optJSONObject("supervisorIdentity"))
+                    if (active.optJSONObject("performance") != null) profile = active.getJSONObject("performance");
+                    details = new JSONObject().put("supervisorIdentity", active.optJSONObject("supervisorIdentity"))
                         .put("performance", active.optJSONObject("performance"));
-                } catch (Exception ignored) { launchDetails = new JSONObject(); }
+                } catch (Exception ignored) { details = new JSONObject(); }
+                boolean requestedDirect = "direct".equals(profile.opt("displayPixels"));
+                boolean direct = requestedDirect && RfbView.directPixelsSupported();
+                boolean surface = "surface".equals(profile.opt("displayPresentation"));
+                boolean pipeline = Boolean.TRUE.equals(profile.opt("pipelineRequests"));
+                try {
+                    details.put("displayPixels", direct ? "direct" : "legacy")
+                        .put("displayPresentation", surface ? "surface" : "view").put("pipelineRequests", pipeline)
+                        .put("pixelSelfCheck", requestedDirect ? (direct ? "passed" : "failed") : "not-requested");
+                } catch (org.json.JSONException impossible) { throw new IOException("Invalid display profile", impossible); }
+                launchDetails = details;
+                if (requestedDirect && !direct) RuntimeService.append(this, "Direct display pixel self-check failed; using legacy pixels for this connection");
+                handler.post(() -> { if (visible && generation == token) screen.setDisplayMode(surface); });
                 RfbClient client = new RfbClient(attempt.getInputStream(), attempt.getOutputStream(), new RfbClient.Screen() {
                     @Override public void resize(int width, int height) { if (generation == token) screen.resize(width, height); }
                     @Override public void pixels(int x, int y, int width, int height, int[] pixels) { if (generation == token) screen.pixels(x, y, width, height, pixels); }
+                    @Override public void pixels(int width, int height, ByteBuffer pixels) { if (generation == token) screen.pixels(width, height, pixels); }
                     @Override public void updated() {
                         if (generation != token) return;
                         frames.received();
@@ -157,7 +174,7 @@ public final class ClientDisplayActivity extends Activity {
                         screen.updated();
                         if (first) displayStatus(token, "Local display connected · touch to click · use Text for login fields");
                     }
-                });
+                }, direct, pipeline);
                 client.handshake();
                 if (!visible || generation != token) break;
                 receivedFrame = false;

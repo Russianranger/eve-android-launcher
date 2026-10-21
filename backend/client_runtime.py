@@ -516,9 +516,7 @@ class Runtime:
                 if self.performance["renderer"] != "wined3d":
                     self.performance["renderer"] = "wined3d"
                     self.performance["warnings"].append("DXVK/Turnip is not installed; using WineD3D / llvmpipe")
-                for key, baseline in (("displayPixels", "legacy"), ("displayPresentation", "view"),
-                                      ("pipelineRequests", False), ("networkFastSendto", False),
-                                      ("networkTraceStats", False)):
+                for key, baseline in (("networkFastSendto", False), ("networkTraceStats", False)):
                     if self.performance[key] != baseline:
                         self.performance["warnings"].append(key + " is not available in this build; using baseline")
                         self.performance[key] = baseline

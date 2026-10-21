@@ -49,7 +49,7 @@ def defaults(cpus: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"schemaVersion": 1, "renderer": "wined3d", "frameRate": 60, "resolution": "1280x720",
             "wineEsync": True, "wineDebug": "-all", "lpNumThreads": min(16, len(cpus["performance"])),
             "wineServerNice": 3, "serverNice": 5, "cpuAffinity": [],
-            "displayPixels": "legacy", "displayPresentation": "view", "pipelineRequests": False,
+            "displayPixels": "direct", "displayPresentation": "surface", "pipelineRequests": True,
             "fex": {}, "networkFastSendto": False, "networkTraceStats": False, "cpuTopology": cpus}
 
 

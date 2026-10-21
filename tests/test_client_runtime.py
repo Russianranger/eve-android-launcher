@@ -262,8 +262,7 @@ class ClientRuntimeTests(unittest.TestCase):
         self.assertEqual(report["requestedPerformance"]["renderer"], "dxvk-turnip")
         self.assertEqual(report["performance"]["renderer"], "wined3d")
         self.assertIn("using WineD3D", " ".join(report["performance"]["warnings"]))
-        for key, baseline in (("displayPixels", "legacy"), ("displayPresentation", "view"),
-                              ("pipelineRequests", False), ("networkFastSendto", False), ("networkTraceStats", False)):
+        for key, baseline in (("networkFastSendto", False), ("networkTraceStats", False)):
             self.assertEqual(report["performance"][key], baseline)
             self.assertNotEqual(report["requestedPerformance"][key], baseline)
 

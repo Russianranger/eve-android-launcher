@@ -1,13 +1,13 @@
-# EVE Android Launcher 0.1.5 — Runtime performance profiles
+# EVE Android Launcher 0.1.6 — Direct Surface display
 
-Adds an in-app bounded JSON profile editor and one-tap baseline settings.
-Defaults now request Xvnc60Hz, 1280x720, esync with eventfd/fd-limit preflight,
-quiet Wine logs, detected performance-core llvmpipe workers, and lower-priority
-Node/wineserver processes. Resolution960x540, CPU affinity and verified FEX
-settings can be compared without rebuilding. Relaxed TSO has no new default
-overrides. WineD3D remains the default and fallback renderer.
+Adds bulk RGBA ByteBuffer→opaque Bitmap updates, early incremental RFB requests
+and a dedicated SurfaceView rendering worker. Each change is independently
+selectable in Client → Edit performance settings; legacy pixels, View drawing
+and end-of-decode requests remain available. A runtime pixel/opacity self-check
+falls back cleanly if Android's buffer layout differs.
 
-Requested/effective profiles and fallback reasons are exported. Display metric
-I/O runs off the UI thread with unique session/profile identity. Update in
-place; preserve the client cache, prefix and world. No physical FPS increase is
-claimed until Thor A/B results are available. See TESTING.md for exact trials.
+Default `{}` now enables the direct/surface/pipelined display alongside the
+0.1.5 runtime knobs. Separate received/drawn counters and connection settings
+are exported. Compare one setting at a time using TESTING.md; physical Thor FPS
+is unmeasured. Existing content validation, loopback restrictions, TLS, memory
+reserves, input release and process journals remain in place.

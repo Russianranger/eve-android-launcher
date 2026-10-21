@@ -203,3 +203,15 @@ per trial. Finally `{}` selects all current defaults. Optional pinning uses
 explicit CPU IDs from cpuTopology.allowed/performance in launch-observation.json;
 do not assume Android CPU numbering. FEX experiments are separate and opt-in;
 see FEX-PERFORMANCE.md and keep the successful reference profile saved.
+
+### Display comparisons (0.1.6)
+
+Starting from the successful frameRate60 reference with all other baseline
+fields fixed, compare these three steps separately: displayPixels=direct,
+then pipelineRequests=true, then displayPresentation=surface. Record the same
+six samples for each. For each mode check red/green/blue colors, opaque dark
+areas, partial screen updates, touch/drag/right-click, text entry, rotation,
+background/resume and repeated reconnects. Inspect display-statistics.json for
+effective settings and pixel self-check. Return any single field to baseline
+if it regresses. Drawn counts successful Canvas/Surface submissions, not measured
+physical panel frames. Default `{}` now selects all three display optimizations.

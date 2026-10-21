@@ -1,6 +1,7 @@
 package io.github.russianranger.eve;
 
 import java.io.*;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
 /** Basic RFB 3.x display/input transport. The only endpoint is the local client session. */
@@ -8,6 +9,7 @@ final class RfbClient {
     interface Screen {
         void resize(int width, int height);
         void pixels(int x, int y, int width, int height, int[] argb);
+        void pixels(int width, int height, ByteBuffer rgba);
         void updated();
     }
     private final DataInputStream in;
@@ -16,8 +18,14 @@ final class RfbClient {
     private volatile int width, height;
     private int[] pixelBuffer = new int[0];
     private byte[] rowBuffer = new byte[0];
+    private ByteBuffer framebuffer;
+    private final boolean directPixels, pipelineRequests;
 
     RfbClient(InputStream input, OutputStream output, Screen screen) {
+        this(input, output, screen, false, false);
+    }
+    RfbClient(InputStream input, OutputStream output, Screen screen, boolean directPixels, boolean pipelineRequests) {
+        this.directPixels = directPixels; this.pipelineRequests = pipelineRequests;
         in = new DataInputStream(new BufferedInputStream(input, 65536));
         out = new DataOutputStream(output);
         this.screen = screen;
@@ -49,7 +57,8 @@ final class RfbClient {
         bytes(16); bytes(in.readInt()); resize(w, h);
         synchronized (out) {
             out.writeInt(0); // SetPixelFormat with padding, 32-bit little-endian RGB.
-            out.write(new byte[]{32,24,0,1,0,(byte)255,0,(byte)255,0,(byte)255,16,8,0,0,0,0});
+            out.write(new byte[]{32,24,0,1,0,(byte)255,0,(byte)255,0,(byte)255,
+                (byte) (directPixels ? 0 : 16),8,(byte) (directPixels ? 16 : 0),0,0,0});
             out.writeByte(2); out.writeByte(0); out.writeShort(2);
             out.writeInt(0); out.writeInt(-223); // Raw and DesktopSize.
             out.flush();
@@ -58,7 +67,9 @@ final class RfbClient {
     }
     private void resize(int w, int h) throws IOException {
         if (w < 1 || h < 1 || w > 4096 || h > 2160 || (long) w * h > 4194304) throw new IOException("Unsupported display dimensions");
-        width = w; height = h; screen.resize(w, h);
+        width = w; height = h;
+        if (directPixels) framebuffer = ByteBuffer.allocate(w * h * 4);
+        screen.resize(w, h);
     }
     void readUpdate() throws IOException {
         int message = in.readUnsignedByte();
@@ -66,12 +77,24 @@ final class RfbClient {
         if (message == 3) { bytes(3); bytes(in.readInt()); return; } // No clipboard integration.
         if (message != 0) throw new IOException("Unexpected display message: " + message);
         in.readUnsignedByte(); int count = in.readUnsignedShort();
+        // Keep one request in flight while decoding/uploading the current frame.
+        if (pipelineRequests) request(true);
+        boolean resized = false, changed = false;
         for (int i = 0; i < count; i++) {
             int x = in.readUnsignedShort(), y = in.readUnsignedShort();
             int w = in.readUnsignedShort(), h = in.readUnsignedShort(), encoding = in.readInt();
-            if (encoding == -223) { resize(w, h); continue; }
+            if (encoding == -223) { resize(w, h); resized = true; continue; }
             if (w < 1 || h < 1 || (long) x + w > width || (long) y + h > height) throw new IOException("Display rectangle is outside the framebuffer");
             if (encoding != 0) throw new IOException("Unsupported display encoding: " + encoding);
+            changed = true;
+            if (directPixels) {
+                // Heap ByteBuffer lets readFully place wire RGBA bytes directly in the
+                // framebuffer. Only partial-width rectangles need a row loop.
+                byte[] target = framebuffer.array();
+                if (x == 0 && w == width) in.readFully(target, y * width * 4, w * h * 4);
+                else for (int row = 0; row < h; row++) in.readFully(target, ((y + row) * width + x) * 4, w * 4);
+                continue;
+            }
             int length = w * h;
             if (pixelBuffer.length < length) pixelBuffer = new int[length];
             if (rowBuffer.length < w * 4) rowBuffer = new byte[w * 4];
@@ -84,8 +107,15 @@ final class RfbClient {
             }
             screen.pixels(x, y, w, h, pixelBuffer);
         }
+        if (directPixels && changed) {
+            framebuffer.position(0);
+            screen.pixels(width, height, framebuffer.asReadOnlyBuffer());
+        }
         if (count > 0) screen.updated();
-        request(true);
+        // A pipelined request used the old dimensions. Request the entire resized
+        // framebuffer so newly exposed pixels are never left uninitialized.
+        if (resized) request(false);
+        else if (!pipelineRequests) request(true);
     }
     private void request(boolean incremental) throws IOException {
         synchronized (out) {

@@ -151,9 +151,9 @@ current defaults. Arbitrary environment variables/commands are never accepted.
 | serverNice | 5 | Integer 0–19; Node server and market, applied on server start |
 | cpuAffinity | [] | Client CPU IDs within current allowed set; empty leaves scheduling automatic |
 | fex | {} | Six explicit booleans documented in FEX-PERFORMANCE.md; no new TSO relaxation by default |
-| displayPixels | legacy | legacy or direct; optimized path follows in 0.1.6 |
-| displayPresentation | view | view or surface; optimized path follows in 0.1.6 |
-| pipelineRequests | false | Boolean; request pipeline follows in 0.1.6 |
+| displayPixels | direct | legacy or direct; bulk bitmap copy |
+| displayPresentation | surface | view or surface; dedicated Surface rendering |
+| pipelineRequests | true | Boolean; incremental request before rectangle decoding |
 | networkFastSendto | false | Boolean; native fast path follows in 0.1.7 |
 | networkTraceStats | false | Boolean; trap telemetry follows in 0.1.7 |
 
@@ -166,3 +166,27 @@ restored by restarting the relevant process with nice0, not by renicing a live
 process upward. Ten-second display diagnostics now write on a bounded background
 worker and carry a unique display-session ID plus launch/profile identity.
 “Drawn” counts Canvas submission (later Surface buffer posts), not panel scanout.
+
+## Direct Android display (0.1.6)
+
+The default display now negotiates little-endian32-bit RGB with red/green/blue
+shifts0/8/16, matching Android ARGB_8888 raw memory. RFB rectangles are read
+straight into a reusable full-frame ByteBuffer; partial rows preserve unchanged
+pixels. One opaque bitmap bulk copy publishes the complete update, removing the
+per-pixel Java conversion loop. A tiny RGB/opacity self-check runs before direct
+negotiation; failure selects legacy pixels and is logged/recorded in the display
+receipt. The unused RFB padding byte is never treated as meaningful alpha.
+
+The next incremental request is sent before rectangle decoding. DesktopSize
+changes trigger a corrective full request for the new dimensions. Existing
+framebuffer allocation, rectangle bounds, encoding and message limits remain.
+A dedicated SurfaceView worker posts the newest frame and coalesces pending
+work, keeping at most one render job queued. Distinct successful buffer posts
+increment drawn/s; reconnect, pause and surface recreation retain input-release
+and socket generation checks. Bitmap uploads remain bounded by the existing
+4,194,304-pixel limit.
+
+Use displayPixels=legacy, displayPresentation=view and pipelineRequests=false
+independently to compare each change. The launch observation describes the
+selected profile; display-statistics.json records effective connection settings
+and pixel self-check result, including any Android-side fallback.

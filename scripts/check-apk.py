@@ -28,6 +28,8 @@ def check(path: Path) -> None:
                     raise ValueError("Expected the x64 Wine certificate helper")
             if name.endswith("libproot.so") and b"--eve-client-network" not in data:
                 raise ValueError("PRoot is missing the client loopback network policy")
+            if name.endswith("libproot.so") and (b"--eve-client-network-fast-sendto" not in data or b"--eve-client-network-stats" not in data):
+                raise ValueError("PRoot is missing selectable connected-send acceleration/telemetry")
         other_abis = [name for name in archive.namelist()
                       if name.startswith("lib/") and not name.startswith("lib/arm64-v8a/")]
         if other_abis:

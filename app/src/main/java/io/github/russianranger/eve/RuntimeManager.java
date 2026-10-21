@@ -158,15 +158,26 @@ final class RuntimeManager {
         text(new File(root, "etc/hosts"), "127.0.0.1 localhost\n::1 localhost\n");
         List<String> args = new ArrayList<>(Arrays.asList(proot.getPath(), "--kill-on-exit", "-0", "-r", root.getPath(), "-b", "/dev", "-b", "/proc", "-b", "/sys", "-b", tmp + ":/tmp", "-w", "/"));
         if (root.equals(clientRoot)) args.add(1, "--sysvipc");
+        NetworkOptions network = new NetworkOptions(null, null, null);
         if (restrictedClientNetwork) {
             if (!root.equals(clientRoot)) throw new IOException("Client network policy requires the client runtime");
-            args.add(1, "--eve-client-network");
+            File profile = new File(clientState, "performance.json");
+            try {
+                if (Files.isRegularFile(profile.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+                    JSONObject value = new JSONObject(read(profile, 16384));
+                    network = new NetworkOptions(value.opt("schemaVersion"), value.opt("networkFastSendto"), value.opt("networkTraceStats"));
+                }
+            } catch (Exception invalid) { /* Same bounded defaults as the guest validator. */ }
+            args.add(1, network.fastSendto ? "--eve-client-network-fast-sendto" : "--eve-client-network");
+            if (network.traceStats) args.add(1, "--eve-client-network-stats");
         }
         for (Map.Entry<File, String> entry : bindings.entrySet()) {
             mkdir(entry.getKey()); args.add("-b"); args.add(entry.getKey().getPath() + ":" + entry.getValue());
         }
         args.addAll(Arrays.asList("/usr/bin/env", "-i", "HOME=/root", "USER=root", "PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "TMPDIR=/tmp", "PYTHONUNBUFFERED=1"));
-        if (restrictedClientNetwork) args.add("EVE_CLIENT_NETWORK_POLICY=loopback-v1");
+        if (restrictedClientNetwork) args.addAll(Arrays.asList("EVE_CLIENT_NETWORK_POLICY=loopback-v1",
+            "EVE_CLIENT_NETWORK_FAST_SENDTO=" + (network.fastSendto ? "1" : "0"),
+            "EVE_CLIENT_NETWORK_TRACE_STATS=" + (network.traceStats ? "1" : "0")));
         args.addAll(command);
         ProcessBuilder builder = new ProcessBuilder(args);
         builder.environment().put("PROOT_LOADER", loader.getPath()); builder.environment().put("PROOT_TMP_DIR", tmp.getPath());

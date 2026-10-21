@@ -1,6 +1,7 @@
 /* Small syscall-register/memory fixture for the real PRoot callback. */
 #include <assert.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #define UNUSED __attribute__((unused))
 typedef uintptr_t word_t;
@@ -13,6 +14,10 @@ typedef enum { INITIALIZATION, INHERIT_PARENT, INHERIT_CHILD,
     SYSCALL_ENTER_START, SYSCALL_EXIT_START } ExtensionEvent;
 typedef struct { Sysnum number; unsigned flags; } FilteredSysnum;
 #define FILTER_SYSEXIT 1
+#define FILTER_EVE_CONNECTED_SENDTO 0x10000
+#define talloc_zero(ctx, type) ((void)(ctx), (type *)calloc(1, sizeof(type)))
+#define talloc_reference(ctx, ptr) ((void)(ctx), fixture_reference_fail ? NULL : (ptr))
+static int fixture_reference_fail;
 #define FILTERED_SYSNUM_END {0, 0}
 typedef struct {
     word_t registers[3][7];
@@ -21,7 +26,7 @@ typedef struct {
     unsigned char scratch[128 * 1024];
     size_t used;
 } Tracee;
-typedef struct { Tracee *tracee; FilteredSysnum *filtered_sysnums; } Extension;
+typedef struct { Tracee *tracee; FilteredSysnum *filtered_sysnums; void *config; } Extension;
 #define TRACEE(extension) ((extension)->tracee)
 static word_t peek_reg(const Tracee *tracee, RegVersion version, Reg reg)
 { return tracee->registers[version][reg]; }

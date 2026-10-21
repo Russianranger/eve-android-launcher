@@ -35,7 +35,7 @@ int main(void)
     assert(eve_client_network_callback(&extension, INITIALIZATION, 0, 0) == 0);
     assert(extension.filtered_sysnums != NULL);
     assert(eve_client_network_callback(&extension, INHERIT_PARENT, 0, 0) == 1);
-    assert(eve_client_network_callback(&extension, INHERIT_CHILD, 0, 0) == 0);
+    assert(eve_client_network_callback(&extension, INHERIT_CHILD, (intptr_t)&extension, 0) == 0);
     start(PR_connect, (word_t)&remote, sizeof(remote));
     assert(enter() == -EACCES);
     start(PR_connect, (word_t)&local, sizeof(local));
@@ -56,6 +56,10 @@ int main(void)
     assert(ntohl(copied->sin_addr.s_addr) == INADDR_LOOPBACK);
     assert(inet_pton(AF_INET, "127.0.0.1", &local.sin_addr) == 1);
     local.sin_port = htons(443);
+    start(PR_sendto, 0, 0);
+    assert(enter() == 0); /* Same connected-socket case as the BPF allow. */
+    tracee.registers[ORIGINAL][SYSARG_6] = 1;
+    assert(enter() == -EFAULT); /* NULL+nonzero length is still trapped/rejected. */
     start(PR_sendto, 0, 0);
     tracee.registers[ORIGINAL][SYSARG_5] = (word_t)&remote;
     tracee.registers[ORIGINAL][SYSARG_6] = sizeof(remote);
@@ -85,6 +89,35 @@ int main(void)
     assert(messages[0].msg_hdr.msg_name == &local);
     start(PR_io_uring_setup, 0, 0); assert(enter() == -EACCES);
     start(PR_socketcall, 0, 0); assert(enter() == -EACCES);
+    assert((extension.filtered_sysnums[4].flags & FILTER_EVE_CONNECTED_SENDTO) == 0);
+    assert(eve_client_network_callback(&extension, INITIALIZATION, (intptr_t)"fast-sendto", 0) == 0);
+    assert(extension.filtered_sysnums[4].flags & FILTER_EVE_CONNECTED_SENDTO);
+    assert(eve_client_network_callback(&extension, INITIALIZATION, (intptr_t)"stats", 0) == 0);
+    start(PR_sendmsg, (word_t)&message, 0); assert(enter() == 0);
+    assert(((struct eve_network_config *)extension.config)->sendmsg_traps == 1);
+    assert(eve_client_network_callback(&extension, INITIALIZATION, (intptr_t)"invalid", 0) == -EINVAL);
+    assert(eve_client_network_callback(&extension, INHERIT_CHILD, (intptr_t)&extension, 0) == 0);
+    assert(extension.filtered_sysnums[4].flags & FILTER_EVE_CONNECTED_SENDTO);
+    {
+        Tracee child_tracee = {0};
+        Extension child = { .tracee = &child_tracee };
+        fixture_reference_fail = 1;
+        assert(eve_client_network_callback(&child, INHERIT_CHILD, (intptr_t)&extension, 0) == -ENOMEM);
+        assert(child.filtered_sysnums != NULL && child.config == NULL);
+        child_tracee.syscall = PR_sendmsg;
+        message.msg_name = &remote;
+        child_tracee.registers[ORIGINAL][SYSARG_2] = (word_t)&message;
+        assert(eve_client_network_callback(&child, SYSCALL_ENTER_START, 0, 0) == -EACCES);
+        message.msg_name = &local;
+        fixture_reference_fail = 0;
+        assert(eve_client_network_callback(&child, INHERIT_CHILD, (intptr_t)&extension, 0) == 0);
+        assert(child.config == extension.config && child.filtered_sysnums == extension.filtered_sysnums);
+        child_tracee.syscall = PR_sendmsg;
+        child_tracee.registers[ORIGINAL][SYSARG_2] = (word_t)&message;
+        assert(eve_client_network_callback(&child, SYSCALL_ENTER_START, 0, 0) == 0);
+        assert(((struct eve_network_config *)extension.config)->sendmsg_traps == 2);
+    }
+    free(extension.config);
     puts("Actual PRoot callback: TCP/UDP/message egress checks, frozen arguments, child policy and sendmmsg output passed");
     return 0;
 }

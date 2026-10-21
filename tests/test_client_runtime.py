@@ -266,6 +266,20 @@ class ClientRuntimeTests(unittest.TestCase):
             self.assertEqual(report["performance"][key], baseline)
             self.assertNotEqual(report["requestedPerformance"][key], baseline)
 
+    def test_native_network_flags_override_a_later_profile_change(self):
+        (self.state / "performance.json").write_text(json.dumps({"networkFastSendto": False, "networkTraceStats": False}))
+        runtime = MODULE.Runtime(self.settings())
+        with mock.patch.dict(os.environ, {"EVE_CLIENT_NETWORK_FAST_SENDTO": "1", "EVE_CLIENT_NETWORK_TRACE_STATS": "1"}), \
+                mock.patch.object(runtime, "preflight", return_value={}), \
+                mock.patch.object(runtime, "preflight_display"), \
+                mock.patch.object(runtime, "spawn", side_effect=InterruptedError("fixture stops before display")):
+            runtime.start()
+        report = json.loads(runtime.status_file.read_text())
+        for key in ("networkFastSendto", "networkTraceStats"):
+            self.assertFalse(report["requestedPerformance"][key])
+            self.assertTrue(report["performance"][key])
+        self.assertIn("native session setting", " ".join(report["performance"]["warnings"]))
+
     def test_immediate_stop_is_not_erased_by_new_supervisor(self):
         (self.state / "run").mkdir()
         (self.state / "run/stop").write_text("immediate-stop")

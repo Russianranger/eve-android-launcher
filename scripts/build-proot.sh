@@ -28,6 +28,7 @@ else
 fi
 mkdir -p proot/src/extension/eve_client_network
 cp "$repo_root/native/eve-client-network.c" proot/src/extension/eve_client_network/eve_client_network.c
+cp "$repo_root/native/eve-sendto-filter.h" proot/src/syscall/eve-sendto-filter.h
 # This pinned revision omits the declaration header needed by modern Clang.
 python3 - <<'PY'
 from pathlib import Path
@@ -108,7 +109,7 @@ import pathlib, shutil, subprocess, sys
 work, root = map(pathlib.Path, sys.argv[1:])
 source = work / 'corresponding-sources'
 tracked = subprocess.check_output(['git', '-C', str(work / 'proot'), 'ls-files', '-z']).decode().split('\0')
-for relative in filter(None, tracked + ['src/loader/loader-info.py', 'src/extension/eve_client_network/eve_client_network.c']):
+for relative in filter(None, tracked + ['src/loader/loader-info.py', 'src/extension/eve_client_network/eve_client_network.c', 'src/syscall/eve-sendto-filter.h']):
     origin = work / 'proot' / relative
     if not origin.is_file():
         continue
@@ -117,7 +118,7 @@ for relative in filter(None, tracked + ['src/loader/loader-info.py', 'src/extens
     shutil.copy2(origin, target)
 shutil.copy2(work / 'talloc.tar.gz', source / 'talloc-2.4.3.tar.gz')
 shutil.copy2(root / 'scripts/build-proot.sh', source / 'build/build-proot.sh')
-for name in ('proot-acceleration.patch', 'proot-sysvipc.patch', 'eve-client-network.patch', 'eve-client-network.c'):
+for name in ('proot-acceleration.patch', 'proot-sysvipc.patch', 'eve-client-network.patch', 'eve-client-network.c', 'eve-sendto-filter.h'):
     shutil.copy2(root / 'native' / name, source / 'build' / name)
 (source / 'README.txt').write_text(
     'Corresponding sources for the ARM64 Android PRoot executable and loader.\n'

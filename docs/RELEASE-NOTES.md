@@ -1,13 +1,12 @@
-# EVE Android Launcher 0.1.6 — Direct Surface display
+# EVE Android Launcher 0.1.7 — Connected send acceleration
 
-Adds bulk RGBA ByteBuffer→opaque Bitmap updates, early incremental RFB requests
-and a dedicated SurfaceView rendering worker. Each change is independently
-selectable in Client → Edit performance settings; legacy pixels, View drawing
-and end-of-decode requests remain available. A runtime pixel/opacity self-check
-falls back cleanly if Android's buffer layout differs.
+Adds an independently selectable in-kernel fast path for connected
+sendto(NULL,0). Explicit destinations and socket/connect/bind, sendmsg/sendmmsg
+and io_uring retain the existing loopback enforcement. Wildcard binds and TLS
+port rewriting remain unchanged. Set networkFastSendto=false for the baseline.
 
-Default `{}` now enables the direct/surface/pipelined display alongside the
-0.1.5 runtime knobs. Separate received/drawn counters and connection settings
-are exported. Compare one setting at a time using TESTING.md; physical Thor FPS
-is unmeasured. Existing content validation, loopback restrictions, TLS, memory
-reserves, input release and process journals remain in place.
+Opt-in networkTraceStats logs cumulative send trap counts for device A/B tests;
+no Thor sendmsg frequency or FPS gain is claimed. Default statistics are off.
+The 0.1.5 runtime knobs and 0.1.6 direct Surface display remain configurable.
+See TESTING.md for exact FPS/trap comparisons. Update in place, retaining all
+accepted client files, runtime/prefix and world state.

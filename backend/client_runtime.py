@@ -516,10 +516,14 @@ class Runtime:
                 if self.performance["renderer"] != "wined3d":
                     self.performance["renderer"] = "wined3d"
                     self.performance["warnings"].append("DXVK/Turnip is not installed; using WineD3D / llvmpipe")
-                for key, baseline in (("networkFastSendto", False), ("networkTraceStats", False)):
-                    if self.performance[key] != baseline:
-                        self.performance["warnings"].append(key + " is not available in this build; using baseline")
-                        self.performance[key] = baseline
+                # These flags were selected by Android before PRoot installed its
+                # filter. Report that immutable session policy, not later edits.
+                for key, name in (("networkFastSendto", "EVE_CLIENT_NETWORK_FAST_SENDTO"),
+                                  ("networkTraceStats", "EVE_CLIENT_NETWORK_TRACE_STATS")):
+                    active = os.environ.get(name) == "1"
+                    if self.performance[key] != active:
+                        self.performance["warnings"].append(key + " uses the native session setting")
+                    self.performance[key] = active
                 for warning in self.performance["warnings"]:
                     print("Performance: " + warning, flush=True)
                 self.cancellation_point()

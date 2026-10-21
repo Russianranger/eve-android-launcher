@@ -154,8 +154,8 @@ current defaults. Arbitrary environment variables/commands are never accepted.
 | displayPixels | direct | legacy or direct; bulk bitmap copy |
 | displayPresentation | surface | view or surface; dedicated Surface rendering |
 | pipelineRequests | true | Boolean; incremental request before rectangle decoding |
-| networkFastSendto | false | Boolean; native fast path follows in 0.1.7 |
-| networkTraceStats | false | Boolean; trap telemetry follows in 0.1.7 |
+| networkFastSendto | true | Boolean; connected sendto(NULL,0) in-kernel fast path |
+| networkTraceStats | false | Boolean; cumulative trapped-send diagnostics |
 
 Esync falls back to false before wineserver starts if eventfd creation, fd-limit
 raising or the minimum 4096 soft limit fails. Fsync remains disabled. A Python
@@ -190,3 +190,33 @@ Use displayPixels=legacy, displayPresentation=view and pipelineRequests=false
 independently to compare each change. The launch observation describes the
 selected profile; display-statistics.json records effective connection settings
 and pixel self-check result, including any Android-side fallback.
+
+## Connected send acceleration (0.1.7)
+
+Android selects either --eve-client-network or
+--eve-client-network-fast-sendto before PRoot starts. Both install the same
+loopback policy. The optional seccomp rule allows only sendto with destination
+pointer NULL **and** address length0, checking both32-bit halves of both
+arguments inside the matching architecture section. All non-NULL destinations,
+NULL/nonzero lengths, socket/connect/bind, sendmsg/sendmmsg and io_uring still
+trap. Destination validation, private sockaddr copying, wildcard-bind rewriting
+and localhost443 mapping are unchanged. Connected sockets already acquired
+their endpoint through the confined connect/accept path; inherited/passed
+connected descriptors were already usable through write(). This adds no new
+network authority. A C test installs the actual BPF instructions in Linux and
+checks both fast and trapped paths; other fixtures retain outbound denials.
+
+networkFastSendto defaults true. Set it false for the original filter. Because
+the optimization also bypasses PRoot's compatibility handling for connected
+NETLINK_ROUTE sends, disable it if interface discovery regresses. No option
+disables containment. Android passes the selected native flags to the guest;
+status/launch observation record those flags even if the JSON changes later.
+
+networkTraceStats=true adds --eve-client-network-stats and logs cumulative
+sendtoTraps/sendmsgTraps/sendmmsgTraps with monotonic timestamps across the
+session's descendants, at most once per ten seconds when a send trap occurs.
+The existing client-supervisor.log/support tail captures these lines. Subtract
+counter/timestamp pairs to obtain traps/s. Fast sends cannot be counted by the
+userspace tracer. We have not measured the Thor's sendmsg frequency: compare
+baseline and fast modes on-device using TESTING.md. Statistics are off by
+default, avoiding clock/log overhead for normal sessions.

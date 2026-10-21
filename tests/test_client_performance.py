@@ -54,6 +54,8 @@ class PerformanceTests(unittest.TestCase):
         self.assertEqual(value["displayPixels"], "direct")
         self.assertEqual(value["displayPresentation"], "surface")
         self.assertTrue(value["pipelineRequests"])
+        self.assertTrue(value["networkFastSendto"])
+        self.assertFalse(value["networkTraceStats"])
         self.assertEqual(value["fex"], {})
         self.assertEqual(value["cpuAffinity"], [])
         self.assertGreater(value["wineServerNice"], 0)

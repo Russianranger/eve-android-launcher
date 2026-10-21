@@ -155,7 +155,20 @@ public final class RfbHostTest {
         frames.reset(900); frames.received(); sample = frames.sample(900);
         check(sample.receivedPerSecond == 0, "zero elapsed window is finite");
     }
+    private static void networkOptions() {
+        NetworkOptions defaults = new NetworkOptions(null, null, null);
+        check(defaults.fastSendto && !defaults.traceStats, "native defaults");
+        NetworkOptions selected = new NetworkOptions(1, false, true);
+        check(!selected.fastSendto && selected.traceStats, "strict native boolean selection");
+        for (Object schema : new Object[]{2, true, "1", 1.0}) {
+            NetworkOptions invalid = new NetworkOptions(schema, false, true);
+            check(invalid.fastSendto && !invalid.traceStats, "unsupported schema uses all defaults");
+        }
+        NetworkOptions strings = new NetworkOptions(1L, "false", "true");
+        check(strings.fastSendto && !strings.traceStats, "string booleans cannot change filter selection");
+    }
     public static void main(String[] args) throws Exception {
+        networkOptions();
         frameCounters(); rawFrameAndInput(); malformedFrames(); directFramesAndPipeline(); partialDirectFramesAndResize(); multipleRectanglesAndModeCombinations(); malformedDirectFrames();
         System.out.println("Client display RFB host fixtures passed");
     }

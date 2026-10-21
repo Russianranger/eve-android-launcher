@@ -50,7 +50,7 @@ def defaults(cpus: dict[str, Any] | None = None) -> dict[str, Any]:
             "wineEsync": True, "wineDebug": "-all", "lpNumThreads": min(16, len(cpus["performance"])),
             "wineServerNice": 3, "serverNice": 5, "cpuAffinity": [],
             "displayPixels": "direct", "displayPresentation": "surface", "pipelineRequests": True,
-            "fex": {}, "networkFastSendto": False, "networkTraceStats": False, "cpuTopology": cpus}
+            "fex": {}, "networkFastSendto": True, "networkTraceStats": False, "cpuTopology": cpus}
 
 
 def load(path: Path) -> dict[str, Any]:

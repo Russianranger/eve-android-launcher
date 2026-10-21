@@ -215,3 +215,17 @@ background/resume and repeated reconnects. Inspect display-statistics.json for
 effective settings and pixel self-check. Return any single field to baseline
 if it regresses. Drawn counts successful Canvas/Surface submissions, not measured
 physical panel frames. Default `{}` now selects all three display optimizations.
+
+### Network comparisons (0.1.7)
+
+Hold all successful display/runtime settings fixed. First set
+networkFastSendto=false and networkTraceStats=true; restart client, warm up30s
+and observe60s. Repeat with networkFastSendto=true/networkTraceStats=true.
+Export support after each. In client/logs/client-supervisor.log locate
+`EVE client network stats` lines. For two samples calculate
+(sendmsgTraps2-sendmsgTraps1)/(monotonicSeconds2-monotonicSeconds1), similarly
+for sendto/sendmmsg. Report the measured rates, both display counters and EVE
+FPS together. Silence while idle is expected; there is no fabricated zero-rate
+sample. Host fixtures verify counting and BPF behavior, not device frequency.
+Confirm login/local-server traffic still works. Restore networkTraceStats=false
+for normal use; set networkFastSendto=false if interface discovery changes.

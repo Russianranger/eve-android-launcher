@@ -1,19 +1,37 @@
 #!/usr/bin/env python3
 """Check that the built ARM64 launcher includes its actual runtime entrypoints."""
 import argparse
+import hashlib
+import json
 import struct
 import zipfile
 from pathlib import Path
 
 
+def check_renderer(archive: zipfile.ZipFile) -> None:
+    # Verify the bytes AssetManager will return, not just a matching filename.
+    if archive.getinfo("assets/renderer-manifest.json").file_size > 128 * 1024:
+        raise ValueError("Renderer manifest exceeds its size bound")
+    manifest = json.loads(archive.read("assets/renderer-manifest.json"))
+    if not isinstance(manifest, dict) or manifest.get("file") != "renderer-runtime.tar.gz":
+        raise ValueError("Unexpected renderer manifest filename")
+    info = archive.getinfo("assets/renderer-runtime.bin")
+    if not 1 <= info.file_size <= 64 * 1024**2 or info.file_size != manifest.get("sizeBytes"):
+        raise ValueError("Renderer payload size mismatch")
+    payload = archive.read(info)
+    if payload[:3] != b"\x1f\x8b\x08" or hashlib.sha256(payload).hexdigest() != manifest.get("sha256"):
+        raise ValueError("APK changed the hashed renderer gzip payload")
+
+
 def check(path: Path) -> None:
     with zipfile.ZipFile(path) as archive:
+        check_renderer(archive)
         required = (
             "lib/arm64-v8a/libproot.so", "lib/arm64-v8a/libproot-loader.so",
             "assets/server_runtime.py", "assets/client_prepare.py", "assets/client_probe.sh",
             "assets/client_runtime.py", "assets/client_performance.py", "assets/eve-client-gate.exe",
             "assets/client_renderer.py", "assets/eve-renderer-probe.exe",
-            "assets/renderer-runtime.tar.gz", "assets/renderer-manifest.json",
+            "assets/renderer-runtime.bin", "assets/renderer-manifest.json",
         )
         for name in required:
             data = archive.read(name)

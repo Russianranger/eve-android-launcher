@@ -10,6 +10,7 @@ __pycache__/
 /backend/eve-client-gate.exe
 /backend/eve-renderer-probe.exe
 /backend/renderer-runtime.tar.gz
+/backend/renderer-runtime.bin
 /backend/renderer-manifest.json
 /vendor/evejs/*
 !/vendor/evejs/LICENSE

@@ -162,7 +162,9 @@ jobs:
           name: renderer-runtime
           path: runtime-work/renderer
       - name: Stage the hashed optional renderer assets
-        run: cp runtime-work/renderer/renderer-runtime.tar.gz runtime-work/renderer/renderer-manifest.json backend/
+        run: |
+          cp runtime-work/renderer/renderer-runtime.tar.gz backend/renderer-runtime.bin
+          cp runtime-work/renderer/renderer-manifest.json backend/
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

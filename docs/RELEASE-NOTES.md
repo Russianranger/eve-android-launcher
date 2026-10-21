@@ -11,6 +11,9 @@ worker/priority/FEX controls, direct/pipelined Surface display and connected-sen
 acceleration, each independently selectable. Received/drawn counters and exact
 requested/effective profiles support device A/B testing. VNC presentation remains.
 
+The APK transports the renderer archive under a neutral binary asset name and
+verifies its exact gzip bytes against the manifest before publication.
+
 No CCP client files are bundled/downloaded. Exact build/hash/patch checks,
 loopback containment, TLS checks, memory reserves and process journals remain.
 Update in place and keep the accepted runtimes, prefix, client cache and world.

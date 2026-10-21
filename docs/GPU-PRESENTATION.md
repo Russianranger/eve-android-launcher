@@ -15,6 +15,14 @@ The corresponding source artifact preserves those release archives, complete
 license texts, the build scripts, compiler version and Debian package list.
 The official release pins are also enforced in the installed Python backend.
 
+The APK carries the gzip archive as `assets/renderer-runtime.bin` to preserve
+its exact bytes across Android asset tooling. AGP 8.9.1's sdk-common 31.9.1
+`AssetItem`/`MergedAssetWriter` remove `.gz` and decompress such assets (see the
+[official sources](https://dl.google.com/dl/android/maven2/com/android/tools/sdk-common/31.9.1/sdk-common-31.9.1-sources.jar)). The launcher copies the neutral asset
+back to the manifest's `renderer-runtime.tar.gz` guest filename. APK validation
+checks gzip magic, length and SHA-256 against the manifest, so neither suffix
+changes nor transparent decompression can pass the release gate.
+
 The existing rootfs archive was independently downloaded and its unchanged
 SHA-256 `f036c00a290abb953bec26be80c4d8fe492fd986e7a589c51008124432c8641e`
 verified before inspecting its contents. It already contains the Vulkan loader

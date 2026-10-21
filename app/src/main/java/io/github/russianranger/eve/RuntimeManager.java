@@ -83,8 +83,12 @@ final class RuntimeManager {
         File performance = new File(clientState, "performance.json");
         if (!performance.exists()) text(performance, "{\"schemaVersion\":1}\n");
         for (String name : context.getAssets().list("")) {
-            if (name.endsWith(".py") || name.endsWith(".sh") || name.endsWith(".json") || name.endsWith(".exe") || name.equals("renderer-runtime.tar.gz")) {
-                try (InputStream in = context.getAssets().open(name)) { copy(in, new File(backend, name)); }
+            if (name.endsWith(".py") || name.endsWith(".sh") || name.endsWith(".json") || name.endsWith(".exe") || name.equals("renderer-runtime.bin")) {
+                // Use a neutral asset name to preserve the exact hashed gzip
+                // bytes across Android build tools; restore the manifest's
+                // guest filename only after copying the asset.
+                String target = name.equals("renderer-runtime.bin") ? "renderer-runtime.tar.gz" : name;
+                try (InputStream in = context.getAssets().open(name)) { copy(in, new File(backend, target)); }
             }
         }
     }

@@ -26,6 +26,7 @@ import time
 from typing import Any
 
 import client_prepare
+import client_performance
 import server_runtime
 from server_runtime import (BusyError, RuntimeErrorDetail, atomic_json, fetch_health,
                             group_members, identity_alive, process_identity,
@@ -107,13 +108,10 @@ class Runtime:
         self.cancelled = False
         self.server_identities: dict[str, Any] = {}
         self.tls_report: dict[str, Any] = {}
-        # The measurement release records the existing settings verbatim. Later
-        # profiles resolve validated performance.json values before any launch.
-        self.performance = {"schemaVersion": 1, "renderer": "wined3d", "frameRate": 15,
-                            "resolution": "1280x720", "wineEsync": False,
-                            "wineDebug": "-all,err+all", "lpNumThreads": 4,
-                            "displayPixels": "legacy", "displayPresentation": "view",
-                            "pipelineRequests": False}
+        # Snapshot once per supervisor. Editing the file takes effect at the
+        # next launch, so all Wine roles and the observation agree on a profile.
+        self.requested_performance = client_performance.load(self.s.state / "performance.json")
+        self.performance = dict(self.requested_performance)
 
     def request_stop(self, *_: Any) -> None:
         self.cancelled = True
@@ -162,7 +160,8 @@ class Runtime:
                   "ready": ready, "client_launch_qualified": False,
                   "login_qualified": False, "graphics_qualified": False,
                   "networkPolicy": NETWORK_POLICY, "displayPort": self.s.display_port,
-                  "resolution": self.performance["resolution"], "performance": self.performance, "updatedAt": time.time(),
+                  "resolution": self.performance["resolution"], "performance": self.performance,
+                  "requestedPerformance": self.requested_performance, "updatedAt": time.time(),
                   "memory": memory, **self.identities, **details}
         atomic_json(self.status_file, report)
         if self.children:
@@ -171,19 +170,20 @@ class Runtime:
 
     def environment(self) -> dict[str, str]:
         env = {key: value for key, value in os.environ.items()
-               if not key.startswith(("BOX64_", "FEX_", "DOTNET_", "COMPlus_"))
+               if not key.startswith(("BOX64_", "FEX_", "DOTNET_", "COMPlus_", "VK_", "DXVK_", "MESA_", "TU_"))
                and key not in ("DISPLAY", "LD_PRELOAD", "LD_LIBRARY_PATH", "HTTP_PROXY",
                                "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")}
         env.update({"HOME": "/root", "PATH": "/opt/wine/bin:/usr/bin:/bin", "LANG": "C.UTF-8",
                     "DISPLAY": ":" + str(self.s.display_number),
                     "WINEPREFIX": str(self.s.state / "prefix"), "WINEARCH": "win64",
-                    "WINEDEBUG": "-all,err+all", "WINEDLLOVERRIDES": "winemenubuilder,mshtml,mscoree=;d3d11,dxgi=b",
-                    "WINEESYNC": "0", "WINEFSYNC": "0", "FEX_DISABLETELEMETRY": "1",
-                    "LIBGL_ALWAYS_SOFTWARE": "1", "GALLIUM_DRIVER": "llvmpipe", "LP_NUM_THREADS": "4",
+                    "WINEDEBUG": self.performance["wineDebug"], "WINEDLLOVERRIDES": "winemenubuilder,mshtml,mscoree=;d3d11,dxgi=b",
+                    "WINEESYNC": "1" if self.performance["wineEsync"] else "0", "WINEFSYNC": "0", "FEX_DISABLETELEMETRY": "1",
+                    "LIBGL_ALWAYS_SOFTWARE": "1", "GALLIUM_DRIVER": "llvmpipe", "LP_NUM_THREADS": str(self.performance["lpNumThreads"]),
                     "EO_REMOTEFILECACHEFOLDER": "Z:\\client\\ResFiles",
                     "EVE_CLIENT_SENTRY_DSN": "http://evejs@127.0.0.1:26002/1",
                     "NO_PROXY": "127.0.0.1,localhost,::1", "no_proxy": "127.0.0.1,localhost,::1",
                     "SSL_CERT_FILE": "Z:\\client-state\\trust\\evejs-ca.pem"})
+        env.update(client_performance.fex_environment(self.performance))
         return env
 
     def require_server(self) -> None:
@@ -290,7 +290,8 @@ class Runtime:
         self.logs.mkdir(parents=True, exist_ok=True)
         path = self.logs / ("client-" + role + ".log")
         rotate_log(path)
-        process = subprocess.Popen(command, env=env or self.environment(), cwd=cwd or self.s.state,
+        process = subprocess.Popen(client_performance.command(role, command, self.performance),
+                                   env=env or self.environment(), cwd=cwd or self.s.state,
                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, start_new_session=True)
         self.children[role] = process
@@ -510,15 +511,28 @@ class Runtime:
             failure = None
             clean = True
             try:
+                self.performance = client_performance.prepare(self.performance)
+                self.performance["requestedRenderer"] = self.performance["renderer"]
+                if self.performance["renderer"] != "wined3d":
+                    self.performance["renderer"] = "wined3d"
+                    self.performance["warnings"].append("DXVK/Turnip is not installed; using WineD3D / llvmpipe")
+                for key, baseline in (("displayPixels", "legacy"), ("displayPresentation", "view"),
+                                      ("pipelineRequests", False), ("networkFastSendto", False),
+                                      ("networkTraceStats", False)):
+                    if self.performance[key] != baseline:
+                        self.performance["warnings"].append(key + " is not available in this build; using baseline")
+                        self.performance[key] = baseline
+                for warning in self.performance["warnings"]:
+                    print("Performance: " + warning, flush=True)
                 self.cancellation_point()
                 self.status("starting", "Checking the prepared client and local server")
                 qualification = self.preflight()
                 self.preflight_display()
                 self.cancellation_point()
                 display_command = self.s.display_command or (
-                    self.s.display, ":" + str(self.s.display_number), "-geometry", "1280x720", "-depth", "24",
+                    self.s.display, ":" + str(self.s.display_number), "-geometry", self.performance["resolution"], "-depth", "24",
                     "-rfbport", str(self.s.display_port), "-localhost", "yes", "-SecurityTypes", "None",
-                    "-nolisten", "tcp", "-ac", "-AlwaysShared", "-FrameRate", "15", "-desktop", "EVE Local Preview")
+                    "-nolisten", "tcp", "-ac", "-AlwaysShared", "-FrameRate", str(self.performance["frameRate"]), "-desktop", "EVE Local Preview")
                 self.status("starting", "Starting the private client display")
                 self.spawn("display", display_command)
                 self.wait_display()
@@ -547,7 +561,7 @@ class Runtime:
                     "processStartupObserved": True, "login_qualified": False,
                     "graphics_qualified": False, "wine_cryptoapi_trust": True, "localhost443_tls": True,
                     "networkPolicy": NETWORK_POLICY, "renderer": "WineD3D / llvmpipe", "displayPort": self.s.display_port,
-                    "performance": self.performance})
+                    "performance": self.performance, "requestedPerformance": self.requested_performance})
                 last_health = 0.0
                 while not self.stopping():
                     self.check_child("display")

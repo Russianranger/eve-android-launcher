@@ -179,3 +179,27 @@ check-apk.py/check-server-package.py require their built archives;
 check-server-runtime.py requires the native ARM64 Docker image. In environments
 without Android SDK/Docker these checks are performed by the unchanged CI jobs,
 not reported as local passes.
+
+## Exact profile comparisons
+
+Use Client → Edit performance settings. Stop/restart the client after each save;
+stop/restart the server when changing serverNice. Keep fex={} and cpuAffinity=[]
+until the display/renderer comparisons are complete. Warm up 30 seconds, record
+six ten-second samples in the same scene, and export support after each trial.
+The effective launch profile, not just the edited JSON, is the evidence.
+
+Original baseline (also available through the editor's Baseline button):
+
+```json
+{"schemaVersion":1,"renderer":"wined3d","frameRate":15,"resolution":"1280x720","wineEsync":false,"wineDebug":"-all,err+all","lpNumThreads":4,"wineServerNice":0,"serverNice":0,"cpuAffinity":[],"fex":{},"displayPixels":"legacy","displayPresentation":"view","pipelineRequests":false,"networkFastSendto":false,"networkTraceStats":false}
+```
+
+First comparison: change only frameRate to60 in that baseline. Then compare
+960x540 by changing only resolution. Next try wineEsync=true; confirm the
+effective profile says true and inspect fdSoftLimit (fallback is explicit).
+Compare wineDebug=-all, then detected lpNumThreads by deleting that field,
+then wineServerNice=3/serverNice=5 after a server restart. Change one variable
+per trial. Finally `{}` selects all current defaults. Optional pinning uses
+explicit CPU IDs from cpuTopology.allowed/performance in launch-observation.json;
+do not assume Android CPU numbering. FEX experiments are separate and opt-in;
+see FEX-PERFORMANCE.md and keep the successful reference profile saved.

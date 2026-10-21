@@ -11,7 +11,7 @@ def check(path: Path) -> None:
         required = (
             "lib/arm64-v8a/libproot.so", "lib/arm64-v8a/libproot-loader.so",
             "assets/server_runtime.py", "assets/client_prepare.py", "assets/client_probe.sh",
-            "assets/client_runtime.py", "assets/eve-client-gate.exe",
+            "assets/client_runtime.py", "assets/client_performance.py", "assets/eve-client-gate.exe",
         )
         for name in required:
             data = archive.read(name)

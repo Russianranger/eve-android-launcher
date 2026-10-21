@@ -26,6 +26,8 @@ import urllib.error
 import urllib.request
 import uuid
 
+import client_performance
+
 
 CLIENT_BUILD = 3396210
 EVEJS_VERSION = "0.12.9"
@@ -57,6 +59,7 @@ class Settings:
     game_port: int = 26000
     gateway_port: int = 26002
     additional_ports: tuple[int, ...] = (26001, 26003, 5222, 26400)
+    performance: Path = Path("/state/performance.json")
     node_heap_mb: int = 2048
     market_timeout: float = 120
     startup_timeout: float = 300
@@ -212,6 +215,7 @@ class Runtime:
         self.cancelled = False
         self.previous_status: dict[str, Any] = {}
         self.identities: dict[str, Any] = {}
+        self.performance = client_performance.load(self.s.performance)
 
     def request_stop(self, *_: Any) -> None:
         self.cancelled = True
@@ -230,7 +234,8 @@ class Runtime:
                 ]
         self.previous_status = {
             "schemaVersion": SCHEMA_VERSION, "phase": phase, "message": message,
-            "ready": ready, "updatedAt": time.time(), **self.identities, **details,
+            "ready": ready, "updatedAt": time.time(), "serverNice": self.performance["serverNice"],
+            "performanceWarnings": self.performance["warnings"], **self.identities, **details,
         }
         atomic_json(self.status_file, self.previous_status)
         if self.identities.get("marketIdentity") or self.identities.get("serverIdentity"):
@@ -547,7 +552,8 @@ log_level = "info"
         self.logs.mkdir(parents=True, exist_ok=True)
         with (self.logs / f"{name}-console.log").open("ab", buffering=0) as stream:
             stream.write(f"\n=== {name} start {time.time():.3f} ===\n".encode("utf-8"))
-            return subprocess.Popen(command, cwd=cwd, env=self.environment(), stdin=subprocess.DEVNULL,
+            return subprocess.Popen(client_performance.command(name, command, self.performance),
+                                    cwd=cwd, env=self.environment(), stdin=subprocess.DEVNULL,
                                     stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
 
     def child_running(self, process: subprocess.Popen | None, name: str) -> None:

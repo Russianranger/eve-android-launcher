@@ -125,3 +125,44 @@ profile. This first measurement build retains the existing 15 Hz Xvnc,
 will be read at launch from private client-state/performance.json. Support
 exports explicitly include that file and launch-observation.json so requested
 and effective settings can be compared.
+
+## Runtime performance profiles (0.1.5)
+
+Client → Edit performance settings saves private `client-state/performance.json`.
+It is a JSON object limited to 16 KiB, read once per launch. Missing/invalid values
+use defaults; unsupported schema versions use all defaults. Warnings, the
+validated requested profile and effective profile appear in status and
+launch-observation.json, both exported. Settings take effect after stopping and
+starting the client; restart the server when changing serverNice. No client
+reimport, prefix reset or APK rebuild is needed. The editor's Baseline button
+fills the original settings; Save applies them to the next launch. `{}` selects
+current defaults. Arbitrary environment variables/commands are never accepted.
+
+| Key | Default | Accepted values / effect |
+| --- | --- | --- |
+| schemaVersion | 1 | Only 1 |
+| renderer | wined3d | wined3d; dxvk-turnip explicitly falls back until installed |
+| frameRate | 60 | Integer 1–120; Xvnc update cap, not guaranteed FPS |
+| resolution | 1280x720 | 1280x720 or 960x540 |
+| wineEsync | true | Boolean; native eventfd check and fd soft limit raised toward 65536 before Wine |
+| wineDebug | -all | -all or -all,err+all |
+| lpNumThreads | Detected performance-core count, capped at 16 | Integer 1–16; sysfs capacity, then max frequency; available CPUs if topology unavailable |
+| wineServerNice | 3 | Integer 0–19; lower priority than client nice0 |
+| serverNice | 5 | Integer 0–19; Node server and market, applied on server start |
+| cpuAffinity | [] | Client CPU IDs within current allowed set; empty leaves scheduling automatic |
+| fex | {} | Six explicit booleans documented in FEX-PERFORMANCE.md; no new TSO relaxation by default |
+| displayPixels | legacy | legacy or direct; optimized path follows in 0.1.6 |
+| displayPresentation | view | view or surface; optimized path follows in 0.1.6 |
+| pipelineRequests | false | Boolean; request pipeline follows in 0.1.6 |
+| networkFastSendto | false | Boolean; native fast path follows in 0.1.7 |
+| networkTraceStats | false | Boolean; trap telemetry follows in 0.1.7 |
+
+Esync falls back to false before wineserver starts if eventfd creation, fd-limit
+raising or the minimum 4096 soft limit fails. Fsync remains disabled. A Python
+exec wrapper applies nice/affinity without changing the journaled PID; failures
+retain the available scheduling policy and log the actual settings. Profiles
+never change memory reserves or process ownership checks. Priority can be
+restored by restarting the relevant process with nice0, not by renicing a live
+process upward. Ten-second display diagnostics now write on a bounded background
+worker and carry a unique display-session ID plus launch/profile identity.
+“Drawn” counts Canvas submission (later Surface buffer posts), not panel scanout.

@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.net.*;
 import java.io.File;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.concurrent.*;
 import org.json.JSONObject;
 
@@ -27,6 +28,10 @@ public final class ClientDisplayActivity extends Activity {
     private volatile long generation;
     private volatile boolean receivedFrame;
     private final FrameStats frames = new FrameStats();
+    private final String displaySession = UUID.randomUUID().toString();
+    private final ThreadPoolExecutor diagnostics = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS,
+        new ArrayBlockingQueue<>(1), task -> new Thread(task, "eve-display-statistics"), new ThreadPoolExecutor.DiscardOldestPolicy());
+    private volatile JSONObject launchDetails = new JSONObject();
     private String connectionStatus = "Connecting to local client display…";
     private String frameStatus = "";
     private final Runnable sampleFrames = new Runnable() {
@@ -35,17 +40,23 @@ public final class ClientDisplayActivity extends Activity {
             FrameStats.Sample sample = frames.sample(System.nanoTime());
             frameStatus = String.format(Locale.ROOT, " · received %.1f/s · drawn %.1f/s", sample.receivedPerSecond, sample.drawnPerSecond);
             status.setText(connectionStatus + frameStatus);
-            RuntimeService.append(ClientDisplayActivity.this, "Display FPS" + frameStatus + " (updates=" + sample.received + ", draws=" + sample.drawn + ")");
+            final String summary = "Display FPS" + frameStatus + " (updates=" + sample.received + ", draws=" + sample.drawn + ")";
+            final long token = generation, observed = System.currentTimeMillis();
+            final JSONObject launch = launchDetails;
+            diagnostics.execute(() -> saveSample(sample, summary, token, observed, launch));
+            handler.postDelayed(this, 10000);
+        }
+    };
+    private void saveSample(FrameStats.Sample sample, String summary, long token, long observed, JSONObject launch) {
+            RuntimeService.append(this, summary);
             try {
-                JSONObject value = new JSONObject().put("format", 1).put("activitySession", generation)
-                    .put("observedAtMillis", System.currentTimeMillis()).put("elapsedNanos", sample.elapsedNanos)
+                JSONObject value = new JSONObject().put("format", 1).put("displaySession", displaySession).put("connectionGeneration", token)
+                    .put("observedAtMillis", observed).put("elapsedNanos", sample.elapsedNanos).put("launch", launch)
                     .put("framesReceived", sample.received).put("framesDrawn", sample.drawn)
                     .put("framesReceivedPerSecond", sample.receivedPerSecond).put("framesDrawnPerSecond", sample.drawnPerSecond);
                 RuntimeManager.text(new File(RuntimeManager.get(ClientDisplayActivity.this).clientState, "display-statistics.json"), value.toString(2));
             } catch (Exception error) { RuntimeService.append(ClientDisplayActivity.this, "Display statistics could not be saved: " + error.getClass().getSimpleName()); }
-            handler.postDelayed(this, 10000);
-        }
-    };
+    }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
 
     @Override public void onCreate(Bundle saved) {
@@ -130,6 +141,11 @@ public final class ClientDisplayActivity extends Activity {
                 synchronized (socketLock) { if (!visible || generation != token) break; socket = attempt; }
                 attempt.connect(new InetSocketAddress("127.0.0.1", 5907), 3000);
                 attempt.setTcpNoDelay(true); attempt.setSoTimeout(15000);
+                try {
+                    JSONObject active = new JSONObject(RuntimeManager.read(new File(RuntimeManager.get(this).clientState, "run/status.json"), 128 * 1024));
+                    launchDetails = new JSONObject().put("supervisorIdentity", active.optJSONObject("supervisorIdentity"))
+                        .put("performance", active.optJSONObject("performance"));
+                } catch (Exception ignored) { launchDetails = new JSONObject(); }
                 RfbClient client = new RfbClient(attempt.getInputStream(), attempt.getOutputStream(), new RfbClient.Screen() {
                     @Override public void resize(int width, int height) { if (generation == token) screen.resize(width, height); }
                     @Override public void pixels(int x, int y, int width, int height, int[] pixels) { if (generation == token) screen.pixels(x, y, width, height, pixels); }
@@ -179,7 +195,7 @@ public final class ClientDisplayActivity extends Activity {
         handler.removeCallbacks(sampleFrames);
         super.onPause();
     }
-    @Override public void onDestroy() { disconnect(); input.shutdown(); screen.dispose(); super.onDestroy(); }
+    @Override public void onDestroy() { disconnect(); input.shutdown(); diagnostics.shutdown(); screen.dispose(); super.onDestroy(); }
     private int keysym(KeyEvent event) {
         switch (event.getKeyCode()) {
             case KeyEvent.KEYCODE_ENTER: return 0xff0d;

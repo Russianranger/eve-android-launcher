@@ -1,11 +1,13 @@
-# EVE Android Launcher 0.1.4 — Rendering measurements
+# EVE Android Launcher 0.1.5 — Runtime performance profiles
 
-Adds separate received updates/s and distinct drawn frames/s to the client
-status bar and bounded support logs every ten seconds. Startup observations
-and exports identify the exact active performance settings. This measurement
-release retains the existing renderer, resolution, 15 Hz cap and drawing path.
+Adds an in-app bounded JSON profile editor and one-tap baseline settings.
+Defaults now request Xvnc60Hz, 1280x720, esync with eventfd/fd-limit preflight,
+quiet Wine logs, detected performance-core llvmpipe workers, and lower-priority
+Node/wineserver processes. Resolution960x540, CPU affinity and verified FEX
+settings can be compared without rebuilding. Relaxed TSO has no new default
+overrides. WineD3D remains the default and fallback renderer.
 
-Update in place without reimporting client files or clearing app data. Use the
-same scene for a 30-second warmup and 60-second observation, then export support
-logs. Physical FPS improvements are not claimed. Exact client validation,
-loopback containment, TLS checks, memory reserve and process journals remain.
+Requested/effective profiles and fallback reasons are exported. Display metric
+I/O runs off the UI thread with unique session/profile identity. Update in
+place; preserve the client cache, prefix and world. No physical FPS increase is
+claimed until Thor A/B results are available. See TESTING.md for exact trials.

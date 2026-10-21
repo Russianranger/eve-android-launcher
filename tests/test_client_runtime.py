@@ -190,7 +190,7 @@ class ClientRuntimeTests(unittest.TestCase):
         self.assertTrue(running["displayMembers"])
         observation = json.loads((self.state / "launch-observation.json").read_text())
         self.assertEqual(observation["performance"], running["performance"])
-        self.assertEqual(observation["performance"]["frameRate"], 15)
+        self.assertEqual(observation["performance"]["frameRate"], 60)
         self.assertEqual(observation["performance"]["renderer"], "wined3d")
         (self.state / "run/stop").write_text("stop")
         self.assertEqual(first.wait(timeout=4), 0)
@@ -203,6 +203,69 @@ class ClientRuntimeTests(unittest.TestCase):
         self.wait_status("running")
         (self.state / "run/stop").write_text("stop")
         self.assertEqual(second.wait(timeout=4), 0)
+
+    def test_profile_snapshot_selects_legacy_frame_rate_and_lower_resolution(self):
+        (self.state / "performance.json").write_text(json.dumps({"frameRate": 15, "resolution": "960x540", "wineEsync": False}))
+        runtime = MODULE.Runtime(MODULE.Settings(state=self.state, content=self.content))
+        seen = []
+
+        def preflight():
+            # Changes during startup apply only to the next launch.
+            (self.state / "performance.json").write_text('{"frameRate":60}')
+            return {}
+
+        def spawn(role, command):
+            seen.append((role, command))
+            raise InterruptedError("fixture stops before launch")
+
+        with mock.patch.object(runtime, "preflight", side_effect=preflight), \
+                mock.patch.object(runtime, "preflight_display"), \
+                mock.patch.object(runtime, "spawn", side_effect=spawn):
+            runtime.start()
+        self.assertEqual(seen[0][0], "display")
+        arguments = seen[0][1]
+        self.assertEqual(arguments[arguments.index("-geometry") + 1], "960x540")
+        self.assertEqual(arguments[arguments.index("-FrameRate") + 1], "15")
+        self.assertEqual(runtime.performance["frameRate"], 15)
+        report = json.loads(runtime.status_file.read_text())
+        self.assertEqual(report["requestedPerformance"]["frameRate"], 15)
+
+    def test_profile_environment_is_validated_and_inherited_tuning_is_removed(self):
+        (self.state / "performance.json").write_text(json.dumps({"wineEsync": True, "wineDebug": "-all",
+            "lpNumThreads": 5, "fex": {"multiblock": True, "x87ReducedPrecision": True, "tsoEnabled": False}}))
+        runtime = MODULE.Runtime(self.settings())
+        with mock.patch.dict(os.environ, {"FEX_UNKNOWN": "1", "FEX_MULTIBLOCK": "0", "VK_ICD_FILENAMES": "unsafe.json",
+                                         "MESA_LOADER_DRIVER_OVERRIDE": "unsafe", "DXVK_CONFIG_FILE": "unsafe"}, clear=True):
+            env = runtime.environment()
+        self.assertEqual(env["WINEDEBUG"], "-all")
+        self.assertEqual(env["WINEESYNC"], "1")
+        self.assertEqual(env["WINEFSYNC"], "0")
+        self.assertEqual(env["LP_NUM_THREADS"], "5")
+        self.assertEqual(env["LIBGL_ALWAYS_SOFTWARE"], "1")
+        self.assertEqual(env["GALLIUM_DRIVER"], "llvmpipe")
+        self.assertEqual(env["FEX_MULTIBLOCK"], "1")
+        self.assertEqual(env["FEX_X87REDUCEDPRECISION"], "1")
+        self.assertEqual(env["FEX_TSOENABLED"], "0")
+        for key in ("FEX_UNKNOWN", "VK_ICD_FILENAMES", "MESA_LOADER_DRIVER_OVERRIDE", "DXVK_CONFIG_FILE"):
+            self.assertNotIn(key, env)
+
+    def test_uninstalled_gpu_request_records_clear_software_fallback(self):
+        (self.state / "performance.json").write_text(json.dumps({"renderer": "dxvk-turnip", "wineEsync": False,
+            "displayPixels": "direct", "displayPresentation": "surface", "pipelineRequests": True,
+            "networkFastSendto": True, "networkTraceStats": True}))
+        runtime = MODULE.Runtime(self.settings())
+        with mock.patch.object(runtime, "preflight", return_value={}), \
+                mock.patch.object(runtime, "preflight_display"), \
+                mock.patch.object(runtime, "spawn", side_effect=InterruptedError("fixture stops before display")):
+            runtime.start()
+        report = json.loads(runtime.status_file.read_text())
+        self.assertEqual(report["requestedPerformance"]["renderer"], "dxvk-turnip")
+        self.assertEqual(report["performance"]["renderer"], "wined3d")
+        self.assertIn("using WineD3D", " ".join(report["performance"]["warnings"]))
+        for key, baseline in (("displayPixels", "legacy"), ("displayPresentation", "view"),
+                              ("pipelineRequests", False), ("networkFastSendto", False), ("networkTraceStats", False)):
+            self.assertEqual(report["performance"][key], baseline)
+            self.assertNotEqual(report["requestedPerformance"][key], baseline)
 
     def test_immediate_stop_is_not_erased_by_new_supervisor(self):
         (self.state / "run").mkdir()

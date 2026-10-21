@@ -70,7 +70,7 @@ public final class MainActivity extends Activity {
     }
     private void action(LinearLayout parent, String title, String action) {
         Button button = new Button(this); button.setText(title); button.setAllCaps(false); button.setTextColor(0xffeef8fa); button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xff24516b));
-        button.setOnClickListener(v -> { if (action.equals("pick-client")) pickClient(); else if (action.equals("pick-export")) pickExport(); else if (action.equals("view-client")) startActivity(new Intent(this, ClientDisplayActivity.class)); else run(action, null); });
+        button.setOnClickListener(v -> { if (action.equals("pick-client")) pickClient(); else if (action.equals("pick-export")) pickExport(); else if (action.equals("performance")) performanceSettings(); else if (action.equals("view-client")) startActivity(new Intent(this, ClientDisplayActivity.class)); else run(action, null); });
         parent.addView(button, new LinearLayout.LayoutParams(-1, -2)); controls.add(button);
         button.setTag(action);
     }
@@ -92,6 +92,8 @@ public final class MainActivity extends Activity {
             action(client, "Validate and prepare client", "validate-client"); action(client, "Probe Wine / FEX", "probe-client");
             LinearLayout session = card("Client session", "After validation and the Wine / FEX probe, start EVE and open its display. Touch clicks and text entry are available for the local login test.");
             action(session, "Start EVE client", "start-client"); action(session, "Open client display", "view-client"); action(session, "Stop EVE client", "stop-client");
+            LinearLayout performance = card("Rendering performance", "Edit the A/B profile for the next client launch. Restart the server too when changing serverNice. Empty {} restores defaults. Invalid settings use safe defaults and are listed in support logs.");
+            action(performance, "Edit performance settings", "performance");
         } else {
             LinearLayout tools = card("Diagnostics", "Export this support ZIP after the first server test, including failures. It contains bounded logs and status receipts.");
             action(tools, "Export support logs", "pick-export");
@@ -129,6 +131,33 @@ public final class MainActivity extends Activity {
     }
     private void run(String action, Uri uri) {
         try { RuntimeService.launch(this, action, uri); } catch (RuntimeException e) { new AlertDialog.Builder(this).setTitle("Could not start operation").setMessage(e.getMessage()).setPositiveButton("OK", null).show(); }
+    }
+    private void performanceSettings() {
+        File file = new File(RuntimeManager.get(this).clientState, "performance.json");
+        EditText text = new EditText(this); text.setTypeface(Typeface.MONOSPACE); text.setTextSize(12);
+        text.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        text.setMinLines(10); text.setMaxLines(18);
+        try { text.setText(file.isFile() ? RuntimeManager.read(file, 16384) : "{\n  \"schemaVersion\": 1\n}"); }
+        catch (IOException error) { text.setText("{}"); }
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Next launch performance JSON").setView(text)
+            .setPositiveButton("Save", null).setNegativeButton("Cancel", null).setNeutralButton("Baseline", null).create();
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> text.setText("{\n  \"schemaVersion\": 1,\n  \"renderer\": \"wined3d\",\n  \"frameRate\": 15,\n  \"resolution\": \"1280x720\",\n  \"wineEsync\": false,\n  \"wineDebug\": \"-all,err+all\",\n  \"lpNumThreads\": 4,\n  \"wineServerNice\": 0,\n  \"serverNice\": 0,\n  \"cpuAffinity\": [],\n  \"fex\": {},\n  \"displayPixels\": \"legacy\",\n  \"displayPresentation\": \"view\",\n  \"pipelineRequests\": false,\n  \"networkFastSendto\": false,\n  \"networkTraceStats\": false\n}"));
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                try {
+                    String value = text.getText().toString();
+                    if (value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 16384) throw new IOException("Profile must fit in 16 KiB");
+                    JSONObject parsed = new JSONObject(value);
+                    if (RuntimeService.busy) throw new IOException("Wait for the current operation to finish");
+                    String normalized = parsed.toString(2);
+                    if (normalized.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 16384) throw new IOException("Formatted profile must fit in 16 KiB");
+                    RuntimeManager.text(file, normalized);
+                    RuntimeService.append(this, "Performance profile saved for next launch");
+                    dialog.dismiss(); Toast.makeText(this, "Saved for next launch", Toast.LENGTH_SHORT).show();
+                } catch (Exception error) { text.setError(error.getMessage()); }
+            });
+        });
+        dialog.show();
     }
     private void pickClient() { Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("application/zip").addCategory(Intent.CATEGORY_OPENABLE); startActivityForResult(intent, CLIENT_ZIP); }
     private void pickExport() {

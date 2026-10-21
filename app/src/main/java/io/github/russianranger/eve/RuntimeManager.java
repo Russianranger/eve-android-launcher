@@ -80,6 +80,8 @@ final class RuntimeManager {
     static void remove(File file) throws IOException { TarExtractor.remove(file); }
     void assets() throws Exception {
         mkdir(backend);
+        File performance = new File(clientState, "performance.json");
+        if (!performance.exists()) text(performance, "{\"schemaVersion\":1}\n");
         for (String name : context.getAssets().list("")) {
             if (name.endsWith(".py") || name.endsWith(".sh") || name.endsWith(".json") || name.endsWith(".exe")) {
                 try (InputStream in = context.getAssets().open(name)) { copy(in, new File(backend, name)); }
@@ -215,6 +217,13 @@ final class RuntimeManager {
         assets(); mkdir(serverState); mkdir(new File(serverState, "config"));
         Map<File, String> bindings = new LinkedHashMap<>();
         bindings.put(serverState, "/state"); bindings.put(backend, "/opt/eve-android"); bindings.put(new File(serverState, "config"), "/opt/evejs/config");
+        // Share only the bounded profile, never the client's prefix/trust/cache.
+        File performance = new File(clientState, "performance.json");
+        String profile = "{}";
+        try {
+            if (Files.isRegularFile(performance.toPath(), LinkOption.NOFOLLOW_LINKS)) profile = read(performance, 16384);
+        } catch (IOException error) { profile = "\"profile copy failed; using defaults\""; }
+        text(new File(serverState, "performance.json"), profile);
         return bindings;
     }
     void installServer(Progress progress) throws Exception {

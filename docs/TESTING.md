@@ -160,3 +160,22 @@ This preview uses a dedicated signing key retained in the repository's private
 GitHub Actions cache. The key is neither committed nor released. If the cache is
 unavailable after the first published APK, CI refuses to replace the signing
 identity; restore the original cache before publishing an installable update.
+
+## Device rendering FPS procedure
+
+For the 0.1.4 measurement baseline, keep the existing prepared cache and prefix.
+Start the same server/world, open the same EVE scene, allow 30 seconds warmup,
+and leave the display visible for 60 seconds. Record EVE's internal FPS and all
+six ten-second received/drawn samples, plus temperature and scene/resolution.
+Return to Launcher and export support logs. Verify launch-observation.json has
+frameRate=15, resolution=1280x720, renderer=wined3d, displayPixels=legacy,
+displayPresentation=view and pipelineRequests=false. Repeat each later profile
+in the identical scene after restarting the client. A successful host test does
+not establish improved Thor FPS.
+
+Local verification runs unittest discovery, server-package-tests.py, both
+check-*-host.sh programs, compileall and shell syntax checks. Package checks
+check-apk.py/check-server-package.py require their built archives;
+check-server-runtime.py requires the native ARM64 Docker image. In environments
+without Android SDK/Docker these checks are performed by the unchanged CI jobs,
+not reported as local passes.

@@ -15,9 +15,12 @@ final class RfbView extends View implements RfbClient.Screen {
     private volatile Pointer pointer;
     private int lastX, lastY;
     private boolean touching;
+    private Runnable frameListener;
+    private long submitted, presented;
 
     RfbView(Context context) { super(context); setBackgroundColor(Color.BLACK); setFocusable(true); }
     void setPointer(Pointer value) { pointer = value; }
+    void setFrameListener(Runnable value) { frameListener = value; }
     @Override public void resize(int width, int height) {
         synchronized (lock) {
             if (image != null && image.getWidth() == width && image.getHeight() == height) return;
@@ -29,7 +32,7 @@ final class RfbView extends View implements RfbClient.Screen {
     @Override public void pixels(int x, int y, int width, int height, int[] argb) {
         synchronized (lock) { if (image != null) image.setPixels(argb, 0, width, x, y, width, height); }
     }
-    @Override public void updated() { postInvalidateOnAnimation(); }
+    @Override public void updated() { synchronized (lock) { submitted++; } postInvalidateOnAnimation(); }
     private void fit() {
         if (image == null) { destination.setEmpty(); return; }
         float scale = Math.min((float) getWidth() / image.getWidth(), (float) getHeight() / image.getHeight());
@@ -38,7 +41,15 @@ final class RfbView extends View implements RfbClient.Screen {
     }
     @Override protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        synchronized (lock) { fit(); if (image != null) canvas.drawBitmap(image, null, destination, paint); }
+        boolean fresh = false;
+        synchronized (lock) {
+            fit();
+            if (image != null) {
+                canvas.drawBitmap(image, null, destination, paint);
+                fresh = submitted != presented; presented = submitted;
+            }
+        }
+        if (fresh && frameListener != null) frameListener.run();
     }
     private boolean position(float x, float y, boolean clamp) {
         synchronized (lock) {

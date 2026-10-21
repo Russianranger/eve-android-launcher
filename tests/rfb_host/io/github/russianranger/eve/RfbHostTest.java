@@ -65,5 +65,17 @@ public final class RfbHostTest {
         RfbClient oversized = new RfbClient(new ByteArrayInputStream(together(hello(2, 1), clipboard.toByteArray())), new ByteArrayOutputStream(), screen);
         oversized.handshake(); rejects(oversized::readUpdate, "unbounded clipboard allocation accepted");
     }
-    public static void main(String[] args) throws Exception { rawFrameAndInput(); malformedFrames(); System.out.println("Client display RFB host fixtures passed"); }
+    private static void frameCounters() {
+        FrameStats frames = new FrameStats(); frames.reset(100);
+        for (int i = 0; i < 30; i++) frames.received();
+        for (int i = 0; i < 15; i++) frames.drawn();
+        FrameStats.Sample sample = frames.sample(10000000100L);
+        check(sample.received == 30 && sample.drawn == 15, "separate receive/draw counts");
+        check(sample.receivedPerSecond == 3 && sample.drawnPerSecond == 1.5, "monotonic ten-second rates");
+        sample = frames.sample(20000000100L);
+        check(sample.receivedPerSecond == 0 && sample.drawnPerSecond == 0, "idle windows reset counts");
+        frames.reset(900); frames.received(); sample = frames.sample(900);
+        check(sample.receivedPerSecond == 0, "zero elapsed window is finite");
+    }
+    public static void main(String[] args) throws Exception { rawFrameAndInput(); malformedFrames(); frameCounters(); System.out.println("Client display RFB host fixtures passed"); }
 }

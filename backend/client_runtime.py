@@ -107,6 +107,13 @@ class Runtime:
         self.cancelled = False
         self.server_identities: dict[str, Any] = {}
         self.tls_report: dict[str, Any] = {}
+        # The measurement release records the existing settings verbatim. Later
+        # profiles resolve validated performance.json values before any launch.
+        self.performance = {"schemaVersion": 1, "renderer": "wined3d", "frameRate": 15,
+                            "resolution": "1280x720", "wineEsync": False,
+                            "wineDebug": "-all,err+all", "lpNumThreads": 4,
+                            "displayPixels": "legacy", "displayPresentation": "view",
+                            "pipelineRequests": False}
 
     def request_stop(self, *_: Any) -> None:
         self.cancelled = True
@@ -155,7 +162,7 @@ class Runtime:
                   "ready": ready, "client_launch_qualified": False,
                   "login_qualified": False, "graphics_qualified": False,
                   "networkPolicy": NETWORK_POLICY, "displayPort": self.s.display_port,
-                  "resolution": "1280x720", "updatedAt": time.time(),
+                  "resolution": self.performance["resolution"], "performance": self.performance, "updatedAt": time.time(),
                   "memory": memory, **self.identities, **details}
         atomic_json(self.status_file, report)
         if self.children:
@@ -539,7 +546,8 @@ class Runtime:
                     "format": 1, "observedAt": time.time(), **qualification,
                     "processStartupObserved": True, "login_qualified": False,
                     "graphics_qualified": False, "wine_cryptoapi_trust": True, "localhost443_tls": True,
-                    "networkPolicy": NETWORK_POLICY, "renderer": "WineD3D / llvmpipe", "displayPort": self.s.display_port})
+                    "networkPolicy": NETWORK_POLICY, "renderer": "WineD3D / llvmpipe", "displayPort": self.s.display_port,
+                    "performance": self.performance})
                 last_health = 0.0
                 while not self.stopping():
                     self.check_child("display")

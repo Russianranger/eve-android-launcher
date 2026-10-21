@@ -8,7 +8,10 @@ import android.view.*;
 import android.widget.*;
 import java.io.IOException;
 import java.net.*;
+import java.io.File;
+import java.util.Locale;
 import java.util.concurrent.*;
+import org.json.JSONObject;
 
 /** Initial EVE startup/login display. RuntimeService continues owning the client session. */
 public final class ClientDisplayActivity extends Activity {
@@ -23,6 +26,26 @@ public final class ClientDisplayActivity extends Activity {
     private volatile boolean visible;
     private volatile long generation;
     private volatile boolean receivedFrame;
+    private final FrameStats frames = new FrameStats();
+    private String connectionStatus = "Connecting to local client display…";
+    private String frameStatus = "";
+    private final Runnable sampleFrames = new Runnable() {
+        @Override public void run() {
+            if (!visible) return;
+            FrameStats.Sample sample = frames.sample(System.nanoTime());
+            frameStatus = String.format(Locale.ROOT, " · received %.1f/s · drawn %.1f/s", sample.receivedPerSecond, sample.drawnPerSecond);
+            status.setText(connectionStatus + frameStatus);
+            RuntimeService.append(ClientDisplayActivity.this, "Display FPS" + frameStatus + " (updates=" + sample.received + ", draws=" + sample.drawn + ")");
+            try {
+                JSONObject value = new JSONObject().put("format", 1).put("activitySession", generation)
+                    .put("observedAtMillis", System.currentTimeMillis()).put("elapsedNanos", sample.elapsedNanos)
+                    .put("framesReceived", sample.received).put("framesDrawn", sample.drawn)
+                    .put("framesReceivedPerSecond", sample.receivedPerSecond).put("framesDrawnPerSecond", sample.drawnPerSecond);
+                RuntimeManager.text(new File(RuntimeManager.get(ClientDisplayActivity.this).clientState, "display-statistics.json"), value.toString(2));
+            } catch (Exception error) { RuntimeService.append(ClientDisplayActivity.this, "Display statistics could not be saved: " + error.getClass().getSimpleName()); }
+            handler.postDelayed(this, 10000);
+        }
+    };
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
 
     @Override public void onCreate(Bundle saved) {
@@ -38,6 +61,7 @@ public final class ClientDisplayActivity extends Activity {
         status = new TextView(this); status.setTextColor(0xff6ee4f0); status.setTextSize(12); status.setPadding(dp(8), dp(3), dp(8), dp(3));
         status.setText("Connecting to local client display…"); root.addView(status);
         screen = new RfbView(this); screen.setPointer((x, y, mask) -> submit(client -> client.pointer(x, y, mask)));
+        screen.setFrameListener(() -> { if (visible && receivedFrame) frames.drawn(); });
         root.addView(screen, new LinearLayout.LayoutParams(-1, 0, 1)); setContentView(root);
     }
     private void button(LinearLayout tools, String title, Runnable action) {
@@ -74,7 +98,7 @@ public final class ClientDisplayActivity extends Activity {
                 submit(client -> { for (int i = 0; i < value.length();) { int code = value.codePointAt(i); i += Character.charCount(code); int key = code <= 255 ? code : 0x01000000 | code; client.key(key, true); client.key(key, false); } });
             }).setNegativeButton("Cancel", (dialog, which) -> text.setText("")).show();
     }
-    private void displayStatus(long token, String message) { handler.post(() -> { if (visible && generation == token) status.setText(message); }); }
+    private void displayStatus(long token, String message) { handler.post(() -> { if (visible && generation == token) { connectionStatus = message; status.setText(message + frameStatus); } }); }
     private void failedInput(RfbClient target, long token) {
         synchronized (socketLock) { if (generation == token && connection == target) close(socket); }
     }
@@ -111,8 +135,11 @@ public final class ClientDisplayActivity extends Activity {
                     @Override public void pixels(int x, int y, int width, int height, int[] pixels) { if (generation == token) screen.pixels(x, y, width, height, pixels); }
                     @Override public void updated() {
                         if (generation != token) return;
+                        frames.received();
+                        boolean first = !receivedFrame;
+                        receivedFrame = true;
                         screen.updated();
-                        if (!receivedFrame) { receivedFrame = true; displayStatus(token, "Local display connected · touch to click · use Text for login fields"); }
+                        if (first) displayStatus(token, "Local display connected · touch to click · use Text for login fields");
                     }
                 });
                 client.handshake();
@@ -143,10 +170,13 @@ public final class ClientDisplayActivity extends Activity {
     @Override public void onResume() {
         super.onResume(); final long token;
         synchronized (socketLock) { visible = true; receivedFrame = false; token = ++generation; }
+        frames.reset(System.nanoTime()); frameStatus = "";
+        handler.removeCallbacks(sampleFrames); handler.postDelayed(sampleFrames, 10000);
         new Thread(() -> connect(token), "eve-display-reader").start();
     }
     @Override public void onPause() {
         screen.releasePointer(); disconnect();
+        handler.removeCallbacks(sampleFrames);
         super.onPause();
     }
     @Override public void onDestroy() { disconnect(); input.shutdown(); screen.dispose(); super.onDestroy(); }

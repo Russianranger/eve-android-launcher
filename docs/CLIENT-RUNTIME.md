@@ -108,3 +108,20 @@ requires the independent native network and Wine TLS gates.
 The flat JSON patch recipes in `backend/` are unmodified copies from the user's `EveJS-v0.12.9.zip`, `tools/ClientSETUP/`, licensed under the supplied GNU AGPLv3. The Python PE patch behavior adapts that release's `blue_dll_patch.ps1`; the resource gate follows its `scripts/Test-EvEJSResources.ps1`. The server source and license are retained in the repository's vendor snapshot. No CCP executable or game asset is committed.
 
 Pinned Wine/FEX runtime binaries and their corresponding source assets remain available together at [UO launcher v0.2.0](https://github.com/Russianranger/uo-android-launcher/releases/tag/v0.2.0), including `wine-arm64ec-source.tar.gz` and `fex-2510-source-with-submodules.tar.gz`. Their runtime provenance and notices remain inside that rootfs and in the upstream release. This integration reuses those files unchanged.
+
+## Rendering measurements (0.1.4)
+
+The display status reports received framebuffer updates/s and distinct frames
+actually submitted to Android drawing, sampled every ten seconds with a
+monotonic clock. Coalesced redraws count once; idle windows report zero. These
+are transport/presentation counters, not the EVE simulation FPS counter or
+physical panel scanout measurements. Resuming the display starts a new window.
+The same samples appear in operations.log and client/display-statistics.json
+in the support ZIP. No images, input text or passwords are recorded.
+
+Every startup observation and runtime status now records the active performance
+profile. This first measurement build retains the existing 15 Hz Xvnc,
+1280x720, WineD3D/llvmpipe, legacy pixels and View drawing. Subsequent profiles
+will be read at launch from private client-state/performance.json. Support
+exports explicitly include that file and launch-observation.json so requested
+and effective settings can be compared.

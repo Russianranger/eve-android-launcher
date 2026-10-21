@@ -27,6 +27,7 @@ from typing import Any
 
 import client_prepare
 import client_performance
+import client_renderer
 import server_runtime
 from server_runtime import (BusyError, RuntimeErrorDetail, atomic_json, fetch_health,
                             group_members, identity_alive, process_identity,
@@ -53,6 +54,7 @@ class Settings:
     gateway_port: int = 26002
     startup_timeout: float = 150
     gate_timeout: float = 60
+    renderer_probe_timeout: float = 30
     observe_seconds: float = 5
     shutdown_timeout: float = 15
     tick: float = .25
@@ -62,6 +64,7 @@ class Settings:
     wineserver_command: tuple[str, ...] | None = None
     gate_command: tuple[str, ...] | None = None
     client_command: tuple[str, ...] | None = None
+    renderer_probe_command: tuple[str, ...] | None = None
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -112,6 +115,10 @@ class Runtime:
         # next launch, so all Wine roles and the observation agree on a profile.
         self.requested_performance = client_performance.load(self.s.state / "performance.json")
         self.performance = dict(self.requested_performance)
+        self.renderer_env: dict[str, str] | None = None
+        self.renderer_report: dict[str, Any] = {
+            "requested": self.performance["renderer"], "active": "wined3d", "deviceProbePassed": False}
+        self.renderer_fallback = ""
 
     def request_stop(self, *_: Any) -> None:
         self.cancelled = True
@@ -162,6 +169,7 @@ class Runtime:
                   "networkPolicy": NETWORK_POLICY, "displayPort": self.s.display_port,
                   "resolution": self.performance["resolution"], "performance": self.performance,
                   "requestedPerformance": self.requested_performance, "updatedAt": time.time(),
+                  "rendererReport": self.renderer_report,
                   "memory": memory, **self.identities, **details}
         atomic_json(self.status_file, report)
         if self.children:
@@ -184,7 +192,101 @@ class Runtime:
                     "NO_PROXY": "127.0.0.1,localhost,::1", "no_proxy": "127.0.0.1,localhost,::1",
                     "SSL_CERT_FILE": "Z:\\client-state\\trust\\evejs-ca.pem"})
         env.update(client_performance.fex_environment(self.performance))
+        if self.renderer_env is not None:
+            for key in client_renderer.SOFTWARE_VARIABLES:
+                env.pop(key, None)
+            env.update(self.renderer_env)
         return env
+
+    def prepare_renderer(self) -> client_renderer.PreparedRenderer:
+        return client_renderer.prepare(self.s.state, self.s.state / "prefix")
+
+    def run_renderer_probe(self, prepared: client_renderer.PreparedRenderer) -> None:
+        """Qualify device + presentation in an owned, bounded Wine process.
+
+        The foreground wineserver and TLS helper have already started with the
+        baseline environment. Wineserver does not load renderer DLLs; only this
+        helper and then EVE receive the native overrides. A failed probe is
+        fully reaped before the same server accepts a WineD3D client.
+        """
+        command = self.s.renderer_probe_command or prepared.probe_command(self.s.wine)
+        try:
+            process = self.spawn("rendererProbe", command)
+        except OSError as error:
+            raise client_renderer.RendererUnavailable("Renderer check could not start: " + str(error)) from error
+        identity = self.identities["rendererProbeIdentity"]
+        reason = ""
+        clean = True
+        try:
+            deadline = time.monotonic() + self.s.renderer_probe_timeout
+            while True:
+                # Record descendants only while their original session leader
+                # is still verified. Recovery must never trust a reused PID.
+                if identity_alive(identity):
+                    self.identities["rendererProbeMembers"] = [
+                        {"pid": row["pid"], "startTicks": row["startTicks"]}
+                        for row in group_members(process.pid)]
+                    atomic_json(self.journal, self.identities)
+                if process.poll() is not None:
+                    break
+                self.cancellation_point()
+                self.check_child("display")
+                self.check_child("wineServer")
+                self.memory_check()
+                if time.monotonic() >= deadline:
+                    reason = "Vulkan device / X11 swapchain check timed out"
+                    break
+                time.sleep(self.s.tick)
+            if not reason and process.returncode != 0:
+                reason = "Vulkan device / X11 swapchain check failed (exit " + str(process.returncode) + ")"
+        finally:
+            clean = self.cleanup_identity(identity, self.identities.get("rendererProbeMembers", []))
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=2)
+            for pump in self.pumps:
+                pump.join(timeout=.3)
+            self.renderer_report["probeCleanShutdown"] = clean
+        if not reason:
+            path = self.logs / "client-rendererProbe.log"
+            try:
+                with path.open("rb") as source:
+                    source.seek(max(0, path.stat().st_size - 65536))
+                    tail = source.read(65536)
+            except OSError:
+                tail = b""
+            if b"EVE_DXVK_TURNIP_OK D3D11 device and X11 software swapchain presented" not in tail.splitlines():
+                reason = "Renderer check did not confirm a D3D11 device and presented swapchain"
+            elif not clean:
+                reason = "Renderer check required forced child-process cleanup"
+        if reason:
+            raise client_renderer.RendererUnavailable(reason + "; inspect client-rendererProbe.log")
+
+    def select_renderer(self) -> None:
+        if self.performance["requestedRenderer"] != "dxvk-turnip":
+            return
+        self.cancellation_point()
+        self.memory_check()
+        self.status("starting", "Checking DXVK / Turnip device and X11 presentation", displayReady=True)
+        try:
+            prepared = self.prepare_renderer()
+            self.renderer_env = dict(prepared.env)
+            self.renderer_report = {**prepared.report, "active": "checking"}
+            self.run_renderer_probe(prepared)
+        except client_renderer.RendererUnavailable as error:
+            self.renderer_env = None
+            self.renderer_fallback = "DXVK / Turnip unavailable; using WineD3D / llvmpipe: " + str(error)[:320]
+            self.renderer_report.update({"active": "wined3d", "deviceProbePassed": False,
+                                         "fallbackReason": str(error)[:320]})
+            self.performance["warnings"] = (self.performance["warnings"] + [self.renderer_fallback])[-32:]
+            self.status("starting", self.renderer_fallback, displayReady=True)
+            return
+        except BaseException:
+            self.renderer_env = None
+            self.renderer_report["active"] = "wined3d"
+            raise
+        self.performance["renderer"] = "dxvk-turnip"
+        self.renderer_report.update({"active": "dxvk-turnip", "deviceProbePassed": True})
+        self.status("starting", "DXVK / Turnip device and X11 presentation check passed", displayReady=True)
 
     def require_server(self) -> None:
         value = read_json(self.s.server_state / "run/status.json")
@@ -475,7 +577,7 @@ class Runtime:
         if identity_alive(journal.get("supervisorIdentity")):
             raise BusyError("The recorded EVE client supervisor is still alive")
         clean = True
-        for role in ("client", "gate", "wineServer", "display"):
+        for role in ("client", "rendererProbe", "gate", "wineServer", "display"):
             identity = journal.get(role + "Identity")
             if isinstance(identity, dict):
                 clean = self.cleanup_identity(identity, journal.get(role + "Members", [])) and clean
@@ -491,7 +593,7 @@ class Runtime:
             with contextlib.suppress(OSError, subprocess.TimeoutExpired):
                 subprocess.run((self.s.wineserver, "-k"), env=self.environment(), stdin=subprocess.DEVNULL,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-        for role in ("client", "gate", "wineServer", "display"):
+        for role in ("client", "rendererProbe", "gate", "wineServer", "display"):
             process = self.children.get(role)
             if process is None:
                 continue
@@ -511,11 +613,15 @@ class Runtime:
             failure = None
             clean = True
             try:
-                self.performance = client_performance.prepare(self.performance)
+                self.renderer_env = None
+                self.renderer_fallback = ""
+                self.renderer_report = {"requested": self.requested_performance["renderer"],
+                                        "active": "wined3d", "deviceProbePassed": False}
+                self.performance = client_performance.prepare(self.requested_performance)
                 self.performance["requestedRenderer"] = self.performance["renderer"]
-                if self.performance["renderer"] != "wined3d":
-                    self.performance["renderer"] = "wined3d"
-                    self.performance["warnings"].append("DXVK/Turnip is not installed; using WineD3D / llvmpipe")
+                # All preparation roles use WineD3D; only a successful owned
+                # device probe enables native DLLs for the client.
+                self.performance["renderer"] = "wined3d"
                 # These flags were selected by Android before PRoot installed its
                 # filter. Report that immutable session policy, not later edits.
                 for key, name in (("networkFastSendto", "EVE_CLIENT_NETWORK_FAST_SENDTO"),
@@ -542,11 +648,13 @@ class Runtime:
                 self.spawn("wineServer", self.s.wineserver_command or (self.s.wineserver, "-f", "-p"))
                 self.wait_wineserver()
                 self.tls_report = self.run_gate()
+                self.select_renderer()
                 self.cancellation_point()
                 client_command = self.s.client_command or (
                     self.s.wine, "Z:\\client\\tq\\bin64\\exefile.exe", "/noCrashReportUpload",
                     "/resfileserver=http://127.0.0.1:26002/resfiles/", "/port:26000")
-                self.status("starting", "Launching EVE build 3396210 through the existing Wine/FEX runtime", displayReady=True,
+                self.status("starting", "Launching EVE build 3396210 through the existing Wine/FEX runtime"
+                            + (" · " + self.renderer_fallback if self.renderer_fallback else ""), displayReady=True,
                             wineTrustQualified=True, localhostTlsQualified=True)
                 self.spawn("client", client_command, cwd=self.s.content / "tq")
                 deadline = time.monotonic() + self.s.observe_seconds
@@ -562,7 +670,8 @@ class Runtime:
                     "format": 1, "observedAt": time.time(), **qualification,
                     "processStartupObserved": True, "login_qualified": False,
                     "graphics_qualified": False, "wine_cryptoapi_trust": True, "localhost443_tls": True,
-                    "networkPolicy": NETWORK_POLICY, "renderer": "WineD3D / llvmpipe", "displayPort": self.s.display_port,
+                    "networkPolicy": NETWORK_POLICY, "renderer": self.performance["renderer"],
+                    "rendererReport": self.renderer_report, "displayPort": self.s.display_port,
                     "performance": self.performance, "requestedPerformance": self.requested_performance})
                 last_health = 0.0
                 while not self.stopping():
@@ -572,7 +681,8 @@ class Runtime:
                     self.memory_check()
                     if time.monotonic() - last_health >= 5:
                         self.require_server()
-                        self.status("running", "EVE process and display started; check the client login screen", True,
+                        self.status("running", "EVE process and display started; check the client login screen"
+                                    + (" · " + self.renderer_fallback if self.renderer_fallback else ""), True,
                                     displayReady=True, processStartupObserved=True,
                                     wineTrustQualified=True, localhostTlsQualified=True)
                         last_health = time.monotonic()

@@ -8,6 +8,9 @@ runtime-work/
 __pycache__/
 *.pyc
 /backend/eve-client-gate.exe
+/backend/eve-renderer-probe.exe
+/backend/renderer-runtime.tar.gz
+/backend/renderer-manifest.json
 /vendor/evejs/*
 !/vendor/evejs/LICENSE
 !/vendor/evejs/README.md

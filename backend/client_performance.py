@@ -72,7 +72,7 @@ def load(path: Path) -> dict[str, Any]:
             raise ValueError("must be an object")
     except FileNotFoundError:
         value = {}
-    except (OSError, ValueError, UnicodeError) as error:
+    except (OSError, ValueError, UnicodeError, RecursionError) as error:
         value = {}
         warnings.append("performance.json ignored: " + str(error)[:160])
     rules = {

@@ -10,12 +10,15 @@ checks, supervised shutdown and support-log export. It also installs the pinned
 Wine/FEX client runtime and validates complete user-supplied client imports.
 The 0.1.2 preview added supervised EVE startup, a basic touch/text display and
 private Wine TLS checks. The 0.1.3 hotfix corrects a false CA-change error that
-blocked the first device launch before Wine/EVE started. Physical startup/local
-login, graphics performance, audio and controller qualification remain pending.
+blocked the first device launch before Wine/EVE started. The current rendering
+preview adds received/drawn FPS measurements, runtime A/B profiles, a direct
+Surface display, connected-send acceleration and optional DXVK/Turnip. The user
+reports roughly28 internal FPS on the original software path; these new changes
+still need physical A/B qualification. Audio/controllers remain outside this pass.
 
 ## First server test
 
-Download the APK from [the preview release](https://github.com/Russianranger/eve-android-launcher/releases/tag/v0.1.7).
+Download the APK from [the preview release](https://github.com/Russianranger/eve-android-launcher/releases/tag/v0.1.8).
 In the Server tab, choose **Install server runtime**, **Prepare local world**,
 then **Start server**. Wait for **SERVER READY**, briefly switch apps, then use
 **Save and stop server**. Start it again and export support logs from the Logs tab.
@@ -46,8 +49,8 @@ Do not clear app data or reinstall the already working runtimes.
 The Thor recovery test has now passed: exact build 3396210, all 125,116 resources,
 6 minutes 14 seconds, and 150.6 MiB peak worker RSS with no reported low-memory
 condition. See [the accepted physical evidence](docs/HANDOFF.md). Keep the
-prepared cache. The 0.1.3 startup preview uses that prepared cache. Graphics
-optimization, audio and controllers follow the physical startup/login gate.
+prepared cache. Current previews reuse it without reimport. Exact validation,
+loopback enforcement, TLS, memory reserves and process journals remain mandatory.
 
 ## Client startup preview in 0.1.3
 
@@ -69,6 +72,22 @@ Only the client session remaps localhost:443 to the existing gateway on port 260
 The foreground service supervises EVE, Wine and the display; stopping the server
 first stops the client. Logs and identity-aware cleanup receipts are exported.
 See [startup/login test steps and pass criteria](docs/TESTING.md).
+
+## Runtime rendering profiles in 0.1.8
+
+Client → **Edit performance settings** saves a bounded JSON profile for the next
+launch. **Baseline** restores the original settings; `{}` selects current defaults.
+Defaults retain WineD3D/llvmpipe with Xvnc60Hz,1280x720, esync preflight, detected
+worker count, lower Node/wineserver priorities and direct/pipelined Surface
+presentation. Every change can be compared without rebuilding the APK.
+
+Set `"renderer":"dxvk-turnip"` to try the bundled official DXVK2.7.1 x64 DLLs
+and our ARM64 KGSL/X11 build from pinned official Mesa25.2.8 source. A journaled
+startup device/presentation probe selects WineD3D with a clear reason if it fails.
+VNC remains the presentation hop. EVE FPS, received/s and drawn/s are separate
+measurements; no Thor performance gain is claimed by CI. See
+[exact test settings](docs/TESTING.md), [profile reference](docs/CLIENT-RUNTIME.md)
+and [renderer provenance/presentation design](docs/GPU-PRESENTATION.md).
 
 ## Client preparation
 

@@ -83,7 +83,7 @@ final class RuntimeManager {
         File performance = new File(clientState, "performance.json");
         if (!performance.exists()) text(performance, "{\"schemaVersion\":1}\n");
         for (String name : context.getAssets().list("")) {
-            if (name.endsWith(".py") || name.endsWith(".sh") || name.endsWith(".json") || name.endsWith(".exe")) {
+            if (name.endsWith(".py") || name.endsWith(".sh") || name.endsWith(".json") || name.endsWith(".exe") || name.equals("renderer-runtime.tar.gz")) {
                 try (InputStream in = context.getAssets().open(name)) { copy(in, new File(backend, name)); }
             }
         }

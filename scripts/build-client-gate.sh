@@ -6,3 +6,6 @@ cd "$(dirname "$0")/.."
 "$EVE_CLIENT_GATE_CC" -O2 -Wall -Wextra -Werror -municode -static-libgcc \
     -Wl,--no-insert-timestamp native/eve-client-gate.c -lcrypt32 -lwinhttp \
     -o backend/eve-client-gate.exe
+"$EVE_CLIENT_GATE_CC" -O2 -Wall -Wextra -Werror -static-libgcc \
+    -Wl,--no-insert-timestamp native/eve-renderer-probe.c -ldxguid -luser32 \
+    -o backend/eve-renderer-probe.exe

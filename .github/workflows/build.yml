@@ -5,7 +5,7 @@ on:
   pull_request:
   workflow_dispatch:
 env:
-  EVE_APP_VERSION: '0.1.7'
+  EVE_APP_VERSION: '0.1.8'
 permissions:
   contents: read
 defaults:
@@ -115,13 +115,54 @@ jobs:
             out/server-runtime-manifest.json
             out/server-runtime-source.tar.gz
             out/server-runtime-check.json
+  renderer:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned official Mesa KGSL source and package official DXVK
+        run: |
+          mkdir -p out
+          bash scripts/build-client-renderer.sh 2>&1 | tee out/renderer-build.log
+          PYTHONPATH=backend python3 - <<'PY'
+          import hashlib, json, tempfile
+          from pathlib import Path
+          import client_renderer
+          with tempfile.TemporaryDirectory() as state:
+              client_renderer.install(Path('backend').resolve(), Path(state))
+          report = json.loads(Path('backend/renderer-manifest.json').read_text())
+          source = Path('out') / report['correspondingSource']['file']
+          with source.open('rb') as handle:
+              assert hashlib.file_digest(handle, 'sha256').hexdigest() == report['correspondingSource']['sha256']
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: renderer-verification
+          path: out/renderer-build.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: renderer-runtime
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            out/renderer-runtime.tar.gz
+            out/renderer-manifest.json
+            out/renderer-corresponding-source.tar.gz
   apk:
+    needs: [renderer]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       EVE_PREVIEW_KEYSTORE: ${{ github.workspace }}/runtime-work/signing/preview.keystore
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: renderer-runtime
+          path: runtime-work/renderer
+      - name: Stage the hashed optional renderer assets
+        run: cp runtime-work/renderer/renderer-runtime.tar.gz runtime-work/renderer/renderer-manifest.json backend/
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -233,6 +274,10 @@ jobs:
         with:
           name: server-runtime
           path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: renderer-runtime
+          path: dist
       - name: Publish new launcher preview without replacing previous releases
         env:
           GH_TOKEN: ${{ github.token }}
@@ -246,6 +291,6 @@ jobs:
           git archive --format=zip --output="dist/EVE-Android-Launcher-$EVE_APP_VERSION-source.zip" HEAD
           cp docs/TESTING.md "dist/EVE-Android-Launcher-$EVE_APP_VERSION-Testing.md"
           (cd dist && sha256sum *.apk *.zip *.tar.gz *.json *.md) > dist/SHA256SUMS.txt
-          gh release create "$tag" --target "$GITHUB_SHA" --draft --prerelease --title "EVE Android Launcher $EVE_APP_VERSION — Connected send acceleration" --notes-file docs/RELEASE-NOTES.md
+          gh release create "$tag" --target "$GITHUB_SHA" --draft --prerelease --title "EVE Android Launcher $EVE_APP_VERSION — Optional DXVK Turnip renderer" --notes-file docs/RELEASE-NOTES.md
           gh release upload "$tag" dist/*
           gh release edit "$tag" --draft=false

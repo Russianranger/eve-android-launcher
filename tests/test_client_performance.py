@@ -92,7 +92,7 @@ class PerformanceTests(unittest.TestCase):
                 self.assertTrue(profile["warnings"])
 
     def test_malformed_or_oversized_profile_uses_defaults(self):
-        for raw in ("[]", "false", "{broken", " " * (MODULE.LIMIT + 1), "\udcff"):
+        for raw in ("[]", "false", "{broken", " " * (MODULE.LIMIT + 1), "\udcff", "[" * 1100 + "0" + "]" * 1100):
             with self.subTest(raw=raw[:20]):
                 self.path.write_bytes(raw.encode("utf-8", errors="surrogateescape"))
                 profile = MODULE.load(self.path)

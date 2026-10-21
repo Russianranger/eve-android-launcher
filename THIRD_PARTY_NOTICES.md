@@ -43,7 +43,20 @@ SHA-256 hashes and reconstructs the exact source tree for builds. Corresponding
 server runtime source releases include both the reconstructed source and those
 same shards, alongside dependency sources and build instructions.
 
-The Windows client runtime is prepared separately from the server. Wine/FEX,
-graphics drivers, and their corresponding source archives must be distributed
-together before a later preview bundles any such binary. The initial launcher
-does not include those components in its APK.
+The Windows client runtime is prepared separately from the server. The pinned
+Wine/FEX runtime and its corresponding sources remain distributed together in
+the referenced UO release; this launcher does not rebuild or replace them.
+
+The optional `dxvk-turnip` renderer bundles these additional components:
+
+| Component | Official release and pin | License and source |
+| --- | --- | --- |
+| DXVK | [2.7.1 official binary release](https://github.com/doitsujin/dxvk/releases/tag/v2.7.1), SHA-256 `d85ce7c79f57ecd765aaa1b9e7007cb875e6fde9f6d331df799bce73d513ce87` | zlib license, preserved in the renderer package. [Exact source archive](https://github.com/doitsujin/dxvk/archive/refs/tags/v2.7.1.tar.gz), SHA-256 `4966be884da4a1ded7e38ee018caef5626bd06bbd0853715084b1a1644aaaf02`, is included in the corresponding source artifact. Only the official x64 `d3d11.dll` / `dxgi.dll` are installed. |
+| Mesa Turnip | Our native ARM64 glibc KGSL/X11 build of the unmodified [Mesa 25.2.8 official source release](https://archive.mesa3d.org/mesa-25.2.8.tar.xz), SHA-256 `097842f3e49d996868b38688db87b006f7d4541e93ce86d2f341d8b3e7be7c93` | MIT and component permissive licenses. Full upstream license texts accompany the renderer, and the complete source release, build scripts and build package/compiler records are included in `renderer-corresponding-source.tar.gz`. See [Mesa license information](https://docs.mesa3d.org/license.html). |
+| GCC runtime linked into Turnip | Debian Bookworm GCC 12; exact package/compiler versions recorded in the renderer package and source artifact | GCC Runtime Library Exception / GPL-3.0-or-later notices are preserved as `licenses/gcc-copyright`; see [GCC Runtime Library Exception](https://www.gnu.org/licenses/gcc-exception-3.1.html). |
+
+`renderer-runtime/Dockerfile` and `scripts/build-client-renderer.sh` reproduce
+the optional package. Its generated manifest pins the archive and each member
+by SHA-256. `native/eve-renderer-probe.c` is original launcher code compiled
+with the same MinGW-w64 tooling and notices as the certificate helper above.
+No CCP files are used by or included with that probe.

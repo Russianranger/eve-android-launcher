@@ -249,7 +249,7 @@ class ClientRuntimeTests(unittest.TestCase):
         for key in ("FEX_UNKNOWN", "VK_ICD_FILENAMES", "MESA_LOADER_DRIVER_OVERRIDE", "DXVK_CONFIG_FILE"):
             self.assertNotIn(key, env)
 
-    def test_uninstalled_gpu_request_records_clear_software_fallback(self):
+    def test_gpu_request_stays_software_until_the_owned_device_probe(self):
         (self.state / "performance.json").write_text(json.dumps({"renderer": "dxvk-turnip", "wineEsync": False,
             "displayPixels": "direct", "displayPresentation": "surface", "pipelineRequests": True,
             "networkFastSendto": True, "networkTraceStats": True}))
@@ -261,7 +261,9 @@ class ClientRuntimeTests(unittest.TestCase):
         report = json.loads(runtime.status_file.read_text())
         self.assertEqual(report["requestedPerformance"]["renderer"], "dxvk-turnip")
         self.assertEqual(report["performance"]["renderer"], "wined3d")
-        self.assertIn("using WineD3D", " ".join(report["performance"]["warnings"]))
+        self.assertEqual(report["rendererReport"]["requested"], "dxvk-turnip")
+        self.assertEqual(report["rendererReport"]["active"], "wined3d")
+        self.assertFalse(report["rendererReport"]["deviceProbePassed"])
         for key, baseline in (("networkFastSendto", False), ("networkTraceStats", False)):
             self.assertEqual(report["performance"][key], baseline)
             self.assertNotEqual(report["requestedPerformance"][key], baseline)

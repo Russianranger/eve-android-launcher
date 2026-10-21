@@ -229,3 +229,30 @@ FPS together. Silence while idle is expected; there is no fabricated zero-rate
 sample. Host fixtures verify counting and BPF behavior, not device frequency.
 Confirm login/local-server traffic still works. Restore networkTraceStats=false
 for normal use; set networkFastSendto=false if interface discovery changes.
+
+### GPU comparison (0.1.8)
+
+Use the successful software profile as reference, keeping resolution, frameRate,
+display fields, nice, worker count, affinity, FEX and network options identical.
+First launch with renderer=wined3d, warm up30s and record60s. Stop client, change
+only renderer to dxvk-turnip, restart and repeat. Initial shader compilation can
+stutter; repeat the same warmed scene before comparing steady rates.
+
+Require rendererReport.active=dxvk-turnip, deviceProbePassed=true and
+kgslReachable=true; export the package/component hashes and client-rendererProbe
+log. If status says fallback, report the reason and do not call that a GPU trial.
+Check scene colors, text, resizing, station/space transitions and repeated
+stop/start; a helper presenting one frame does not qualify EVE gameplay.
+
+On a device with no accessible KGSL node, requesting dxvk-turnip must produce a
+clear WineD3D fallback and retain normal client launch. On the Thor, validate a
+normal return to renderer=wined3d after a GPU trial. Keep the accepted prefix and
+cache; never remove game files to exercise fallback. Timeout, zero-without-proof,
+orphan cleanup and memory/cancel failure paths are exercised by host fixtures.
+
+Recommended order: original baseline → Xvnc60 →960x540 →esync/log/worker/priority
+knobs one at a time →bulk pixels →pipelined requests →SurfaceView →connected-send
+fast path with trap statistics →DXVK/Turnip →optional affinity/FEX experiments.
+Keep relaxed TSO overrides off throughout the main comparison. For every trial
+record EVE FPS, received/s, drawn/s, temperature, scene and exact effective JSON.
+CI builds/tests the ARM64 renderer and APK, but cannot claim a physical FPS gain.

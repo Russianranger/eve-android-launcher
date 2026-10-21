@@ -141,7 +141,7 @@ current defaults. Arbitrary environment variables/commands are never accepted.
 | Key | Default | Accepted values / effect |
 | --- | --- | --- |
 | schemaVersion | 1 | Only 1 |
-| renderer | wined3d | wined3d; dxvk-turnip explicitly falls back until installed |
+| renderer | wined3d | wined3d or opt-in dxvk-turnip with startup device/presentation probe |
 | frameRate | 60 | Integer 1–120; Xvnc update cap, not guaranteed FPS |
 | resolution | 1280x720 | 1280x720 or 960x540 |
 | wineEsync | true | Boolean; native eventfd check and fd soft limit raised toward 65536 before Wine |
@@ -220,3 +220,37 @@ counter/timestamp pairs to obtain traps/s. Fast sends cannot be counted by the
 userspace tracer. We have not measured the Thor's sendmsg frequency: compare
 baseline and fast modes on-device using TESTING.md. Statistics are off by
 default, avoiding clock/log overhead for normal sessions.
+
+## Optional GPU renderer (0.1.8)
+
+Set renderer=dxvk-turnip in performance.json to try the bundled renderer. DXVK
+2.7.1 official x64 d3d11/dxgi DLLs execute through the pinned ARM64EC/FEX path.
+The Linux ICD is our ARM64 glibc build of official Mesa25.2.8 source with only
+KGSL and X11 support. Official release archives are SHA-256 pinned in the build
+and backend; the generated manifest hashes the built archive and every member.
+The release includes renderer-manifest.json, renderer-runtime.tar.gz and
+renderer-corresponding-source.tar.gz with exact release archives, build scripts,
+compiler/package provenance and license texts. No CCP content is involved.
+
+Startup requires /dev/kgsl-3d0 to be a readable/writable character device through
+the existing /dev bind. The pinned rootfs Vulkan loader/Wine bridge and required
+X11 dependencies were verified in its exact hashed archive. The renderer stages
+bounded, hashed files outside the immutable rootfs, replacing only the two
+private prefix DLL entries atomically. Original Wine builtins remain available
+through the wined3d profile's builtin overrides. No new device binding, network
+listener, trust exception or translation-runtime replacement is introduced.
+
+Only after exact client checks, native containment, foreground wineserver and
+the strict TLS gate pass does an owned x64 helper create a hardware D3D11 device,
+clear a swapchain and present through the X11 software WSI path. Its group is
+journaled, timeout-bounded30s and reaped before the EVE process starts. Successful
+probe and EVE environments use native DLL overrides and the pinned ICD, with
+software-renderer variables removed. A failed/missing device, package, probe or
+presentation check selects WineD3D and preserves a clear fallback reason in
+status, launch observations and support logs. Cancellation, memory pressure or
+unverifiable process ownership stop startup instead of bypassing safeguards.
+
+rendererReport records requested/active renderer, package SHA, component pins,
+KGSL reachability and probe result. Probe success does not set graphics_qualified
+or prove EVE gameplay/FPS. See GPU-PRESENTATION.md for full provenance and the
+follow-up Android-surface X-server design. The VNC replacement is not implemented.

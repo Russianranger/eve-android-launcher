@@ -12,6 +12,8 @@ def check(path: Path) -> None:
             "lib/arm64-v8a/libproot.so", "lib/arm64-v8a/libproot-loader.so",
             "assets/server_runtime.py", "assets/client_prepare.py", "assets/client_probe.sh",
             "assets/client_runtime.py", "assets/client_performance.py", "assets/eve-client-gate.exe",
+            "assets/client_renderer.py", "assets/eve-renderer-probe.exe",
+            "assets/renderer-runtime.tar.gz", "assets/renderer-manifest.json",
         )
         for name in required:
             data = archive.read(name)
@@ -20,12 +22,12 @@ def check(path: Path) -> None:
             if name.startswith("lib/"):
                 if data[:5] != b"\x7fELF\x02" or struct.unpack_from("<H", data, 18)[0] != 183:
                     raise ValueError(f"Expected a 64-bit ARM ELF: {name}")
-            if name.endswith("eve-client-gate.exe"):
+            if name.endswith(("eve-client-gate.exe", "eve-renderer-probe.exe")):
                 if data[:2] != b"MZ" or len(data) < 64:
-                    raise ValueError("Missing Windows certificate helper")
+                    raise ValueError("Missing Windows helper")
                 offset = struct.unpack_from("<I", data, 60)[0]
                 if data[offset:offset + 4] != b"PE\0\0" or struct.unpack_from("<H", data, offset + 4)[0] != 0x8664:
-                    raise ValueError("Expected the x64 Wine certificate helper")
+                    raise ValueError("Expected an x64 Wine helper")
             if name.endswith("libproot.so") and b"--eve-client-network" not in data:
                 raise ValueError("PRoot is missing the client loopback network policy")
             if name.endswith("libproot.so") and (b"--eve-client-network-fast-sendto" not in data or b"--eve-client-network-stats" not in data):

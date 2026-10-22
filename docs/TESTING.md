@@ -1,3 +1,59 @@
+# EVE Android Launcher 0.1.23: current-source integration test
+
+Install **EVE-Android-Launcher-0.1.23.apk** in place after stopping client/server.
+Keep app data, prepared client, world, runtimes, mappings and caches. Verify the
+launcher shows 0.1.23 and the current dark adaptive icon. This continues 0.1.22;
+main's separate 0.1.8 APK is not the baseline. No historic baseline rerun is needed.
+
+Keep the accepted Adreno + Mesa 26.2.4 + Reduce GPU frame copies choices, HUD,
+30 FPS / queue 1 / display 30, 1280x720 and FSR off. Retain known-good controller
+settings. Leave unqualified 0.1.22 trials and the old neutral experiments off for
+these comparisons; do not press Restore baseline, which clears driver choices.
+
+Client → **Edit advanced performance settings** accepts these exact JSON objects.
+Save while both runtimes are stopped, then restart server → SERVER READY → EVE.
+Each object replaces the previous object, so omitted new options return to their
+defaults. The existing graphics/driver/controller preferences are preserved.
+
+| Order | JSON | What to observe |
+| --- | --- | --- |
+| 1, during normal use | `{}` | Existing features/icon, received/drawn status counters and ten-second logs; export `0.1.23-working-settings` during normal gameplay |
+| 2, direct pixels | `{"schemaVersion":1,"displayPixels":"direct"}` | Pixel-path probe/fallback receipt, received/drawn FPS, full RGB/text/transparency and controls; export `0.1.23-direct-pixels` |
+| 3, connected sends | `{"schemaVersion":1,"networkFastConnectedSends":true,"networkTrapStatistics":true}` | Effective native policy, trapped sendmsg rate, received/drawn/engine FPS and heat; export `0.1.23-connected-sends` |
+
+For the new candidates use the same station/character/fan/power settings, warm
+three minutes, then observe two minutes static and two moving the camera.
+Record engine HUD and received/drawn ranges, start/end temperature, stutter/input
+latency. Check ships, effects, text/colors, touch/right click, controller layers,
+gear/text entry, app switch and display reopen. Export while running and reopen
+once to confirm the same session remains usable. Quit normally and save/stop the
+server before editing JSON. Return the two candidate ZIPs and observations;
+collect the first receipt during normal use rather than repeating an old test.
+
+A direct-mode probe failure safely selects legacy and reports why; do not infer
+gain unless the receipt says direct is active. Fresh drawn FPS excludes repeated
+redraws; Surface submissions are not proof of panel FPS. Stats add overhead, so
+for an isolated fast-send timing comparison use stats=true in both configurations
+and change only networkFastConnectedSends. The native logs report how often
+sendmsg still traps; no device frequency is assumed from host tests.
+
+Additional independent knobs are available after these checks, without an APK
+rebuild. Examples (each replaces the JSON file): quiet logging
+`{"wineDebug":"-all"}`; guarded esync `{"wineEsync":true}`; lower background
+priority `{"wineServerNice":3,"serverNice":5}`; lower resolution
+`{"resolution":"960x540","xvncFrameRate":60}`. Inspect requested/effective
+values and warnings in launch-observation/support, keep graphics quality fixed
+otherwise, and change one factor at a time. Existing UI performance-core,
+immediate-context and cached-buffer trials remain available independently.
+FEX precision/ordering experiments are not part of the recommended first tests.
+
+If a change causes faults, export before restarting, stop both runtimes, and save
+`{}` to undo only the new JSON overrides. Restore driver/profile preferences if
+you changed them separately. No clearing data, reimport or runtime replacement
+is required. Physical FPS/heat improvement remains unqualified until tested.
+
+---
+
 # EVE Android Launcher 0.1.22: three client execution tests
 
 Your 0.1.21 result is accepted: all three overhead paths ran, but FPS was unchanged.

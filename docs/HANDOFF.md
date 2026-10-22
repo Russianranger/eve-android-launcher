@@ -1,3 +1,23 @@
+# Current integration: 0.1.23 on the delivered development baseline
+
+The user reported that main's separately published 0.1.8 omitted the actual
+newer application and adaptive icon, then explicitly authorized integrating the
+useful FPS work into the latest development branch and publishing its APK.
+Work ONLY on `codex/wine-localhost-tls`; preserve all work through `6fcf6b2`
+(0.1.22/code 23). The integrated version is 0.1.23/code 24. Do not rename or ship
+main's old tree, import its x64 DXVK/Mesa 25 renderer, reset data or rewrite refs.
+
+[INTEGRATION-0.1.23.md](INTEGRATION-0.1.23.md) records the source mapping and
+[TESTING.md](TESTING.md) the device procedure. Existing saved settings and GPU
+qualification remain authoritative; new JSON experiments default off. Preserve
+the original published certificate. The exact branch's normal push workflow now
+publishes a prerelease only after all verify/server/native/Android jobs pass,
+with lineage/version and existing certificate checks. Use the release target commit, passing Actions run and published SHA256SUMS.txt
+as the qualification/delivery evidence. Source changes alone do not prove that
+the APK has passed the native and Android checks.
+
+---
+
 # EVE Android Launcher handoff
 
 ## Current 0.1.22: isolated client execution trials

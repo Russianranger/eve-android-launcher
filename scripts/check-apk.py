@@ -58,6 +58,7 @@ def check(path: Path, manifest_tree: Path) -> None:
             "assets/wine-crypt32-aarch64.dll", "assets/wine-crypt32-i386.dll",
             "assets/pe_image.py", "assets/process_metrics.py", "assets/client_graphics.py", "assets/graphics_present.py",
             "assets/client_diagnostics.py",
+            "assets/client_performance.py",
             "assets/eve-client-window.exe",
             "assets/client-graphics-bundle.json", "assets/turnip-26.0.0.so", "assets/vulkan-probe",
             "assets/turnip-26.0.0-a740-pc-mode.so", "assets/a740-driver-probe",
@@ -86,6 +87,9 @@ def check(path: Path, manifest_tree: Path) -> None:
                     raise ValueError("Window helper must preserve the original x64 CUI console/group")
             if name.endswith("libproot.so") and b"--eve-client-network" not in data:
                 raise ValueError("PRoot is missing the client loopback network policy")
+            if name.endswith("libproot.so") and any(flag not in data for flag in (
+                    b"--eve-client-network-fast-sendto", b"--eve-client-network-stats")):
+                raise ValueError("PRoot is missing the selectable connected-send policy and statistics")
         other_abis = [name for name in archive.namelist()
                       if name.startswith("lib/") and not name.startswith("lib/arm64-v8a/")]
         if other_abis:

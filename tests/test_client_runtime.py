@@ -356,6 +356,54 @@ class ClientRuntimeTests(unittest.TestCase):
         (self.state / "run/stop").write_text("stop")
         self.assertEqual(second.wait(timeout=4), 0)
 
+    def test_guest_knobs_preserve_graphics_and_snapshot_explicit_display_overrides(self):
+        requested = {"wineDebug": "-all", "wineEsync": False, "lpNumThreads": "auto",
+                     "xvncFrameRate": 45, "resolution": "960x540", "displayPixels": "direct",
+                     "fex": {"multiblock": True, "x87ReducedPrecision": True}}
+        (self.state / "performance.json").write_text(json.dumps(requested))
+        runtime = MODULE.Runtime(self.settings(graphics=True, mesa262_driver=True,
+                                               linear_presentation=True, disable_lrcpc2=True))
+        self.assertEqual(runtime.performance["targetFrameRate"], 30)
+        self.assertEqual(runtime.performance["maxFrameLatency"], 1)
+        self.assertEqual(runtime.performance["displayFrameRate"], 45)
+        self.assertTrue(runtime.optimizations["mesa262Driver"])
+        self.assertTrue(runtime.optimizations["linearPresentation"])
+        command = runtime.default_display_command()
+        self.assertEqual(command[command.index("-geometry") + 1], "960x540")
+        self.assertEqual(command[command.index("-FrameRate") + 1], "45")
+        (self.state / "performance.json").write_text('{"wineDebug":"-all,err+all","xvncFrameRate":30}')
+        env = runtime.environment()
+        self.assertEqual(env["WINEDEBUG"], "-all")
+        self.assertEqual(env["WINEESYNC"], "0")
+        self.assertEqual(env["FEX_MULTIBLOCK"], "1")
+        self.assertEqual(env["FEX_X87REDUCEDPRECISION"], "1")
+        self.assertEqual(env["FEX_HOSTFEATURES"], "disablelrcpc2")
+        self.assertNotIn("LP_NUM_THREADS", env)
+        self.assertEqual(env["MESA_VK_WSI_DEBUG"], runtime.optimizations["mesaWsiDebug"])
+        self.assertEqual(runtime.guest_performance["displayPixels"], "direct")
+        self.assertIsNone(runtime.guest_performance["lpNumThreads"])
+
+    def test_guest_profile_observation_uses_native_flags_and_preserves_live_snapshot(self):
+        (self.state / "performance.json").write_text(json.dumps({"wineDebug": "-all", "displayPixels": "direct",
+            "networkFastConnectedSends": True, "networkTrapStatistics": True, "wineServerNice": 3}))
+        with mock.patch.dict(os.environ, EVE_CLIENT_NETWORK_FAST_SENDTO="0", EVE_CLIENT_NETWORK_TRACE_STATS="1"):
+            process = self.launch()
+        running = self.wait_status("running")
+        observed = json.loads((self.state / "launch-observation.json").read_text())
+        self.assertTrue(observed["guestPerformanceRequested"]["networkFastConnectedSends"])
+        self.assertFalse(observed["guestPerformance"]["networkFastConnectedSends"])
+        self.assertTrue(observed["guestPerformance"]["networkTrapStatistics"])
+        self.assertEqual(observed["guestPerformance"], running["guestPerformance"])
+        self.assertEqual(observed["performance"], running["performance"])
+        self.assertEqual(observed["guestPerformance"]["displayPixels"], "direct")
+        self.assertEqual(observed["guestScheduling"]["wineServer"]["nice"], os.getpriority(os.PRIO_PROCESS, 0) + 3)
+        (self.state / "performance.json").write_text('{}')
+        self.assertEqual(running["guestPerformance"]["wineDebug"], "-all")
+        (self.state / "run/stop").write_text("stop")
+        self.assertEqual(process.wait(timeout=4), 0)
+        self.assertTrue(self.wait_status("stopped")["cleanShutdown"])
+        self.assertFalse((self.state / "run/processes.json").exists())
+
     def test_immediate_stop_is_not_erased_by_new_supervisor(self):
         (self.state / "run").mkdir()
         (self.state / "run/stop").write_text("immediate-stop")

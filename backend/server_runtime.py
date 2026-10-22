@@ -26,6 +26,8 @@ import urllib.error
 import urllib.request
 import uuid
 
+import client_performance
+
 
 CLIENT_BUILD = 3396210
 EVEJS_VERSION = "0.12.9"
@@ -277,6 +279,7 @@ class Runtime:
         self.previous_status: dict[str, Any] = {}
         self.identities: dict[str, Any] = {}
         self.previous_snapshot: ProcessSnapshot | None = None
+        self.guest_performance = client_performance.load(self.s.state / "performance.json")
 
     def request_stop(self, *_: Any) -> None:
         self.cancelled = True
@@ -315,6 +318,8 @@ class Runtime:
         self.previous_status = {
             "schemaVersion": SCHEMA_VERSION, "phase": phase, "message": message,
             "ready": ready, "updatedAt": time.time(), **self.identities, **details,
+            "guestPerformance": {"serverNice": self.guest_performance["serverNice"],
+                                 "warnings": self.guest_performance["warnings"]},
             "processCpu": {role: cpu[group] for role, group in owned.items()},
             "processRssKiB": {role: sum(member.get("rssKiB", 0) for member in snapshot.members(group))
                               for role, group in owned.items()},
@@ -634,7 +639,8 @@ log_level = "info"
         self.logs.mkdir(parents=True, exist_ok=True)
         with (self.logs / f"{name}-console.log").open("ab", buffering=0) as stream:
             stream.write(f"\n=== {name} start {time.time():.3f} ===\n".encode("utf-8"))
-            return subprocess.Popen(command, cwd=cwd, env=self.environment(), stdin=subprocess.DEVNULL,
+            return subprocess.Popen(client_performance.command(name, command, self.guest_performance),
+                                    cwd=cwd, env=self.environment(), stdin=subprocess.DEVNULL,
                                     stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
 
     def child_running(self, process: subprocess.Popen | None, name: str) -> None:

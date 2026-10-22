@@ -19,6 +19,7 @@ from unittest import mock
 
 
 BACKEND = Path(__file__).resolve().parents[1] / "backend/server_runtime.py"
+sys.path.insert(0, str(BACKEND.parent))
 SPEC = importlib.util.spec_from_file_location("server_runtime", BACKEND)
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
@@ -261,6 +262,7 @@ class ServerRuntimeTests(unittest.TestCase):
         runner = self.root / "runner.py"
         runner.write_text(
             "import importlib.util,json,pathlib,signal,sys\n"
+            f"sys.path.insert(0,{str(BACKEND.parent)!r})\n"
             f"spec=importlib.util.spec_from_file_location('server_runtime',{str(BACKEND)!r})\n"
             "module=importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;spec.loader.exec_module(module)\n"
             f"values=json.loads({json.dumps(values)!r})\n"

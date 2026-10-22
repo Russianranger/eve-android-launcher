@@ -173,16 +173,21 @@ final class RuntimeManager {
         text(new File(root, "etc/hosts"), "127.0.0.1 localhost" + aliases + "\n::1 localhost" + aliases + "\n");
         List<String> args = new ArrayList<>(Arrays.asList(proot.getPath(), "--kill-on-exit", "-0", "-r", root.getPath(), "-b", "/dev", "-b", "/proc", "-b", "/sys", "-b", tmp + ":/tmp", "-w", "/"));
         if (root.equals(clientRoot)) args.add(1, "--sysvipc");
+        GuestPerformance.Network network = new GuestPerformance.Network(false, false);
         if (restrictedClientNetwork) {
             if (!root.equals(clientRoot)) throw new IOException("Client network policy requires the client runtime");
-            args.add(1, "--eve-client-network");
+            network = GuestPerformance.network(new File(clientState, "performance.json"));
+            args.add(1, network.policyFlag());
+            if (network.trapStatistics) args.add(1, "--eve-client-network-stats");
         }
         for (Map.Entry<File, String> entry : bindings.entrySet()) {
             if (!entry.getKey().isFile()) mkdir(entry.getKey());
             args.add("-b"); args.add(entry.getKey().getPath() + ":" + entry.getValue());
         }
         args.addAll(Arrays.asList("/usr/bin/env", "-i", "HOME=/root", "USER=root", "PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "TMPDIR=/tmp", "PYTHONUNBUFFERED=1"));
-        if (restrictedClientNetwork) args.add("EVE_CLIENT_NETWORK_POLICY=loopback-v1");
+        if (restrictedClientNetwork) args.addAll(Arrays.asList("EVE_CLIENT_NETWORK_POLICY=loopback-v1",
+            "EVE_CLIENT_NETWORK_FAST_SENDTO=" + (network.fastConnectedSends ? "1" : "0"),
+            "EVE_CLIENT_NETWORK_TRACE_STATS=" + (network.trapStatistics ? "1" : "0")));
         args.addAll(command);
         ProcessBuilder builder = new ProcessBuilder(args);
         builder.environment().put("PROOT_LOADER", loader.getPath()); builder.environment().put("PROOT_TMP_DIR", tmp.getPath());
@@ -264,6 +269,7 @@ final class RuntimeManager {
     void startServer(Progress progress) throws Exception {
         if (serverAlive()) { progress.update(serverStatus().optString("message")); return; }
         if (!serverInstalled() || !new File(serverState, "prepared.json").isFile()) throw new IOException("Install the runtime and prepare the local world first");
+        GuestPerformance.snapshotServer(this);
         Map<File, String> bindings = serverBindings();
         new File(serverState, "run/stop").delete();
         JSONObject pending = report();

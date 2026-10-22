@@ -4,6 +4,14 @@ A server-first Android launcher for EVE.js 0.12.9 and its exact supported Window
 client, **EVE 24.01 build 3396210**. Target hardware is the AYN Thor Max
 (ARM64 Android 13, Snapdragon 8 Gen 2, 16 GB RAM).
 
+**Current integrated preview: [0.1.23](https://github.com/Russianranger/eve-android-launcher/releases/tag/v0.1.23)**,
+from `codex/wine-localhost-tls`, continuing the delivered 0.1.22/code 23 source.
+It retains the adaptive icon, fullscreen/controller work, accepted Mesa 26.2.4
+and linear presentation, and all existing experiments. It adds fresh display
+FPS counters and optional direct bitmap, connected-send and guest controls.
+Existing saved settings remain the defaults. See the [focused device test](docs/TESTING.md)
+and [integration record](docs/INTEGRATION-0.1.23.md).
+
 The initial server preview provides a prepared native ARM64 server runtime,
 durable local world and Jita market, foreground session ownership, readiness
 checks, supervised shutdown and support-log export. It also installs the pinned

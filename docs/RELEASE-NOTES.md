@@ -1,3 +1,29 @@
+# 0.1.23 — integrate FPS controls on the current development source
+
+Continue `codex/wine-localhost-tls` at `6fcf6b2` (delivered 0.1.22/code 23),
+with versionCode 24 and the original update signing identity. Preserve the
+adaptive space icon, fullscreen gear/controller layers, saved options, accepted
+Mesa 26.2.4 + linear presentation, native ARM64EC DXVK and all 0.1.22 experiments.
+
+Display status and ten-second logs distinguish received updates from fresh drawn
+frames. Optional direct bitmap pixels remove Java pixel conversion; the existing
+bulk/legacy and separate-surface paths remain selectable. A bounded advanced JSON
+editor adds optional quiet Wine logging, esync with eventfd/fd-limit fallback,
+software worker detection, priorities, affinity, resolution/display rate and
+explicit FEX overrides. Defaults preserve the current working setup. Requested
+and effective values, warnings and profile snapshots enter support exports.
+
+Optional connected-send acceleration admits only NULL-destination/zero-length
+sendto in the kernel; connect/bind restrictions, wildcard rewriting, sendmsg,
+sendmmsg and io_uring checks remain. Optional native counters report trapped calls.
+Every performance change can be selected without rebuilding the APK.
+
+Publish the qualified APK from this exact development branch. A lineage/version
+gate prevents another release from an older divergent main. No GPU package,
+Wine/FEX runtime, CCP content or world data is replaced. Full source/qualification
+and limits are recorded in [the integration record](INTEGRATION-0.1.23.md).
+Physical FPS/heat benefit remains unverified; follow the focused tests in TESTING.md.
+
 # 0.1.22 — three isolated client execution experiments
 
 Accept neutral physical 0.1.21 result. Add default-off performance-core scheduling,

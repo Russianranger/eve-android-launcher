@@ -24,7 +24,7 @@ final class SupportExport {
         // history. Server diagnostics previously exhausted the shared limit
         // before the client display and DXVK logs could be selected.
         for (String name : new String[]{"status.json", "validation.json", "prepared.json", "probe.json", "import.json",
-                "import-session.json", "client-performance.json", "client-performance.json.1", "controller.json",
+                "import-session.json", "client-performance.json", "client-performance.json.1", "performance.json", "controller.json",
                 "graphics-preflight.json", "client-graphics-bundle.json", "client-gate.json", "launch-observation.json",
                 "launch-policy.json", "wine-trust-overlay.json", "preparation-memory.json"})
             add(result, runtime.clientState, "client/" + name, name);
@@ -40,6 +40,7 @@ final class SupportExport {
         for (String name : new String[]{"status.json", "readiness.json"})
             add(result, runtime.serverState, "server/run/" + name, "run/" + name);
         add(result, runtime.serverState, "server/prepared.json", "prepared.json");
+        add(result, runtime.serverState, "server/performance.json", "performance.json");
 
         int serverStart = result.size();
         for (String name : new String[]{"supervisor.log", "server-console.log", "market-console.log", "setup.log"})
@@ -103,6 +104,8 @@ final class SupportExport {
             .put("freeBytes", runtime.home.getUsableSpace()).put("server", runtime.serverStatus())
             .put("client", new ClientRuntime(context).status()).put("operation", RuntimeService.operation)
             .put("message", RuntimeService.message).put("error", RuntimeService.error).put("androidExits", exits(context));
+        metadata.put("guestPerformanceProfile", GuestPerformance.diagnostic(new File(runtime.clientState, "performance.json")));
+        metadata.put("serverPerformanceSnapshot", GuestPerformance.diagnostic(new File(runtime.serverState, "performance.json")));
         android.os.PowerManager power = context.getSystemService(android.os.PowerManager.class);
         metadata.put("powerSaveModeAtExport", power.isPowerSaveMode());
         if (Build.VERSION.SDK_INT >= 29) metadata.put("thermalStatusAtExport", power.getCurrentThermalStatus());

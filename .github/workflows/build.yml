@@ -5,7 +5,7 @@ on:
   pull_request:
   workflow_dispatch:
 env:
-  EVE_APP_VERSION: '0.1.22'
+  EVE_APP_VERSION: '0.1.23'
 permissions:
   contents: read
 defaults:
@@ -341,7 +341,7 @@ jobs:
           if-no-files-found: error
           path: out/proot-corresponding-source.tar.gz
   release:
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/wine-localhost-tls') && github.event_name == 'push'
     needs: [verify, server, apk]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -349,6 +349,10 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require the delivered development baseline and a newer APK identity
+        run: python3 scripts/check-release-lineage.py
       - uses: actions/download-artifact@v4
         with:
           name: android-apk

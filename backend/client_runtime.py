@@ -29,6 +29,7 @@ import uuid
 from typing import Any
 
 import client_prepare
+import client_performance
 import client_graphics
 import client_diagnostics
 from process_metrics import available_memory_kib
@@ -181,6 +182,13 @@ class Runtime:
             self.s.a740_pc_mode, self.s.linear_presentation, self.s.sysmem_rendering, self.s.shm_presentation,
             self.s.mesa262_driver)
         self.cpu_topology = client_graphics.cpu_topology()
+        self.requested_guest_performance = client_performance.load(self.s.state / "performance.json")
+        self.guest_performance = client_performance.resolve(
+            self.requested_guest_performance, graphics_mode=self.s.graphics_mode,
+            display_rate=self.performance["displayFrameRate"],
+            performance_cores=self.s.performance_cores and self.s.graphics_mode == "turnip-dxvk")
+        if self.requested_guest_performance["xvncFrameRate"] is not None:
+            self.performance["displayFrameRate"] = self.guest_performance["xvncFrameRate"]
         for value in (self.s.performance_cores, self.s.cached_dynamic_buffers, self.s.immediate_context):
             if type(value) is not bool:
                 raise ValueError("Client experiments must be booleans")
@@ -253,7 +261,7 @@ class Runtime:
             return {"requested": True, "active": False, "reason": "receipt-or-tasks-unavailable"}
 
     def default_display_command(self) -> tuple[str, ...]:
-        return (self.s.display, ":" + str(self.s.display_number), "-geometry", "1280x720", "-depth", "24",
+        return (self.s.display, ":" + str(self.s.display_number), "-geometry", self.guest_performance["resolution"], "-depth", "24",
                 "-rfbport", str(self.s.display_port), "-localhost", "yes", "-SecurityTypes", "None",
                 "-nolisten", "tcp", "-ac", "-AlwaysShared", "-FrameRate",
                 str(self.performance["displayFrameRate"]), "-desktop", "EVE Local Preview")
@@ -329,9 +337,12 @@ class Runtime:
                   "ready": ready, "client_launch_qualified": False,
                   "login_qualified": False, "graphics_qualified": False,
                   "networkPolicy": NETWORK_POLICY, "displayPort": self.s.display_port,
-                  "resolution": "1280x720", "updatedAt": time.time(),
+                  "resolution": self.guest_performance["resolution"], "updatedAt": time.time(),
                   "graphicsMode": self.s.graphics_mode,
                   "performance": self.performance,
+                  "guestPerformanceRequested": self.requested_guest_performance,
+                  "guestPerformance": self.guest_performance,
+                  "guestScheduling": self.guest_scheduling_observation(),
                   "optimizations": self.optimizations, "cpuTopology": self.cpu_topology,
                   "leanDiagnostics": self.s.lean_diagnostics,
                   "clientExperiments": self.experiments,
@@ -354,19 +365,44 @@ class Runtime:
         env.update({"HOME": "/root", "PATH": "/opt/wine/bin:/usr/bin:/bin", "LANG": "C.UTF-8",
                     "DISPLAY": ":" + str(self.s.display_number),
                     "WINEPREFIX": str(self.s.state / "prefix"), "WINEARCH": "win64",
-                    "WINEDEBUG": "-all,err+all", "WINEDLLOVERRIDES": "winemenubuilder,mshtml,mscoree=;d3d11,dxgi,crypt32=b",
-                    "WINEESYNC": "0", "WINEFSYNC": "0", "FEX_DISABLETELEMETRY": "1",
+                    "WINEDEBUG": self.guest_performance["wineDebug"], "WINEDLLOVERRIDES": "winemenubuilder,mshtml,mscoree=;d3d11,dxgi,crypt32=b",
+                    "WINEESYNC": "1" if self.guest_performance["wineEsync"] else "0", "WINEFSYNC": "0", "FEX_DISABLETELEMETRY": "1",
                     "LIBGL_ALWAYS_SOFTWARE": "1", "GALLIUM_DRIVER": "llvmpipe", "LP_NUM_THREADS": "4",
                     "EO_REMOTEFILECACHEFOLDER": "Z:\\client\\ResFiles",
                     "EVE_CLIENT_SENTRY_DSN": "http://evejs@127.0.0.1:26002/1",
                     "NO_PROXY": "127.0.0.1,localhost,::1", "no_proxy": "127.0.0.1,localhost,::1",
                     "SSL_CERT_FILE": "Z:\\client-state\\trust\\evejs-ca.pem"})
-        return client_graphics.configure_environment(
+        env = client_graphics.configure_environment(
             env, self.s.graphics_mode, self.s.graphics_folder, self.s.state,
             self.s.performance_profile, self.s.diagnostic_hud,
             self.s.disable_concurrent_binning, self.s.disable_lrcpc2,
             self.s.a740_pc_mode, self.s.linear_presentation, self.s.sysmem_rendering, self.s.shm_presentation,
             self.s.mesa262_driver)
+        if self.s.graphics_mode == "software":
+            env["LP_NUM_THREADS"] = str(self.guest_performance["lpNumThreads"])
+        env.update(client_performance.fex_environment(self.guest_performance))
+        return env
+
+    def guest_scheduling_observation(self) -> dict[str, Any]:
+        result = {}
+        for role in ("client", "wineServer"):
+            if not (self.guest_performance["cpuAffinity"] if role == "client"
+                    else self.guest_performance["wineServerNice"]):
+                continue
+            identity = self.identities.get(role + "Identity")
+            if not identity_alive(identity):
+                continue
+            record: dict[str, Any] = {"pid": identity["pid"]}
+            try:
+                record["nice"] = os.getpriority(os.PRIO_PROCESS, identity["pid"])
+            except (AttributeError, OSError):
+                record["nice"] = "unavailable"
+            try:
+                record["cpuAffinity"] = sorted(os.sched_getaffinity(identity["pid"]))
+            except (AttributeError, OSError):
+                record["cpuAffinity"] = "unavailable"
+            result[role] = record
+        return result
 
     def require_server(self) -> None:
         value = read_json(self.s.server_state / "run/status.json")
@@ -641,7 +677,8 @@ class Runtime:
             receipt.unlink(missing_ok=True)
             command = (sys.executable, str(Path(__file__).resolve()), "_affinity_exec",
                        str(receipt), *command)
-        process = subprocess.Popen(command, env=env or self.environment(), cwd=cwd or self.s.state,
+        process = subprocess.Popen(client_performance.command(role, command, self.guest_performance),
+                                   env=env or self.environment(), cwd=cwd or self.s.state,
                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, start_new_session=True)
         self.children[role] = process
@@ -1090,6 +1127,16 @@ class Runtime:
             clean = True
             normal_exit = False
             try:
+                self.guest_performance = client_performance.prepare(self.guest_performance)
+                # Android selects the native filter before this interpreter starts.
+                for key, name in (("networkFastConnectedSends", "EVE_CLIENT_NETWORK_FAST_SENDTO"),
+                                  ("networkTrapStatistics", "EVE_CLIENT_NETWORK_TRACE_STATS")):
+                    active = os.environ.get(name) == "1"
+                    if self.guest_performance[key] != active:
+                        self.guest_performance["warnings"].append(key + " uses the native session setting")
+                    self.guest_performance[key] = active
+                for warning in self.guest_performance["warnings"]:
+                    print("Performance: " + warning, flush=True)
                 self.cancellation_point()
                 self.status("starting", "Checking the prepared client and local server")
                 qualification = self.preflight()
@@ -1135,7 +1182,12 @@ class Runtime:
                     "graphics_qualified": False, "wine_cryptoapi_trust": True, "localhost443_tls": True,
                     "networkPolicy": NETWORK_POLICY, "renderer": "DXVK / Turnip (Adreno)" if self.s.graphics_mode == "turnip-dxvk" else "WineD3D / llvmpipe",
                     "graphicsPreflight": self.graphics_reports, "clientWindow": self.window_report,
-                    "displayPort": self.s.display_port})
+                    "displayPort": self.s.display_port, "resolution": self.guest_performance["resolution"],
+                    "performance": self.performance, "optimizations": self.optimizations,
+                    "clientExperiments": self.experiments,
+                    "guestPerformanceRequested": self.requested_guest_performance,
+                    "guestPerformance": self.guest_performance,
+                    "guestScheduling": self.guest_scheduling_observation()})
                 last_health = 0.0
                 while not self.stopping():
                     self.check_child("display")

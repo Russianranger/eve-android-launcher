@@ -1,3 +1,70 @@
+# Current 0.1.23 runtime integration
+
+The authoritative application baseline is `codex/wine-localhost-tls` at `6fcf6b2`,
+not the separately developed main 0.1.8 tree. All current native ARM64EC graphics,
+Mesa 26.2.4/linear choices, controls, adaptive icons and lifecycle/memory gates
+are retained. See [integration decisions](INTEGRATION-0.1.23.md).
+
+## Optional device performance file
+
+**Client → Edit advanced performance settings** edits private
+`client-state/performance.json` atomically while both runtimes are stopped.
+An empty object `{}` retains the existing working settings. The JSON object is
+bounded to 16 KiB, rejects arbitrary environment/commands and uses validated
+values with warnings/defaults on invalid external edits. It is read at startup;
+stop and restart the affected runtime after changing it. The server receives a
+bounded private profile copy, not a bind of client-state. Support exports include
+the profile, requested/effective runtime values and launch observation.
+
+| Setting | Existing/default behavior | Optional values |
+| --- | --- | --- |
+| `schemaVersion` | 1 | 1 |
+| `displayPixels` | `"legacy"`, existing bulk preference still applies | `"direct"` uses RGBA bytes, opaque Bitmap and startup color probe/fallback |
+| `networkFastConnectedSends` | false | true: admit only NULL address and zero addrlen sendto through seccomp |
+| `networkTrapStatistics` | false | true: native sendto/sendmsg/sendmmsg counters, at most every ten seconds when a send traps |
+| `wineDebug` | `"-all,err+all"` | `"-all"` |
+| `wineEsync` | false | true, subject to eventfd and fd-limit check; failures report esync disabled |
+| `lpNumThreads` | 4, software renderer only | integer 1–16 or `"auto"` for detected performance cores |
+| `wineServerNice`, `serverNice` | 0 | integer 0–19, lowering priority relative to client |
+| `cpuAffinity` | [] (no new mask) | up to 64 unique CPU indices 0–1023, restricted to available CPUs; existing performance-core option takes precedence |
+| `resolution` | `"1280x720"` | `"960x540"` |
+| `xvncFrameRate` | omitted: existing selected profile (30 or 60; software 15) | integer 1–120 |
+| `fex` | {} (preserve pinned behavior) | six explicit boolean options documented in [FEX-PERFORMANCE.md](FEX-PERFORMANCE.md) |
+
+The existing UI still selects GPU driver, caps/queue profile, linear/SHM/surface,
+controller and 0.1.22 experiments. JSON does not reset those saved preferences.
+Esync/FEX reports describe configured environment and startup checks, not proof
+that Wine/EVE used a particular synchronization or translation feature.
+Relaxed TSO/x87 options remain absent by default. No arbitrary FEX passthrough,
+listener, bind or executable override is accepted.
+
+Display FPS measures completed RFB updates and fresh framebuffer generations
+drawn/submitted by Android; repeated UI redraws do not increase fresh drawn FPS.
+A Surface post is submission evidence, not physical panel presentation. Compare
+engine HUD FPS, these counters, temperature and input behavior in the same scene.
+
+## Connected-send policy
+
+The default `--eve-client-network` remains intact. Optional
+`--eve-client-network-fast-sendto` installs the same loopback containment and
+narrows the BPF fast case to NULL destination plus zero destination length,
+checking both halves of both arguments. Explicit destinations still trap.
+`--eve-client-network-stats` adds bounded ten-second native trap counts; sendmsg
+continues to trap. Support logs show actual sendmsg frequency on the device.
+The fast case also skips PRoot's NETLINK_ROUTE compatibility bookkeeping;
+this can turn a synthetic success into a query/setup failure. It grants no new
+IP or routing authority: fake netlink descriptors are Unix sockets, and real
+netlink requests already reached the kernel. Disable only the fast-send setting
+if networking initialization regresses. The isolated native CI fixture checks
+baseline/fast policies with seccomp on/off
+and benchmarks both connected sends and the still-trapped sendmsg path. Host
+benchmarks do not establish a Thor FPS improvement.
+
+See [GPU-PRESENTATION.md](GPU-PRESENTATION.md) for the deferred Android-surface
+X server design. No X server replacement is implemented in this release.
+
+---
+
 # Client runtime qualification
 
 The preview APK prepares a private client cache and installs the exact FEX / Wine ARM64EC runtime already used by the UO launcher. The Thor server lifecycle, Wine/FEX x64 execution probe, exact client import, private TLS, local login and character selection have passed. The 0.1.9 device test accepts Adreno rendering and usable input with IMMEDIATE presentation. The 0.1.11 preview adds TRASC's controller layers and fullscreen gear controls; audio and station/space gameplay remain separate device gates.

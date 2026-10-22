@@ -26,7 +26,7 @@ public final class MainActivity extends Activity {
     private CheckBox useAdreno;
     private Spinner performanceProfile;
     private CheckBox diagnosticHud;
-    private Button restoreBaseline;
+    private Button restoreBaseline, advancedPerformance;
     private static final List<String> PERFORMANCE_PROFILES = Arrays.asList("responsive", "render60", "queue2", "display60", "throughput");
     private final Map<String, CheckBox> performanceOptions = new LinkedHashMap<>();
     private boolean updatingRenderer;
@@ -97,7 +97,7 @@ public final class MainActivity extends Activity {
     }
     private void render() {
         logGeneration++; controls.clear(); controls.addAll(launchControls); body.removeAllViews(); stateText = null; logText = null;
-        performanceProfile = null; diagnosticHud = null; performanceSummary = null; restoreBaseline = null; performanceOptions.clear();
+        performanceProfile = null; diagnosticHud = null; performanceSummary = null; restoreBaseline = null; advancedPerformance = null; performanceOptions.clear();
         if (tab.equals("Server")) {
             LinearLayout state = card("Your local universe", "EVE.js 0.12.9 · client build 3396210\nSetup downloads the prepared ARM64 server package. World data stays on this device.");
             stateText = label("", 15, 0xff6ee4f0); state.addView(stateText);
@@ -141,6 +141,10 @@ public final class MainActivity extends Activity {
                 catch (IllegalStateException error) { Toast.makeText(this, error.getMessage(), Toast.LENGTH_SHORT).show(); }
             });
             performance.addView(restoreBaseline, new LinearLayout.LayoutParams(-1, -2));
+            advancedPerformance = actionButton("Edit advanced performance settings", "edit-guest-performance");
+            advancedPerformance.setContentDescription("Advanced guest performance settings");
+            advancedPerformance.setOnClickListener(view -> editGuestPerformance());
+            performance.addView(advancedPerformance, new LinearLayout.LayoutParams(-1, -2));
             performanceOption(performance, "Request next display frame early", "early-display-requests");
             performanceOption(performance, "Disable concurrent binning (Adreno experiment)", "disable-concurrent-binning");
             performanceOption(performance, "Use alternate CPU load instructions (FEX experiment)", "disable-lrcpc2");
@@ -222,6 +226,7 @@ public final class MainActivity extends Activity {
                 if (performanceProfile != null) performanceProfile.setEnabled(adrenoSettings);
                 if (diagnosticHud != null) diagnosticHud.setEnabled(adrenoSettings);
                 if (restoreBaseline != null) restoreBaseline.setEnabled(adrenoSettings);
+                if (advancedPerformance != null) advancedPerformance.setEnabled(GuestPerformance.canEdit(this));
                 if (performanceSummary != null) performanceSummary.setText(client.performanceSummary());
                 for (CheckBox option : performanceOptions.values()) option.setEnabled(adrenoSettings);
                 JSONObject state = client.status(); stateText.setText(state.optString("message", state.toString(2)));
@@ -240,6 +245,45 @@ public final class MainActivity extends Activity {
                 Toast.makeText(this, error.getMessage(), Toast.LENGTH_SHORT).show();
             }
         });
+    }
+    private void editGuestPerformance() {
+        if (!GuestPerformance.canEdit(this)) {
+            Toast.makeText(this, "Stop both the server and client before editing guest performance settings", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        EditText editor = new EditText(this);
+        editor.setContentDescription("Guest performance JSON");
+        editor.setTypeface(Typeface.MONOSPACE);
+        editor.setMinLines(8); editor.setMaxLines(16);
+        editor.setGravity(Gravity.TOP | Gravity.START);
+        editor.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        String initial = "{}";
+        String warning = "";
+        try {
+            initial = GuestPerformance.read(new File(RuntimeManager.get(this).clientState, "performance.json"));
+            GuestPerformance.validate(initial);
+        } catch (IOException invalid) { warning = invalid.getMessage(); }
+        editor.setText(initial);
+        LinearLayout contents = new LinearLayout(this); contents.setOrientation(LinearLayout.VERTICAL);
+        contents.setPadding(dp(16), dp(8), dp(16), dp(8));
+        contents.addView(label("Optional settings apply to the next launch. {} keeps your selected graphics settings and current defaults. Stop both runtimes before saving.", 13, 0xffb9ced1));
+        contents.addView(editor, new LinearLayout.LayoutParams(-1, -2));
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Advanced performance settings").setView(contents)
+            .setPositiveButton("Save", null).setNeutralButton("Use defaults", null).setNegativeButton("Cancel", null).create();
+        final String initialWarning = warning;
+        dialog.setOnShowListener(shown -> {
+            if (!initialWarning.isEmpty()) editor.setError(initialWarning);
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> { editor.setText("{}"); editor.setError(null); });
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                try {
+                    GuestPerformance.save(this, editor.getText().toString());
+                    dialog.dismiss(); updateState();
+                    Toast.makeText(this, "Guest performance settings saved for the next launch", Toast.LENGTH_SHORT).show();
+                } catch (IOException invalid) { editor.setError(invalid.getMessage()); }
+            });
+        });
+        dialog.show();
     }
     private void syncPerformanceSettings(ClientRuntime runtime) {
         updatingPerformance = true;

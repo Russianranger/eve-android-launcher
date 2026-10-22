@@ -21,6 +21,22 @@ def run(command, cwd, log):
         raise RuntimeError(f"Native fixture build failed: {command[0]}\n" + log.read_text()[-8000:])
 
 
+
+def verify_network_cli(binary, log):
+    # Exercise the actual pinned parser without starting a guest or using a
+    # network namespace. PRoot uses first-prefix dispatch, so longer options
+    # must precede --eve-client-network in its table. Both orders must also
+    # preserve the one shared containment/statistics extension.
+    baseline = "--eve-client-network"
+    fast = "--eve-client-network-fast-sendto"
+    stats = "--eve-client-network-stats"
+    choices = ((baseline,), (fast,), (stats,), (baseline, stats), (stats, baseline),
+               (fast, stats), (stats, fast), (baseline, stats, fast))
+    for options in choices:
+        run([str(binary), *options, "--version"], binary.parent, log)
+    return len(choices)
+
+
 def verify(path, expected):
     actual = hashlib.sha256(path.read_bytes()).hexdigest()
     if actual != expected:
@@ -85,17 +101,20 @@ def main():
     run(command, proot, work / "proot-build.log")
     baseline = work / "proot-baseline"
     shutil.copy2(proot / "src/proot", baseline)
+    cli_cases = verify_network_cli(baseline, work / "proot-network-cli.log")
     callback.write_text(original)
     run(command, proot, work / "proot-entry-only-build.log")
     candidate = work / "proot-entry-only"
     shutil.copy2(proot / "src/proot", candidate)
+    if verify_network_cli(candidate, work / "proot-network-cli.log") != cli_cases:
+        raise RuntimeError("Native network option coverage differs")
     manifest = {"format": 1, "architecture": os.uname().machine,
                 "guestAbi": "native64", "compatLoaderBuilt": False,
                 "prootCommit": PROOT_COMMIT, "tallocSha256": TALLOC_SHA256,
                 "candidateNetworkSourceSha256": candidate_sha,
                 "baseline": str(baseline), "candidate": str(candidate), "loader": str(loader),
                 "change": "Entry-only flags retained; both executables also qualify runtime-selectable connected sendto and trap statistics.",
-                "sendmmsgExitCopybackRetained": True}
+                "sendmmsgExitCopybackRetained": True, "nativeNetworkOptionCasesPerExecutable": cli_cases}
     (work / "build-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps(manifest, indent=2))
 

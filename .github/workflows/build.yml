@@ -14,9 +14,9 @@ defaults:
     # disappear behind the diagnostic tee pipelines below.
     shell: bash
 concurrency:
-  # Preserve main's first signing-key build; supersede obsolete branch builds.
+  # Let publishing branches finish signing/uploading; supersede other branch builds.
   group: eve-android-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/codex/wine-localhost-tls' }}
 jobs:
   verify:
     runs-on: ubuntu-24.04

@@ -47,7 +47,7 @@ index eb92071..7b7f3d7 100644
  {
          (void) initialize_extension(tracee, port_switch_callback, NULL);
 diff --git a/src/cli/proot.h b/src/cli/proot.h
-index 6ec5036..a8f048e 100644
+index 6ec5036..d5762c8 100644
 --- a/src/cli/proot.h
 +++ b/src/cli/proot.h
 @@ -65,6 +65,9 @@ static int handle_option_link2symlink(Tracee *tracee, const Cli *cli, const char
@@ -66,14 +66,6 @@ index 6ec5036..a8f048e 100644
  	},
 +	{ .class = "Extension options",
 +	  .arguments = {
-+		{ .name = "--eve-client-network", .separator = '\0', .value = NULL },
-+		{ .name = NULL, .separator = '\0', .value = NULL } },
-+	  .handler = handle_option_eve_client_network,
-+	  .description = "Restrict EVE client sockets to loopback; map localhost TLS 443 to 26003.",
-+	  .detail = "\tApplies to all traced child processes; ordinary/server sessions are unchanged.",
-+	},
-+	{ .class = "Extension options",
-+	  .arguments = {
 +		{ .name = "--eve-client-network-fast-sendto", .separator = '\0', .value = NULL },
 +		{ .name = NULL, .separator = '\0', .value = NULL } },
 +	  .handler = handle_option_eve_client_network_fast_sendto,
@@ -87,6 +79,14 @@ index 6ec5036..a8f048e 100644
 +	  .handler = handle_option_eve_client_network_stats,
 +	  .description = "Loopback policy with ten-second cumulative send trap diagnostics.",
 +	  .detail = "\tKeeps all socket/connect/bind and explicit destination checks enabled.",
++	},
++	{ .class = "Extension options",
++	  .arguments = {
++		{ .name = "--eve-client-network", .separator = '\0', .value = NULL },
++		{ .name = NULL, .separator = '\0', .value = NULL } },
++	  .handler = handle_option_eve_client_network,
++	  .description = "Restrict EVE client sockets to loopback; map localhost TLS 443 to 26003.",
++	  .detail = "\tApplies to all traced child processes; ordinary/server sessions are unchanged.",
 +	},
  	{ .class = "Extension options",
  	  .arguments = {

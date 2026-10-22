@@ -33,12 +33,12 @@ SPEC.loader.exec_module(MODULE)
 CA_PEM = "-----BEGIN CERTIFICATE-----\nZmFrZS1jZXJ0\n-----END CERTIFICATE-----\n"
 OFFLINE_HEALTH = {"status": "ok", "service": "express-secondary", "gatewayMode": "local",
                   "offlinePolicy": {"version": 2, "proxyForwarding": "disabled", "clientFeatureFlags": "defaults"}}
-# Mesa262 plus linear runs six real qualification helpers. Joining the two
-# deliberately live display/Wine log pumps consumes 3.6s across those helpers;
+# Mesa262/SHM plus linear run five or six real qualification helpers. Joining
+# the deliberately live display/Wine log pumps consumes 3.0-3.6s across them;
 # TLS adds 0.6s before process scheduling, status sampling and final cleanup.
 # Bound the whole fixture session separately from its unchanged 0.5s per-helper
 # graphics timeout so a loaded CI runner can finish every asserted gate.
-MESA262_SESSION_TIMEOUT = 15
+STAGED_GRAPHICS_SESSION_TIMEOUT = 15
 
 FIXTURE = r'''
 import hashlib, json, os, pathlib, signal, socket, subprocess, sys, threading, time
@@ -309,6 +309,29 @@ class ClientRuntimeTests(unittest.TestCase):
         except BaseException:
             self.cleanup_processes()
             raise
+
+    def test_failed_subtest_cleanup_reaps_owned_session_before_next_launch(self):
+        identities = {}
+        with self.assertRaisesRegex(AssertionError, "injected fixture failure"):
+            with self.cleanup_failed_fixture_session():
+                first = self.launch()
+                running = self.wait_status("running")
+                identities = {role: running[role + "Identity"] for role in ("client", "display", "wineServer")}
+                raise AssertionError("injected fixture failure")
+        self.assertIsNotNone(first.poll())
+        self.assertTrue(all(not MODULE.identity_alive(identity) for identity in identities.values()))
+        self.assertFalse((self.state / "run/processes.json").exists())
+        # A subsequent case must receive its own current receipt, not an old
+        # still-running supervisor's profile/environment from the failed case.
+        (self.state / "performance.json").write_text('{"wineDebug":"-all"}')
+        second = self.launch()
+        current = self.wait_status("running")
+        self.assertEqual(current["supervisorIdentity"]["pid"], second.pid)
+        self.assertNotEqual(second.pid, first.pid)
+        self.assertEqual(current["guestPerformance"]["wineDebug"], "-all")
+        (self.state / "run/stop").write_text("stop")
+        self.assertEqual(second.wait(timeout=4), 0)
+        self.assertTrue(self.wait_status("stopped")["cleanShutdown"])
 
     def wait_status(self, phase, timeout=5):
         deadline = time.monotonic() + timeout
@@ -856,7 +879,7 @@ class ClientRuntimeTests(unittest.TestCase):
         for linear in (False, True):
             with self.subTest(linear=linear), self.cleanup_failed_fixture_session():
                 process = self.launch(graphics=True, mesa262_driver=True, linear_presentation=linear)
-                running = self.wait_status("running", timeout=MESA262_SESSION_TIMEOUT)
+                running = self.wait_status("running", timeout=STAGED_GRAPHICS_SESSION_TIMEOUT)
                 report = running["graphicsPreflight"]
                 qualification = report["mesa262DriverQualification"]
                 for field in ("hardwareIdentityGatePassed", "selectedIdentityGatePassed", "selectedDriverVulkanPresentationPassed",
@@ -890,7 +913,7 @@ class ClientRuntimeTests(unittest.TestCase):
                 (self.state / "run/stop").write_text("stop")
                 self.assertEqual(process.wait(timeout=4), 0)
                 baseline = self.launch(graphics=True)
-                restarted = self.wait_status("running", timeout=MESA262_SESSION_TIMEOUT)
+                restarted = self.wait_status("running", timeout=STAGED_GRAPHICS_SESSION_TIMEOUT)
                 self.assertFalse(restarted["optimizations"]["mesa262Driver"])
                 self.assertFalse(restarted["graphicsPreflight"]["mesa262DriverQualification"]["selectedIdentityGatePassed"])
                 environment = json.loads((self.state / "client.environment.json").read_text())
@@ -908,7 +931,7 @@ class ClientRuntimeTests(unittest.TestCase):
                 (self.state / "graphics-preflight.json").write_text(json.dumps({"hardwarePreflightPassed": True,
                     "mesa262DriverQualification": {"selectedIdentityGatePassed": True}}))
                 process = self.launch(behavior, graphics=True, mesa262_driver=True, linear_presentation=True)
-                self.assertEqual(process.wait(timeout=MESA262_SESSION_TIMEOUT), 1)
+                self.assertEqual(process.wait(timeout=STAGED_GRAPHICS_SESSION_TIMEOUT), 1)
                 self.assertEqual(self.wait_status("failed")["graphicsPreflight"], {})
                 self.assertFalse((self.state / "graphics-preflight.json").exists())
                 self.assertFalse((self.state / "client.pid").exists())
@@ -939,9 +962,9 @@ class ClientRuntimeTests(unittest.TestCase):
         for role in ("graphicsVulkan", "graphicsIdentity"):
             behavior = "mesa262-selected-" + role + "-hangs"
             for stop in (True, False):
-                with self.subTest(role=role, stop=stop):
+                with self.subTest(role=role, stop=stop), self.cleanup_failed_fixture_session():
                     process = self.launch(behavior, graphics=True, mesa262_driver=True)
-                    deadline = time.monotonic() + 4
+                    deadline = time.monotonic() + STAGED_GRAPHICS_SESSION_TIMEOUT
                     while time.monotonic() < deadline:
                         try:
                             environment = json.loads((self.state / (role + ".environment.json")).read_text())
@@ -953,7 +976,8 @@ class ClientRuntimeTests(unittest.TestCase):
                         except (OSError, ValueError, KeyError, TypeError):
                             pass
                         time.sleep(.01)
-                    else: self.fail("Selected Mesa 26.2.4 stage did not start")
+                    else: self.fail("Selected Mesa 26.2.4 stage did not start: " +
+                                    (self.root / "supervisor.log").read_text())
                     if stop: (self.state / "run/stop").write_text("stop")
                     self.assertEqual(process.wait(timeout=5), 0 if stop else 1)
                     self.assertEqual(self.wait_status("stopped" if stop else "failed")["graphicsPreflight"], {})
@@ -994,13 +1018,13 @@ class ClientRuntimeTests(unittest.TestCase):
 
     def test_shm_fresh_driver_completed_transfers_and_final_environment_reset_on_restart(self):
         for linear, sysmem, binning in ((True, False, False), (False, False, False), (True, True, True)):
-            with self.subTest(linear=linear, sysmem=sysmem):
+            with self.subTest(linear=linear, sysmem=sysmem), self.cleanup_failed_fixture_session():
                 (self.state / "fixture-graphicsIdentity.json").write_text(json.dumps(
                     linear_identity() if linear else a740_identity()))
                 with mock.patch.dict(os.environ, EVE_X11_SHM_STAGING="arbitrary"):
                     process = self.launch(graphics=True, shm_presentation=True, linear_presentation=linear,
                                           sysmem_rendering=sysmem, disable_concurrent_binning=binning)
-                running = self.wait_status("running")
+                running = self.wait_status("running", timeout=STAGED_GRAPHICS_SESSION_TIMEOUT)
                 report = running["graphicsPreflight"]
                 qualification = report["shmPresentationQualification"]
                 for field in ("hardwareIdentityGatePassed", "selectedDriverVulkanPresentationPassed",
@@ -1030,7 +1054,7 @@ class ClientRuntimeTests(unittest.TestCase):
                 self.assertEqual(process.wait(timeout=4), 0)
                 with mock.patch.dict(os.environ, EVE_X11_SHM_STAGING="1"):
                     baseline = self.launch(graphics=True)
-                restarted = self.wait_status("running")
+                restarted = self.wait_status("running", timeout=STAGED_GRAPHICS_SESSION_TIMEOUT)
                 self.assertFalse(restarted["optimizations"]["shmPresentation"])
                 self.assertFalse(restarted["graphicsPreflight"]["shmPresentationQualification"]["transportActivationVerified"])
                 env = json.loads((self.state / "client.environment.json").read_text())
@@ -1047,11 +1071,11 @@ class ClientRuntimeTests(unittest.TestCase):
                          "graphicsD3d-bad", "graphicsD3d-display-bad", "graphicsD3d-policy-fifo",
                          "shm-receipt-missing", "shm-receipt-short", "shm-receipt-duplicate",
                          "shm-receipt-fallback", "shm-receipt-malformed", "shm-receipts-only-vulkan"):
-            with self.subTest(behavior=behavior):
+            with self.subTest(behavior=behavior), self.cleanup_failed_fixture_session():
                 (self.state / "graphics-preflight.json").write_text(json.dumps({"hardwarePreflightPassed": True,
                     "shmPresentationQualification": {"transportActivationVerified": True}}))
                 process = self.launch(behavior, graphics=True, shm_presentation=True)
-                self.assertEqual(process.wait(timeout=5), 1)
+                self.assertEqual(process.wait(timeout=STAGED_GRAPHICS_SESSION_TIMEOUT), 1)
                 failed = self.wait_status("failed")
                 self.assertEqual(failed["graphicsPreflight"], {})
                 self.assertFalse((self.state / "graphics-preflight.json").exists())

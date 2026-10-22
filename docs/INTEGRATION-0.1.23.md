@@ -64,3 +64,18 @@ differ from earlier APKs; this is not a binary-identical cross-build comparison.
 Host compatibility and software-rendering fixtures do not prove Thor FPS/heat,
 actual panel presentation, or performance benefit. Native trap logs, display
 receipts, the game HUD and physical observations are complementary evidence.
+
+## Qualification repairs before APK delivery
+
+The first integration run, Actions 39722973649, correctly withheld the APK.
+The pinned PRoot parser uses first-prefix option dispatch: the new specific
+network options must appear before their shorter common baseline option.
+The native build now executes eight real parser combinations for each of its
+two executables before the isolated policy proof. All 16 parser checks pass
+locally against the exact pinned source, without requiring a guest/network.
+
+The same CI run exposed old five-second SHM fixture waits and missing per-case
+cleanup under runner load. Apply the existing bounded multistage fixture budget
+and failure cleanup while retaining every rejection/readback/ownership assertion
+and the production helper deadlines. Publishing branches now finish their
+signing/upload run instead of being cancelled by a subsequent branch push.

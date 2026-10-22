@@ -13,6 +13,9 @@ import android.widget.*;
 import java.io.File;
 import java.io.IOException;
 import java.net.*;
+import java.nio.ByteBuffer;
+import java.util.Locale;
+import org.json.JSONObject;
 import java.util.concurrent.*;
 
 /** Fullscreen EVE display and layered controls. RuntimeService owns the client session. */
@@ -36,7 +39,7 @@ public final class ClientDisplayActivity extends Activity {
     private FrameLayout displayRoot;
     private volatile boolean displayDestroyed;
     private volatile String surfaceFailureReason = "none";
-    private TextView status, layerBanner, layerStatus;
+    private TextView status, layerBanner, layerStatus, fpsStatus;
     private FrameLayout menuLayer;
     private LinearLayout menu;
     private ImageButton gear;
@@ -79,6 +82,11 @@ public final class ClientDisplayActivity extends Activity {
         status.setText("Connecting to local client display…");
         FrameLayout.LayoutParams statusPosition = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
         statusPosition.topMargin = dp(12); root.addView(status, statusPosition);
+        fpsStatus = new TextView(this); fpsStatus.setTextColor(0xffb8d7e2); fpsStatus.setTextSize(11);
+        fpsStatus.setPadding(dp(8), dp(4), dp(8), dp(4)); fpsStatus.setBackground(panel(0xa0081728));
+        fpsStatus.setText("Display FPS: waiting for sample");
+        FrameLayout.LayoutParams fpsPosition = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.LEFT);
+        fpsPosition.setMargins(dp(12), dp(12), dp(12), 0); root.addView(fpsStatus, fpsPosition);
         layerBanner = new TextView(this); layerBanner.setTextColor(0xffeafcff); layerBanner.setTextSize(15);
         layerBanner.setPadding(dp(18), dp(8), dp(18), dp(8)); layerBanner.setBackground(panel(0xb0092036));
         layerBanner.setVisibility(View.GONE);
@@ -135,7 +143,7 @@ public final class ClientDisplayActivity extends Activity {
         performanceFile = new File(RuntimeManager.get(this).clientState, "logs/display-performance.json");
         diagnostics.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
         diagnostics.setContinueExistingPeriodicTasksAfterShutdownPolicy(false);
-        diagnostics.scheduleAtFixedRate(() -> persistPerformance(performance), 10, 10, TimeUnit.SECONDS);
+        diagnostics.scheduleAtFixedRate(this::samplePerformance, 10, 10, TimeUnit.SECONDS);
         frameThread = new HandlerThread("eve-display-frame-metrics"); frameThread.start();
         frameListener = (window, frame, dropped) -> {
             DisplayPerformance measured = performance;
@@ -169,6 +177,25 @@ public final class ClientDisplayActivity extends Activity {
         RuntimeService.append(this, "Separate display surface unavailable (" + reason + "); regular bitmap display retained");
         updateCapture();
         if (visible) Toast.makeText(this, "Using regular display after a surface error", Toast.LENGTH_LONG).show();
+    }
+    private void samplePerformance() {
+        DisplayPerformance measured = performance;
+        if (measured == null || !measured.active.get()) return;
+        DisplayPerformance.Rates rates = measured.sampleRates(System.nanoTime());
+        String summary = String.format(Locale.ROOT, "Display received %.1f/s · drawn %.1f/s", rates.receivedPerSecond, rates.drawnPerSecond);
+        RuntimeService.append(this, summary + " (connection=" + measured.connectionUuid + ", updates=" + rates.received + ", fresh draws=" + rates.drawn + ")");
+        handler.post(() -> { if (!displayDestroyed && visible && performance == measured) fpsStatus.setText(summary); });
+        persistPerformance(measured);
+    }
+    static boolean requestedDirectPixels(JSONObject status) {
+        JSONObject profile = status.optJSONObject("guestPerformance");
+        return profile != null && "direct".equals(profile.opt("displayPixels"));
+    }
+    private boolean readDirectPixelRequest() {
+        try {
+            return requestedDirectPixels(new JSONObject(RuntimeManager.read(
+                new File(RuntimeManager.get(this).clientState, "run/status.json"), 128 * 1024)));
+        } catch (Exception unavailable) { return false; }
     }
     private void persistPerformance(DisplayPerformance measured) {
         if (measured == null) return;
@@ -334,6 +361,10 @@ public final class ClientDisplayActivity extends Activity {
                 measured = new DisplayPerformance();
                 measured.bulkPixelDecode = new ClientRuntime(this).bulkPixelDecode();
                 measured.idleControllerTicks = new ClientRuntime(this).idleControllerTicks();
+                boolean requestedDirect = readDirectPixelRequest();
+                boolean direct = requestedDirect && RfbView.directPixelsSupported();
+                measured.directPixels(requestedDirect, direct);
+                if (requestedDirect && !direct) RuntimeService.append(this, "Direct bitmap pixel check failed; retaining legacy pixel decoding for this connection");
                 RfbClient client = new RfbClient(attempt.getInputStream(), attempt.getOutputStream(), new RfbClient.Screen() {
                     @Override public void resize(int width, int height) { if (generation == token) {
                         synchronized (screenLock) { if (generation != token || displayDestroyed) return; screen.resize(width, height); }
@@ -342,12 +373,15 @@ public final class ClientDisplayActivity extends Activity {
                     @Override public void pixels(int x, int y, int width, int height, int[] pixels) {
                         synchronized (screenLock) { if (generation == token && !displayDestroyed) screen.pixels(x, y, width, height, pixels); }
                     }
+                    @Override public void pixels(int width, int height, ByteBuffer pixels) {
+                        synchronized (screenLock) { if (generation == token && !displayDestroyed) screen.pixels(width, height, pixels); }
+                    }
                     @Override public void updated() {
                         if (generation != token) return;
                         synchronized (screenLock) { if (generation != token || displayDestroyed) return; screen.updated(); }
                         if (!receivedFrame) { receivedFrame = true; displayStatus(token, "Local display connected · touch to click · use Text for login fields"); }
                     }
-                }, measured, new ClientRuntime(this).earlyDisplayRequests(), new ClientRuntime(this).bulkPixelDecode());
+                }, measured, new ClientRuntime(this).earlyDisplayRequests(), new ClientRuntime(this).bulkPixelDecode(), direct);
                 sessionClient = client;
                 client.handshake();
                 if (!visible || generation != token) break;
@@ -392,7 +426,7 @@ public final class ClientDisplayActivity extends Activity {
     @Override public void onResume() {
         super.onResume(); fullscreen(); final long token;
         synchronized (socketLock) { visible = true; receivedFrame = false; token = ++generation; }
-        screen.resumePresentation();
+        screen.resumePresentation(); fpsStatus.setText("Display FPS: waiting for sample");
         new Thread(() -> connect(token), "eve-display-reader").start();
     }
     @Override public void onPause() {

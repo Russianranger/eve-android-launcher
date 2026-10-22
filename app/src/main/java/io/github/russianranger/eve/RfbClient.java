@@ -13,6 +13,7 @@ final class RfbClient {
     interface Screen {
         void resize(int width, int height);
         void pixels(int x, int y, int width, int height, int[] argb);
+        default void pixels(int width, int height, ByteBuffer rgba) { throw new UnsupportedOperationException("Direct display pixels are unavailable"); }
         void updated();
     }
     private final DataInputStream in;
@@ -20,7 +21,8 @@ final class RfbClient {
     private final Screen screen;
     private final DisplayPerformance performance;
     private final boolean earlyDisplayRequests;
-    private final boolean bulkDecode;
+    private final boolean bulkDecode, directPixels;
+    private ByteBuffer framebuffer;
     private volatile int width, height;
     private int[] pixelBuffer = new int[0];
     private byte[] rowBuffer = new byte[0];
@@ -41,11 +43,15 @@ final class RfbClient {
         this(input, output, screen, performance, earlyDisplayRequests, false);
     }
     RfbClient(InputStream input, OutputStream output, Screen screen, DisplayPerformance performance, boolean earlyDisplayRequests, boolean bulkDecode) {
+        this(input, output, screen, performance, earlyDisplayRequests, bulkDecode, false);
+    }
+    RfbClient(InputStream input, OutputStream output, Screen screen, DisplayPerformance performance, boolean earlyDisplayRequests, boolean bulkDecode, boolean directPixels) {
         this.performance = performance;
+        this.directPixels = directPixels;
         this.earlyDisplayRequests = earlyDisplayRequests;
         this.bulkDecode = bulkDecode;
         performance.requestPolicy(earlyDisplayRequests);
-        performance.decoderPolicy(bulkDecode);
+        performance.decoderPolicy(bulkDecode, directPixels);
         in = new DataInputStream(new BufferedInputStream(performance.measure(input), 65536));
         out = new DataOutputStream(new BufferedOutputStream(output, 8192));
         this.screen = screen;
@@ -77,7 +83,8 @@ final class RfbClient {
         bytes(16); bytes(in.readInt()); resize(w, h);
         synchronized (out) {
             out.writeInt(0); // SetPixelFormat with padding, 32-bit little-endian RGB.
-            out.write(new byte[]{32,24,0,1,0,(byte)255,0,(byte)255,0,(byte)255,16,8,0,0,0,0});
+            out.write(new byte[]{32,24,0,1,0,(byte)255,0,(byte)255,0,(byte)255,
+                (byte) (directPixels ? 0 : 16),8,(byte) (directPixels ? 16 : 0),0,0,0});
             out.writeByte(2); out.writeByte(0); out.writeShort(2);
             out.writeInt(0); out.writeInt(-223); // Raw and DesktopSize.
             out.flush();
@@ -86,6 +93,7 @@ final class RfbClient {
     }
     private void resize(int w, int h) throws IOException {
         if (w < 1 || h < 1 || w > 4096 || h > 2160 || (long) w * h > 4194304) throw new IOException("Unsupported display dimensions");
+        if (directPixels && (framebuffer == null || width != w || height != h)) framebuffer = ByteBuffer.allocate(w * h * 4);
         width = w; height = h; performance.width.set(w); performance.height.set(h); screen.resize(w, h);
     }
     void readUpdate() throws IOException {
@@ -110,7 +118,7 @@ final class RfbClient {
         // prepared while this one is received and published, without a timer
         // generating requests faster than we can consume framebuffer headers.
         if (earlyDisplayRequests) request(true);
-        boolean resized = false;
+        boolean resized = false, changed = false;
         for (int i = 0; i < count; i++) {
             int x = in.readUnsignedShort(), y = in.readUnsignedShort();
             int w = in.readUnsignedShort(), h = in.readUnsignedShort(), encoding = in.readInt();
@@ -121,6 +129,16 @@ final class RfbClient {
             if (w < 1 || h < 1 || (long) x + w > width || (long) y + h > height) throw new IOException("Display rectangle is outside the framebuffer");
             if (encoding != 0) throw new IOException("Unsupported display encoding: " + encoding);
             int length = w * h;
+            changed = true;
+            if (directPixels) {
+                // RFB RGBA bytes match the opaque Bitmap's native little-endian
+                // layout. Preserve partial rectangles without a per-pixel loop.
+                byte[] target = framebuffer.array();
+                if (x == 0 && w == width) in.readFully(target, y * width * 4, length * 4);
+                else for (int row = 0; row < h; row++) in.readFully(target, ((y + row) * width + x) * 4, w * 4);
+                performance.rectangles.incrementAndGet(); performance.pixels.addAndGet(length);
+                continue;
+            }
             if (pixelBuffer.length < length) pixelBuffer = new int[length];
             if (bulkDecode) {
                 if (chunkBuffer == null) {
@@ -153,6 +171,12 @@ final class RfbClient {
             screen.pixels(x, y, w, h, pixelBuffer);
             performance.publishNanos.addAndGet(System.nanoTime() - publishing);
             performance.rectangles.incrementAndGet(); performance.pixels.addAndGet(length);
+        }
+        if (directPixels && changed) {
+            long publishing = System.nanoTime();
+            framebuffer.position(0);
+            screen.pixels(width, height, framebuffer.asReadOnlyBuffer());
+            performance.publishNanos.addAndGet(System.nanoTime() - publishing);
         }
         if (count > 0) { performance.updates.incrementAndGet(); screen.updated(); }
         // An early request used the previous size. In particular, a

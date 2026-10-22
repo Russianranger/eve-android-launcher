@@ -10,6 +10,7 @@ import android.widget.ImageButton;
 import java.util.Map;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import org.json.JSONObject;
 import org.junit.Test;
@@ -115,6 +116,34 @@ public final class ClientDisplayActivityTest {
             if (!owned.get().isDestroyed()) owned.destroy();
             RuntimeEnvironment.getApplication().getSharedPreferences("client-graphics", Context.MODE_PRIVATE).edit().remove("separate-display-surface").commit();
         }
+    }
+
+    @Test public void directPixelsRequireAnExplicitValidatedLaunchSelection() throws Exception {
+        assertFalse(ClientDisplayActivity.requestedDirectPixels(new JSONObject()));
+        assertFalse(ClientDisplayActivity.requestedDirectPixels(new JSONObject("{\"guestPerformance\":{\"displayPixels\":false}}")));
+        assertFalse(ClientDisplayActivity.requestedDirectPixels(new JSONObject("{\"guestPerformance\":{\"displayPixels\":\"legacy\"}}")));
+        assertTrue(ClientDisplayActivity.requestedDirectPixels(new JSONObject("{\"guestPerformance\":{\"displayPixels\":\"direct\"}}")));
+        assertTrue("The native Android bitmap/canvas passes the same RGB and opaque-padding probe used before negotiation", RfbView.directPixelsSupported());
+    }
+
+    @Test public void directBitmapPixelsStayOpaqueAndOnlyFreshImagesCountAsDrawn() {
+        RfbView display = new RfbView(RuntimeEnvironment.getApplication());
+        DisplayPerformance measured = new DisplayPerformance(); display.setPerformance(measured);
+        Bitmap rendered = Bitmap.createBitmap(3, 1, Bitmap.Config.ARGB_8888, false);
+        try {
+            display.resize(3, 1); display.layout(0, 0, 3, 1);
+            display.pixels(3, 1, ByteBuffer.wrap(new byte[]{(byte)255,0,0,0, 0,(byte)255,0,(byte)254, 0,0,(byte)255,0}));
+            display.updated(); display.draw(new Canvas(rendered));
+            assertEquals(Color.RED, rendered.getPixel(0, 0)); assertEquals(Color.GREEN, rendered.getPixel(1, 0)); assertEquals(Color.BLUE, rendered.getPixel(2, 0));
+            assertEquals(1, measured.freshDraws.get());
+            display.draw(new Canvas(rendered));
+            assertEquals("Overlay/invalidations cannot inflate delivered-frame FPS", 1, measured.freshDraws.get());
+            display.updated(); display.updated(); display.draw(new Canvas(rendered));
+            assertEquals("Coalesced updates count the one image actually submitted", 2, measured.freshDraws.get());
+            DisplayPerformance replacement = new DisplayPerformance(); display.setPerformance(replacement);
+            display.draw(new Canvas(rendered)); assertEquals("A reconnect does not count retained pixels as a new frame", 0, replacement.freshDraws.get());
+            display.updated(); display.draw(new Canvas(rendered)); assertEquals(1, replacement.freshDraws.get());
+        } finally { display.dispose(); rendered.recycle(); }
     }
 
     @Test public void gearMenuReleasesHeldInputsAndClosesCleanly() {

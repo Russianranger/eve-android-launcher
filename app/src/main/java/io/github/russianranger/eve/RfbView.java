@@ -4,6 +4,7 @@ import android.content.Context;
 import android.graphics.*;
 import android.view.MotionEvent;
 import android.view.View;
+import java.nio.ByteBuffer;
 
 /** Fit the local framebuffer to the screen and forward ordinary touch clicks/drags. */
 final class RfbView extends View implements RfbScreen {
@@ -13,6 +14,7 @@ final class RfbView extends View implements RfbScreen {
     private final RectF destination = new RectF();
     private Bitmap image;
     private boolean disposed;
+    private long submitted, presented;
     private volatile Pointer pointer;
     private volatile DisplayPerformance performance;
     private final PointerMotion motion;
@@ -29,7 +31,7 @@ final class RfbView extends View implements RfbScreen {
     }
     @Override public View view() { return this; }
     @Override public void setPointer(Pointer value) { motion.cancel(); pointer = value; }
-    @Override public void setPerformance(DisplayPerformance value) { performance = value; }
+    @Override public void setPerformance(DisplayPerformance value) { synchronized (lock) { performance = value; presented = submitted; } }
     @Override public void resumePresentation() { }
     @Override public void pausePresentation() { }
     @Override public void resize(int width, int height) {
@@ -45,11 +47,32 @@ final class RfbView extends View implements RfbScreen {
     @Override public void pixels(int x, int y, int width, int height, int[] argb) {
         synchronized (lock) { if (!disposed && image != null) image.setPixels(argb, 0, width, x, y, width, height); }
     }
+    @Override public void pixels(int width, int height, ByteBuffer rgba) {
+        synchronized (lock) {
+            if (!disposed && image != null && image.getWidth() == width && image.getHeight() == height) image.copyPixelsFromBuffer(rgba);
+        }
+    }
+    /** Prove native byte order and opaque RFB padding before requesting direct pixels. */
+    static boolean directPixelsSupported() {
+        Bitmap source = null, target = null;
+        try {
+            source = Bitmap.createBitmap(3, 1, Bitmap.Config.ARGB_8888, false);
+            source.copyPixelsFromBuffer(ByteBuffer.wrap(new byte[]{
+                (byte) 255,0,0,0, 0,(byte) 255,0,(byte) 254, 0,0,(byte) 255,0}));
+            target = Bitmap.createBitmap(3, 1, Bitmap.Config.ARGB_8888, false);
+            new Canvas(target).drawBitmap(source, 0, 0, null);
+            return target.getPixel(0, 0) == Color.RED && target.getPixel(1, 0) == Color.GREEN && target.getPixel(2, 0) == Color.BLUE;
+        } catch (RuntimeException | OutOfMemoryError unavailable) { return false; }
+        finally {
+            if (source != null) source.recycle();
+            if (target != null) target.recycle();
+        }
+    }
     void adoptImage(Bitmap transferred) {
         synchronized (lock) { if (image != null) image.recycle(); image = transferred; }
         postInvalidate();
     }
-    @Override public void updated() { postInvalidateOnAnimation(); }
+    @Override public void updated() { synchronized (lock) { submitted++; } postInvalidateOnAnimation(); }
     private void fit() {
         if (image == null) { destination.setEmpty(); return; }
         float scale = Math.min((float) getWidth() / image.getWidth(), (float) getHeight() / image.getHeight());
@@ -57,9 +80,16 @@ final class RfbView extends View implements RfbScreen {
         destination.set((getWidth() - w) / 2, (getHeight() - h) / 2, (getWidth() + w) / 2, (getHeight() + h) / 2);
     }
     @Override protected void onDraw(Canvas canvas) {
-        long started = System.nanoTime(); DisplayPerformance measured = performance;
+        long started = System.nanoTime(); DisplayPerformance measured;
         super.onDraw(canvas);
-        synchronized (lock) { fit(); if (image != null) canvas.drawBitmap(image, null, destination, paint); }
+        synchronized (lock) {
+            measured = performance; fit();
+            if (image != null) {
+                canvas.drawBitmap(image, null, destination, paint);
+                if (submitted != presented && measured != null && measured.active.get()) measured.freshDraws.incrementAndGet();
+                presented = submitted;
+            }
+        }
         if (measured != null) { measured.draws.incrementAndGet(); measured.drawNanos.addAndGet(System.nanoTime() - started); }
     }
     private boolean position(float x, float y, boolean clamp) {

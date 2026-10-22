@@ -2,6 +2,7 @@ package io.github.russianranger.eve;
 
 import java.io.*;
 import java.net.*;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.ArrayList;
@@ -14,6 +15,12 @@ public final class RfbHostTest {
     private static final class Screen implements RfbClient.Screen {
         int width, height, updates;
         int[] pixels;
+        byte[] rgba;
+        int directCopies;
+        @Override public void pixels(int w, int h, ByteBuffer values) {
+            check(w == width && h == height && values.remaining() == w * h * 4, "complete direct framebuffer");
+            rgba = new byte[values.remaining()]; values.get(rgba); directCopies++;
+        }
         @Override public void resize(int w, int h) { width = w; height = h; }
         @Override public void pixels(int x, int y, int w, int h, int[] values) { check(x == 0 && y == 0 && w == 2 && h == 1, "rectangle coordinates"); pixels = Arrays.copyOf(values, w * h); }
         @Override public void updated() { updates++; }
@@ -588,6 +595,79 @@ public final class RfbHostTest {
         output.clear(); client.releaseInputs();
         check(events(output).equals(Arrays.asList("pointer:600:400:0")), "wire release is idempotent");
     }
+    private static void directPixelsPreserveRectanglesAndRequestOrder() throws Exception {
+        byte[] colors = {0x12,0x34,0x56,0, (byte)0xab,(byte)0xcd,(byte)0xef,(byte)0xfe};
+        byte[] packet = together(hello(2, 1), update(2, 1, 0, colors));
+        for (boolean early : new boolean[]{false, true}) for (boolean bulk : new boolean[]{false, true}) {
+            Screen screen = new Screen(); CountingOutput output = new CountingOutput();
+            int pixelOffset = hello(2, 1).length + 16;
+            InputStream input = new ByteArrayInputStream(packet) {
+                @Override public synchronized int read(byte[] bytes, int offset, int length) {
+                    if (pos >= pixelOffset) check(output.size() == (early ? 66 : 56), "selected request policy precedes direct pixel reads");
+                    return super.read(bytes, offset, Math.min(1, length));
+                }
+            };
+            DisplayPerformance measured = new DisplayPerformance();
+            RfbClient client = new RfbClient(input, output, screen, measured, early, bulk, true);
+            client.handshake(); client.readUpdate();
+            check(screen.pixels == null && screen.directCopies == 1 && Arrays.equals(screen.rgba, colors), "direct mode preserves RGBA and arbitrary padding without integer conversion");
+            check(measured.rectangles.get() == 1 && measured.pixels.get() == 2 && screen.updates == 1, "direct costs and updates remain measured");
+            check(measured.json().contains("\"pixel_decoder_policy\": \"direct-rgba-buffer\""), "effective direct decoder is reported independently of prior bulk preference");
+            DataInputStream wire = new DataInputStream(new ByteArrayInputStream(output.toByteArray()));
+            wire.skipNBytes(18); byte[] format = wire.readNBytes(16);
+            check(format[2] == 0 && format[10] == 0 && format[11] == 8 && format[12] == 16, "native opaque bitmap requests little-endian RGBA shifts");
+            wire.skipNBytes(12); request(wire, false, 2, 1); request(wire, true, 2, 1);
+            check(wire.available() == 0, "direct mode sends no duplicate requests");
+        }
+        byte[] first = new byte[24]; Arrays.fill(first, (byte) 42);
+        byte[] patch = {1,2,3,0, 4,5,6,(byte)254};
+        byte[] changes = together(together(update(3, 2, 0, first), resizedUpdate(new int[][]{{3, 2}})), updateAt(1, 2, 1, 0, patch));
+        Screen screen = new Screen();
+        RfbClient client = new RfbClient(fragmented(together(hello(3, 2), changes)), new ByteArrayOutputStream(), screen, new DisplayPerformance(), true, false, true);
+        client.handshake(); client.readUpdate(); client.readUpdate(); client.readUpdate();
+        byte[] expected = first.clone(); System.arraycopy(patch, 0, expected, 4, 4); System.arraycopy(patch, 4, expected, 16, 4);
+        check(Arrays.equals(screen.rgba, expected), "partial-width direct rows and duplicate desktop sizes preserve untouched pixels");
+        byte[] one = update(2, 1, 0, new byte[]{1,2,3,0, 4,5,6,0}); one[3] = 2;
+        byte[] two = updateAt(1, 1, 1, 0, new byte[]{7,8,9,0});
+        Screen multi = new Screen();
+        client = new RfbClient(fragmented(together(hello(2, 1), together(one, Arrays.copyOfRange(two, 4, two.length)))),
+            new ByteArrayOutputStream(), multi, new DisplayPerformance(), false, false, true);
+        client.handshake(); client.readUpdate();
+        check(multi.directCopies == 1 && Arrays.equals(multi.rgba, new byte[]{1,2,3,0,7,8,9,0}), "a multi-rectangle update performs one final bitmap publication");
+        byte[] resize = resizedUpdate(new int[][]{{5, 4}});
+        CountingOutput output = new CountingOutput();
+        client = new RfbClient(fragmented(together(hello(3, 2), resize)), output, new Screen(), new DisplayPerformance(), true, false, true);
+        client.handshake(); output.clear(); client.readUpdate();
+        DataInputStream requests = new DataInputStream(new ByteArrayInputStream(output.toByteArray()));
+        request(requests, true, 3, 2); request(requests, false, 5, 4); check(requests.available() == 0, "direct resize refresh uses validated new bounds");
+    }
+    private static void malformedDirectPixelsNeverPublish() throws Exception {
+        byte[] unsupported = update(2, 1, 0, new byte[8]); unsupported[15] = 5;
+        byte[] incompleteMulti = update(2, 1, 0, new byte[8]); incompleteMulti[3] = 2;
+        incompleteMulti = together(incompleteMulti, Arrays.copyOfRange(update(2, 1, 0, new byte[7]), 4, 23));
+        for (boolean early : new boolean[]{false, true}) for (byte[] packet : new byte[][]{
+            update(2, 1, 0, new byte[7]), update(2, 1, 1, new byte[8]), updateAt(2, 1, 0, 1, new byte[8]),
+            update(0, 1, 0, new byte[0]), unsupported, incompleteMulti, resizedUpdate(new int[][]{{4096, 2160}})}) {
+            Screen screen = new Screen(); CountingOutput output = new CountingOutput();
+            RfbClient client = new RfbClient(fragmented(together(hello(2, 1), packet)), output, screen, new DisplayPerformance(), early, false, true);
+            client.handshake(); output.clear(); rejects(client::readUpdate, "malformed direct framebuffer accepted");
+            check(screen.rgba == null && screen.updates == 0, "incomplete or out-of-bounds direct frame is not published");
+            check(output.size() == (early ? 10 : 0), "malformed direct frame respects existing request containment");
+        }
+    }
+    private static void freshFrameRates() {
+        DisplayPerformance measured = new DisplayPerformance(); measured.sampleRates(measured.started);
+        measured.updates.set(300); measured.freshDraws.set(200); measured.draws.set(500);
+        DisplayPerformance.Rates rates = measured.sampleRates(measured.started + 10000000000L);
+        check(rates.receivedPerSecond == 30 && rates.drawnPerSecond == 20, "distinct receive/draw rates exclude unrelated UI redraws");
+        rates = measured.sampleRates(measured.started + 20000000000L);
+        check(rates.received == 0 && rates.drawn == 0 && rates.drawnPerSecond == 0, "idle windows do not reuse lifetime counters");
+        measured.updates.incrementAndGet(); rates = measured.sampleRates(measured.started + 20000000000L);
+        check(rates.receivedPerSecond == 0 && Double.isFinite(rates.drawnPerSecond), "zero-duration rate window remains finite");
+        check(measured.json().contains("\"fresh_frames_drawn\": 200") && measured.json().contains(measured.connectionUuid), "export retains fresh-frame totals and unique connection identity");
+        measured.directPixels(true, false);
+        check(measured.json().contains("\"direct_bitmap_pixel_self_check\": \"failed\""), "direct-pixel fallback is explicit");
+    }
     public static void main(String[] args) throws Exception {
         if (args.length == 1 && args[0].equals("--benchmark")) { benchmarkDecode(); return; }
         for (boolean bulkDecode : new boolean[]{false, true}) {
@@ -596,6 +676,7 @@ public final class RfbHostTest {
             requestPipelinesBlockedPixelPayload(bulkDecode); baselineRequestsFollowCompleteUpdates(bulkDecode);
             resizeRefreshesOnlyOnceAndFetchesNewArea(bulkDecode);
         }
+        directPixelsPreserveRectanglesAndRequestOrder(); malformedDirectPixelsNeverPublish(); freshFrameRates();
         compoundInput(); blockedReceiveDoesNotBlockInput(); motionKeepsButtonEdges();
         nonFramebufferMessagesDoNotRequestUpdates();
         controllerAndSharedInputReachWire();

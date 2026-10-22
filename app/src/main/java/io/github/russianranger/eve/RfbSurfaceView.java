@@ -11,6 +11,7 @@ import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
 import android.widget.FrameLayout;
+import java.nio.ByteBuffer;
 
 /** CPU canvas on a separate SurfaceFlinger layer; RFB and the game renderer are unchanged. */
 final class RfbSurfaceView extends FrameLayout implements RfbScreen, SurfaceHolder.Callback {
@@ -31,7 +32,7 @@ final class RfbSurfaceView extends FrameLayout implements RfbScreen, SurfaceHold
     private Bitmap image, completed;
     private Canvas completedCanvas;
     private boolean resumed, surfaceReady, dirty, disposed, failed;
-    private long epoch, completedVersion;
+    private long epoch, completedVersion, countedVersion;
     private volatile RfbView.Pointer pointer;
     private volatile DisplayPerformance performance;
     private int lastX, lastY;
@@ -69,7 +70,7 @@ final class RfbSurfaceView extends FrameLayout implements RfbScreen, SurfaceHold
     @Override public void setPerformance(DisplayPerformance value) {
         performance = value;
         synchronized (lock) {
-            epoch++;
+            epoch++; countedVersion = completedVersion;
             if (value != null) {
                 value.surfaceRequested();
                 value.surfaceInvalidated();
@@ -101,6 +102,11 @@ final class RfbSurfaceView extends FrameLayout implements RfbScreen, SurfaceHold
     }
     @Override public void pixels(int x, int y, int width, int height, int[] argb) {
         synchronized (lock) { if (!disposed && !failed && image != null) image.setPixels(argb, 0, width, x, y, width, height); }
+    }
+    @Override public void pixels(int width, int height, ByteBuffer rgba) {
+        synchronized (lock) {
+            if (!disposed && !failed && image != null && image.getWidth() == width && image.getHeight() == height) image.copyPixelsFromBuffer(rgba);
+        }
     }
     @Override public void updated() {
         DisplayPerformance measured = performance;
@@ -196,7 +202,11 @@ final class RfbSurfaceView extends FrameLayout implements RfbScreen, SurfaceHold
             }
             synchronized (lock) {
                 if (posted && drew && !disposed && !failed && resumed && surfaceReady && epoch == token && measured == performance) {
-                    if (measured != null) measured.surfacePosted();
+                    if (measured != null) {
+                        if (drawnVersion > countedVersion && measured.active.get()) measured.freshDraws.incrementAndGet();
+                        measured.surfacePosted();
+                    }
+                    countedVersion = Math.max(countedVersion, drawnVersion);
                     if (completedVersion == drawnVersion) dirty = false;
                 }
                 if (disposed) return;

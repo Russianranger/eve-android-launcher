@@ -3,6 +3,7 @@ package io.github.russianranger.eve;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -11,6 +12,24 @@ final class DisplayPerformance {
     private static final AtomicLong IDS = new AtomicLong();
     final long id = IDS.incrementAndGet();
     final long started = System.nanoTime();
+    final String connectionUuid = UUID.randomUUID().toString();
+    static final class Rates {
+        final long received, drawn, elapsedNanos;
+        final double receivedPerSecond, drawnPerSecond;
+        Rates(long received, long drawn, long elapsedNanos) {
+            this.received = received; this.drawn = drawn; this.elapsedNanos = elapsedNanos;
+            receivedPerSecond = elapsedNanos > 0 ? received * 1e9 / elapsedNanos : 0;
+            drawnPerSecond = elapsedNanos > 0 ? drawn * 1e9 / elapsedNanos : 0;
+        }
+    }
+    private long rateStarted = started, sampledUpdates, sampledFreshDraws;
+    private volatile Rates rates = new Rates(0, 0, 0);
+    synchronized Rates sampleRates(long now) {
+        long received = updates.get(), drawn = freshDraws.get();
+        rates = new Rates(Math.max(0, received - sampledUpdates), Math.max(0, drawn - sampledFreshDraws), Math.max(0, now - rateStarted));
+        sampledUpdates = received; sampledFreshDraws = drawn; rateStarted = now;
+        return rates;
+    }
     final AtomicBoolean active = new AtomicBoolean(true);
     private final AtomicLong ended = new AtomicLong();
     private final Object receiveLock = new Object();
@@ -18,10 +37,20 @@ final class DisplayPerformance {
     private volatile String updateRequestPolicy = "after-complete-with-resize-refresh";
     volatile boolean bulkPixelDecode, idleControllerTicks;
     private volatile String pixelDecoderPolicy = "scanline";
-    void decoderPolicy(boolean bulkDecode) { pixelDecoderPolicy = bulkDecode ? "bulk-little-endian-64k" : "scanline"; }
+    private volatile boolean directPixelsRequested, directPixelsEffective;
+    private volatile String pixelSelfCheck = "not-requested";
+    void directPixels(boolean requested, boolean effective) {
+        directPixelsRequested = requested; directPixelsEffective = effective;
+        pixelSelfCheck = requested ? (effective ? "passed" : "failed") : "not-requested";
+    }
+    void decoderPolicy(boolean bulkDecode, boolean direct) {
+        directPixelsEffective = direct;
+        pixelDecoderPolicy = direct ? "direct-rgba-buffer" : bulkDecode ? "bulk-little-endian-64k" : "scanline";
+    }
     final AtomicLong width = new AtomicLong(), height = new AtomicLong();
     final AtomicLong socketBytes = new AtomicLong(), socketReads = new AtomicLong(), socketNanos = new AtomicLong();
     final AtomicLong updates = new AtomicLong(), rectangles = new AtomicLong(), pixels = new AtomicLong();
+    final AtomicLong freshDraws = new AtomicLong();
     final AtomicLong incrementalRequests = new AtomicLong(), fullRequests = new AtomicLong();
     final AtomicLong decodeNanos = new AtomicLong(), publishNanos = new AtomicLong(), drawNanos = new AtomicLong(), draws = new AtomicLong();
     final AtomicLong inputs = new AtomicLong(), completedInputs = new AtomicLong(), rejectedInputs = new AtomicLong();
@@ -33,7 +62,7 @@ final class DisplayPerformance {
     private volatile String presentationMode = "bitmap-view", surfaceFailure = "none";
     void surfaceRequested() { separateSurfaceRequested = true; presentationMode = "separate-surface-cpu-canvas"; }
     void surfaceInvalidated() { separateSurfaceActive = false; }
-    void surfacePosted() { surfacePosts.incrementAndGet(); separateSurfaceActivated = true; separateSurfaceActive = true; }
+    void surfacePosted() { separateSurfaceActivated = true; separateSurfaceActive = true; surfacePosts.incrementAndGet(); }
     void surfaceFailed(String reason) { surfaceFailures.incrementAndGet(); surfaceFailure = reason; separateSurfaceActive = false; }
     void surfaceFallback(String reason) { if (!surfaceFailure.equals(reason)) surfaceFailed(reason); presentationMode = "bitmap-fallback"; }
     static void maximum(AtomicLong value, long sample) { value.accumulateAndGet(sample, Math::max); }
@@ -85,6 +114,10 @@ final class DisplayPerformance {
     String json(boolean connected) {
         StringBuilder out = new StringBuilder(1024).append("{\n  \"format\": 1,\n  \"connection_id\": ").append(id)
             .append(",\n  \"active\": ").append(connected);
+        out.append(",\n  \"connection_uuid\": \"").append(connectionUuid).append('"');
+        out.append(",\n  \"direct_bitmap_pixels_requested\": ").append(directPixelsRequested);
+        out.append(",\n  \"direct_bitmap_pixels_effective\": ").append(directPixelsEffective);
+        out.append(",\n  \"direct_bitmap_pixel_self_check\": \"").append(pixelSelfCheck).append('"');
         out.append(",\n  \"bulk_pixel_decode_requested\": ").append(bulkPixelDecode);
         out.append(",\n  \"idle_controller_ticks_requested\": ").append(idleControllerTicks);
         out.append(",\n  \"pixel_decoder_policy\": \"").append(pixelDecoderPolicy).append('"');
@@ -97,6 +130,13 @@ final class DisplayPerformance {
         number(out, "incremental_update_requests", incrementalRequests.get()); number(out, "full_update_requests", fullRequests.get());
         millis(out, "decode_work_ms", decodeNanos); millis(out, "bitmap_publish_ms", publishNanos);
         number(out, "view_draws", draws.get()); millis(out, "view_draw_cpu_ms", drawNanos);
+        number(out, "fresh_frames_drawn", freshDraws.get());
+        Rates current = rates;
+        number(out, "fps_window_elapsed_nanos", current.elapsedNanos);
+        number(out, "fps_window_received", current.received); number(out, "fps_window_drawn", current.drawn);
+        out.append(",\n  \"frames_received_per_second\": ").append(current.receivedPerSecond);
+        out.append(",\n  \"frames_drawn_per_second\": ").append(current.drawnPerSecond);
+        out.append(",\n  \"drawn_frame_meaning\": \"distinct-frame-canvas-submission-or-surface-post-not-panel-presentation\"");
         number(out, "input_operations", inputs.get()); number(out, "completed_input_operations", completedInputs.get()); number(out, "rejected_input_operations", rejectedInputs.get());
         number(out, "max_input_queue_depth", maxQueueDepth.get()); millis(out, "input_queue_ms", queueNanos); millis(out, "max_input_queue_ms", maxQueueNanos);
         millis(out, "input_send_ms", sendNanos); millis(out, "max_input_send_ms", maxSendNanos);

@@ -21,6 +21,8 @@ import java.util.*;
 /** Optional guest overrides. Empty JSON preserves the selected graphics settings. */
 final class GuestPerformance {
     static final int LIMIT = 16 * 1024;
+    // Linux exposes this flag on API 26; OsConstants only added its Java field in API 27.
+    private static final int CLOSE_ON_EXEC = 0x80000;
     private static final Set<String> KEYS = new HashSet<>(Arrays.asList("schemaVersion", "wineEsync", "wineDebug",
         "lpNumThreads", "wineServerNice", "serverNice", "cpuAffinity", "fex", "displayPixels", "resolution",
         "xvncFrameRate", "networkFastConnectedSends", "networkTrapStatistics"));
@@ -42,6 +44,7 @@ final class GuestPerformance {
 
     private static byte[] encode(String text) throws IOException {
         if (text == null) throw new IOException("Performance settings must contain one JSON object");
+        if (text.length() > LIMIT) throw new IOException("Performance JSON exceeds 16 KiB");
         try {
             ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder().onMalformedInput(CodingErrorAction.REPORT)
                 .onUnmappableCharacter(CodingErrorAction.REPORT).encode(java.nio.CharBuffer.wrap(text));
@@ -56,7 +59,7 @@ final class GuestPerformance {
         final FileDescriptor descriptor;
         try {
             descriptor = Os.open(file.getPath(), OsConstants.O_RDONLY | OsConstants.O_NONBLOCK
-                | OsConstants.O_NOFOLLOW | OsConstants.O_CLOEXEC, 0);
+                | OsConstants.O_NOFOLLOW | CLOSE_ON_EXEC, 0);
         } catch (ErrnoException error) {
             if (error.errno == OsConstants.ENOENT) return "{}";
             throw new IOException("Cannot read performance settings", error);

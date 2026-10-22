@@ -59,6 +59,8 @@ from the delivered 0.1.22 commit and a higher versionCode/versionName; a diverge
 old main cannot publish merely by choosing a new filename. Existing tags/assets
 are never replaced. Main is not changed by this integration.
 
+Native graphics are rebuilt from the unchanged pins and their binary hashes can
+differ from earlier APKs; this is not a binary-identical cross-build comparison.
 Host compatibility and software-rendering fixtures do not prove Thor FPS/heat,
 actual panel presentation, or performance benefit. Native trap logs, display
 receipts, the game HUD and physical observations are complementary evidence.

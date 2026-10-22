@@ -9,7 +9,6 @@ import android.view.MotionEvent;
 import android.view.SurfaceView;
 import android.widget.FrameLayout;
 import java.util.ArrayList;
-import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
@@ -104,9 +103,9 @@ public final class RfbSurfaceViewTest {
     }
     @Test public void directPixelSurfaceRetainsOpaqueColorsWithoutCountingHolderRepostsAsFreshFrames() throws Exception {
         try (Fixture f = new Fixture()) {
-            byte[] colors = {(byte)255,0,0,0, 0,(byte)255,0,(byte)254, 0,0,(byte)255,0};
-            byte[] frame = new byte[24]; System.arraycopy(colors, 0, frame, 0, 12); System.arraycopy(colors, 0, frame, 12, 12);
-            f.display.pixels(3, 2, ByteBuffer.wrap(frame)); f.display.updated(); f.start();
+            f.display.pixels(3, 2, BitmapBufferFixture.pixels(3, 2,
+                new int[]{Color.RED,Color.GREEN,Color.BLUE,Color.RED,Color.GREEN,Color.BLUE}));
+            f.display.updated(); f.start();
             int[] first = f.frame();
             assertArrayEquals(new int[]{Color.RED,Color.GREEN,Color.BLUE,Color.RED,Color.GREEN,Color.BLUE}, first);
             assertEquals(1, f.performance.freshDraws.get());

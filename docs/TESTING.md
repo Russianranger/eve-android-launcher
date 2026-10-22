@@ -4,6 +4,9 @@ Install **EVE-Android-Launcher-0.1.23.apk** in place after stopping client/serve
 Keep app data, prepared client, world, runtimes, mappings and caches. Verify the
 launcher shows 0.1.23 and the current dark adaptive icon. This continues 0.1.22;
 main's separate 0.1.8 APK is not the baseline. No historic baseline rerun is needed.
+CI rebuilds native graphics from the unchanged source pins; resulting binary
+bytes can differ from 0.1.22. Compare new settings within this APK rather than
+claiming a controlled single-factor result across different APK builds.
 
 Keep the accepted Adreno + Mesa 26.2.4 + Reduce GPU frame copies choices, HUD,
 30 FPS / queue 1 / display 30, 1280x720 and FSR off. Retain known-good controller

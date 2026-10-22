@@ -10,7 +10,6 @@ import android.widget.ImageButton;
 import java.util.Map;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
-import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import org.json.JSONObject;
 import org.junit.Test;
@@ -123,7 +122,16 @@ public final class ClientDisplayActivityTest {
         assertFalse(ClientDisplayActivity.requestedDirectPixels(new JSONObject("{\"guestPerformance\":{\"displayPixels\":false}}")));
         assertFalse(ClientDisplayActivity.requestedDirectPixels(new JSONObject("{\"guestPerformance\":{\"displayPixels\":\"legacy\"}}")));
         assertTrue(ClientDisplayActivity.requestedDirectPixels(new JSONObject("{\"guestPerformance\":{\"displayPixels\":\"direct\"}}")));
-        assertTrue("The native Android bitmap/canvas passes the same RGB and opaque-padding probe used before negotiation", RfbView.directPixelsSupported());
+        DisplayPerformance measured = new DisplayPerformance();
+        boolean supported = RfbView.directPixelsSupported();
+        assertEquals("A request cannot bypass the actual platform byte-order and opacity check", supported,
+            ClientDisplayActivity.selectDirectPixels(true, measured));
+        JSONObject receipt = new JSONObject(measured.json());
+        assertTrue(receipt.getBoolean("direct_bitmap_pixels_requested"));
+        assertEquals(supported, receipt.getBoolean("direct_bitmap_pixels_effective"));
+        assertEquals(supported ? "passed" : "failed", receipt.getString("direct_bitmap_pixel_self_check"));
+        assertFalse(ClientDisplayActivity.selectDirectPixels(false, measured));
+        assertEquals("not-requested", new JSONObject(measured.json()).getString("direct_bitmap_pixel_self_check"));
     }
 
     @Test public void directBitmapPixelsStayOpaqueAndOnlyFreshImagesCountAsDrawn() {
@@ -132,7 +140,7 @@ public final class ClientDisplayActivityTest {
         Bitmap rendered = Bitmap.createBitmap(3, 1, Bitmap.Config.ARGB_8888, false);
         try {
             display.resize(3, 1); display.layout(0, 0, 3, 1);
-            display.pixels(3, 1, ByteBuffer.wrap(new byte[]{(byte)255,0,0,0, 0,(byte)255,0,(byte)254, 0,0,(byte)255,0}));
+            display.pixels(3, 1, BitmapBufferFixture.pixels(3, 1, new int[]{Color.RED,Color.GREEN,Color.BLUE}));
             display.updated(); display.draw(new Canvas(rendered));
             assertEquals(Color.RED, rendered.getPixel(0, 0)); assertEquals(Color.GREEN, rendered.getPixel(1, 0)); assertEquals(Color.BLUE, rendered.getPixel(2, 0));
             assertEquals(1, measured.freshDraws.get());

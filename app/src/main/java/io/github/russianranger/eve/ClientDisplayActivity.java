@@ -191,6 +191,11 @@ public final class ClientDisplayActivity extends Activity {
         JSONObject profile = status.optJSONObject("guestPerformance");
         return profile != null && "direct".equals(profile.opt("displayPixels"));
     }
+    static boolean selectDirectPixels(boolean requested, DisplayPerformance measured) {
+        boolean effective = requested && RfbView.directPixelsSupported();
+        measured.directPixels(requested, effective);
+        return effective;
+    }
     private boolean readDirectPixelRequest() {
         try {
             return requestedDirectPixels(new JSONObject(RuntimeManager.read(
@@ -362,8 +367,7 @@ public final class ClientDisplayActivity extends Activity {
                 measured.bulkPixelDecode = new ClientRuntime(this).bulkPixelDecode();
                 measured.idleControllerTicks = new ClientRuntime(this).idleControllerTicks();
                 boolean requestedDirect = readDirectPixelRequest();
-                boolean direct = requestedDirect && RfbView.directPixelsSupported();
-                measured.directPixels(requestedDirect, direct);
+                boolean direct = selectDirectPixels(requestedDirect, measured);
                 if (requestedDirect && !direct) RuntimeService.append(this, "Direct bitmap pixel check failed; retaining legacy pixel decoding for this connection");
                 RfbClient client = new RfbClient(attempt.getInputStream(), attempt.getOutputStream(), new RfbClient.Screen() {
                     @Override public void resize(int width, int height) { if (generation == token) {

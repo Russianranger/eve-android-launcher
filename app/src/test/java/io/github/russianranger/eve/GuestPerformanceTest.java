@@ -6,6 +6,7 @@ import android.app.AlertDialog;
 import android.content.Context;
 import android.os.Looper;
 import android.system.ErrnoException;
+import android.system.Os;
 import android.system.OsConstants;
 import android.system.StructStat;
 import android.view.View;
@@ -17,7 +18,6 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileDescriptor;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -46,12 +46,11 @@ import org.robolectric.annotation.Implementation;
 import org.robolectric.annotation.Implements;
 import org.robolectric.annotation.Resetter;
 import org.robolectric.shadows.ShadowAlertDialog;
-import org.robolectric.shadows.ShadowLinux;
 import org.robolectric.util.ReflectionHelpers;
 
 /** Validates optional guest settings without changing the accepted graphics selections. */
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk = {33, 35}, shadows = GuestPerformanceTest.ProfileLinux.class)
+@Config(sdk = {33, 35}, shadows = GuestPerformanceTest.ProfileOs.class)
 public final class GuestPerformanceTest {
     private Context context;
     private RuntimeManager runtime;
@@ -72,7 +71,7 @@ public final class GuestPerformanceTest {
     }
 
     @After public void release() throws Exception {
-        ProfileLinux.assertAllDescriptorsClosed();
+        ProfileOs.assertAllDescriptorsClosed();
         RuntimeService.busy = false;
         RuntimeService.active = false;
         ReflectionHelpers.setStaticField(ClientRuntime.class, "session", null);
@@ -140,13 +139,15 @@ public final class GuestPerformanceTest {
 
     @Test public void readsAreBoundedStrictUtf8RegularFilesAndNeverFollowLeafLinks() throws Exception {
         assertEquals("{}", GuestPerformance.read(profile()));
-        ProfileLinux.assertAllDescriptorsClosed();
+        ProfileOs.assertAllDescriptorsClosed();
         RuntimeManager.text(profile(), "{\"wineEsync\":false}");
         assertEquals("{\"wineEsync\":false}", GuestPerformance.read(profile()));
-        ProfileLinux.assertAllDescriptorsClosed();
+        ProfileOs.assertAllDescriptorsClosed();
+        int expectedFlags = OsConstants.O_NOFOLLOW | OsConstants.O_NONBLOCK | OsConstants.O_CLOEXEC;
+        assertEquals(expectedFlags, ProfileOs.lastOpenFlags & expectedFlags);
         Files.write(profile().toPath(), new byte[]{(byte) 0xc3, (byte) 0x28});
         rejects(() -> GuestPerformance.read(profile()));
-        ProfileLinux.assertAllDescriptorsClosed();
+        ProfileOs.assertAllDescriptorsClosed();
         Files.write(profile().toPath(), "{}".getBytes(StandardCharsets.UTF_8));
         File linked = new File(runtime.clientState, "linked.json");
         Files.createSymbolicLink(linked.toPath(), profile().toPath());
@@ -154,7 +155,7 @@ public final class GuestPerformanceTest {
         rejects(() -> GuestPerformance.read(runtime.clientState));
         Files.write(profile().toPath(), ("{}" + " ".repeat(16383)).getBytes(StandardCharsets.UTF_8));
         rejects(() -> GuestPerformance.read(profile()));
-        ProfileLinux.assertAllDescriptorsClosed();
+        ProfileOs.assertAllDescriptorsClosed();
     }
 
     @Test public void networkSelectionIsStrictDefaultOffAndUsesOnlyFixedPolicyFlags() throws Exception {
@@ -292,12 +293,13 @@ public final class GuestPerformanceTest {
         @Override public boolean isAlive() { return true; }
     }
 
-    /** Robolectric 4.14's fstat(fd) loses the descriptor mode; retain real file metadata for these fixtures. */
-    @Implements(className = "libcore.io.Linux", isInAndroidSdk = false, minSdk = 26)
-    public static final class ProfileLinux extends ShadowLinux {
+    /** Exercise production Os calls without Robolectric's cached Linux instance or incomplete fstat shadow. */
+    @Implements(Os.class)
+    public static final class ProfileOs {
         private static final Map<FileDescriptor, OpenFile> FILES = Collections.synchronizedMap(new IdentityHashMap<>());
         private static int opened;
         private static int closed;
+        private static int lastOpenFlags;
 
         private static final class OpenFile {
             final RandomAccessFile stream;
@@ -307,14 +309,16 @@ public final class GuestPerformanceTest {
             }
         }
 
-        @Implementation @Override protected FileDescriptor open(String path, int flags, int mode) throws ErrnoException {
-            if ((flags & OsConstants.O_NOFOLLOW) == 0 || (flags & (OsConstants.O_WRONLY | OsConstants.O_RDWR)) != 0)
-                return super.open(path, flags, mode);
+        @Implementation protected static FileDescriptor open(String path, int flags, int mode) throws ErrnoException {
+            if ((flags & (OsConstants.O_WRONLY | OsConstants.O_RDWR)) != 0)
+                throw new ErrnoException("open", OsConstants.EACCES);
+            lastOpenFlags = flags;
             Path file = new File(path).toPath();
             try {
                 if ((flags & OsConstants.O_NOFOLLOW) != 0 && Files.isSymbolicLink(file))
                     throw new ErrnoException("open", OsConstants.ELOOP);
-                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class,
+                        (flags & OsConstants.O_NOFOLLOW) == 0 ? new LinkOption[0] : new LinkOption[]{LinkOption.NOFOLLOW_LINKS});
                 if (!attributes.isRegularFile()) throw new ErrnoException("open", OsConstants.EISDIR);
                 RandomAccessFile input = new RandomAccessFile(path, "r");
                 FileDescriptor descriptor = input.getFD();
@@ -328,34 +332,32 @@ public final class GuestPerformanceTest {
             }
         }
 
-        @Implementation @Override protected StructStat fstat(FileDescriptor descriptor) throws ErrnoException {
+        @Implementation protected static StructStat fstat(FileDescriptor descriptor) throws ErrnoException {
             OpenFile file = FILES.get(descriptor);
-            if (file == null) return super.fstat(descriptor);
+            if (file == null) throw new ErrnoException("fstat", OsConstants.EBADF);
             return new StructStat(0, 0, OsConstants.S_IFREG, 1, 0, 0, 0,
                     file.attributes.size(), 0, 0, 0, 0, 0);
         }
 
-        @Implementation protected int read(FileDescriptor descriptor, byte[] bytes, int offset, int count) throws ErrnoException {
+        @Implementation protected static int read(FileDescriptor descriptor, byte[] bytes, int offset, int count) throws ErrnoException {
             OpenFile file = FILES.get(descriptor);
+            if (file == null) throw new ErrnoException("read", OsConstants.EBADF);
             try {
-                int result = file == null ? new FileInputStream(descriptor).read(bytes, offset, count)
-                        : file.stream.read(bytes, offset, count);
+                int result = file.stream.read(bytes, offset, count);
                 return result < 0 ? 0 : result;
             } catch (IOException failure) {
                 throw new ErrnoException("read", OsConstants.EIO);
             }
         }
 
-        @Implementation protected void close(FileDescriptor descriptor) throws ErrnoException {
+        @Implementation protected static void close(FileDescriptor descriptor) throws ErrnoException {
             OpenFile file = FILES.get(descriptor);
+            if (file == null) throw new ErrnoException("close", OsConstants.EBADF);
             try {
-                if (file == null) new FileInputStream(descriptor).close();
-                else {
-                    file.stream.close();
-                    assertFalse("Os.close must close the owned descriptor", descriptor.valid());
-                    FILES.remove(descriptor);
-                    closed++;
-                }
+                file.stream.close();
+                assertFalse("Os.close must close the owned descriptor", descriptor.valid());
+                FILES.remove(descriptor);
+                closed++;
             } catch (IOException failure) {
                 throw new ErrnoException("close", OsConstants.EIO);
             }
@@ -372,6 +374,7 @@ public final class GuestPerformanceTest {
                 FILES.clear();
                 opened = 0;
                 closed = 0;
+                lastOpenFlags = 0;
             }
         }
     }

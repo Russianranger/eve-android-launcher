@@ -25,6 +25,7 @@ case "$1" in
         done
         mkdir -p "$work_dir/proot/src/extension/eve_client_network"
         cp "$repo_root/native/eve-client-network.c" "$work_dir/proot/src/extension/eve_client_network/eve_client_network.c"
+        cp "$repo_root/native/eve-sendto-filter.h" "$work_dir/proot/src/syscall/eve-sendto-filter.h"
         # Match the Android build's declaration/loader-generation compatibility
         # changes while compiling this fixture natively with its own libc.
         python3 - "$work_dir/proot" <<'PY'

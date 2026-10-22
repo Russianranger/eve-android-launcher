@@ -94,7 +94,7 @@ def main():
                 "prootCommit": PROOT_COMMIT, "tallocSha256": TALLOC_SHA256,
                 "candidateNetworkSourceSha256": candidate_sha,
                 "baseline": str(baseline), "candidate": str(candidate), "loader": str(loader),
-                "change": "Only bind/connect/sendto/sendmsg filter flags changed to entry-only.",
+                "change": "Entry-only flags retained; both executables also qualify runtime-selectable connected sendto and trap statistics.",
                 "sendmmsgExitCopybackRetained": True}
     (work / "build-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps(manifest, indent=2))

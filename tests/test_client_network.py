@@ -25,7 +25,7 @@ class ClientNetworkPolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             include = pathlib.Path(temporary) / 'include'
             for relative in ('extension/extension.h', 'tracee/tracee.h',
-                             'tracee/abi.h', 'tracee/mem.h', 'syscall/sysnum.h'):
+                             'tracee/abi.h', 'tracee/mem.h', 'syscall/sysnum.h', 'talloc.h'):
                 header = include / relative
                 header.parent.mkdir(parents=True, exist_ok=True)
                 header.write_text('/* API supplied by proot-network-fixture.h */\n')
@@ -33,4 +33,15 @@ class ClientNetworkPolicyTests(unittest.TestCase):
             subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror',
                             '-I', str(include), str(root / 'tests/client-network-callback.c'),
                             '-o', str(binary)], check=True)
+            subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+
+    def test_compiled_connected_sendto_filter(self):
+        compiler = shutil.which('cc')
+        if not compiler:
+            self.skipTest('C compiler unavailable')
+        root = pathlib.Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = pathlib.Path(temporary) / 'client-network-filter'
+            subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror',
+                            str(root / 'tests/client-network-filter.c'), '-o', str(binary)], check=True)
             subprocess.run([str(binary)], check=True, capture_output=True, text=True)

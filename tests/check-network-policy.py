@@ -91,7 +91,7 @@ class Fixtures:
     def verify(self, expected_policy_runs):
         deadline = time.monotonic() + 1
         expected = [b"sendmmsg-first", b"sendmmsg-second", b"sendmmsg-third",
-                    b"sendmsg-local", b"connected-sendmmsg"]
+                    b"sendmsg-local", b"connected-sendmmsg", b"connected-sendto", b"connected-sendmsg"]
         while time.monotonic() < deadline and any(self.received[x] < expected_policy_runs for x in expected):
             time.sleep(.01)
         if self.errors:
@@ -127,7 +127,7 @@ def isolated_network():
                            "this kernel prerequisite is checked before either PRoot build") from error
 
 
-def invoke(binary, probe, loader, temporary, port, arguments, mode, acceleration):
+def invoke(binary, probe, loader, temporary, port, arguments, mode, acceleration, fast_sendto=False, trace_stats=False):
     environment = dict(os.environ)
     for key in ("PROOT_NO_SECCOMP", "LD_PRELOAD", "LD_LIBRARY_PATH"):
         environment.pop(key, None)
@@ -137,7 +137,9 @@ def invoke(binary, probe, loader, temporary, port, arguments, mode, acceleration
     environment["TRASC_PROOT_REPORT"] = "1"
     if loader:
         environment["PROOT_LOADER"] = str(loader)
-    command = [str(binary), "--kill-on-exit", "--eve-client-network", "--sysvipc", "-0", "-r", "/",
+    network = "--eve-client-network-fast-sendto" if fast_sendto else "--eve-client-network"
+    options = ["--eve-client-network-stats", network] if trace_stats else [network]
+    command = [str(binary), "--kill-on-exit", *options, "--sysvipc", "-0", "-r", "/",
                str(probe), str(port), str(arguments.race_iterations), str(arguments.iterations), mode]
     process = subprocess.Popen(command, env=environment, stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -178,7 +180,14 @@ def invoke(binary, probe, loader, temporary, port, arguments, mode, acceleration
     if len(rows) != 1:
         raise RuntimeError("Native probe did not return one JSON report")
     value = json.loads(rows[0])
+    if fast_sendto and "fastSendto=1" not in stderr:
+        raise RuntimeError("The connected-sendto proof did not observe its selected policy")
+    if trace_stats and ("stats=1" not in stderr or "sendmsgTraps=" not in stderr):
+        raise RuntimeError("The statistics proof did not observe a cumulative send-trap sample")
     value["accelerationObserved"] = observed
+    value["fastConnectedSendtoRequested"] = fast_sendto
+    value["fastConnectedSendtoAccelerationExpected"] = fast_sendto and observed
+    value["trapStatisticsRequested"] = trace_stats
     return value
 
 
@@ -215,11 +224,14 @@ def main():
         with Fixtures() as fixtures:
             policy_runs = 0
             for name, binary in (("baseline", args.baseline), ("candidate", args.candidate)):
-                for acceleration in (True, False):
-                    policy = invoke(binary, probe, args.loader, temporary, fixtures.port,
-                                    args, "policy", acceleration)
-                    report["policyRuns"].append({"variant": name, "acceleration": acceleration, **policy})
-                    policy_runs += 1
+                # Preserve the accepted entry-only comparison, then qualify the
+                # new argument-specific fast path with and without acceleration.
+                for fast_sendto in (False, True):
+                    for acceleration in (True, False):
+                        policy = invoke(binary, probe, args.loader, temporary, fixtures.port,
+                                        args, "policy", acceleration, fast_sendto, trace_stats=True)
+                        report["policyRuns"].append({"variant": name, "acceleration": acceleration, **policy})
+                        policy_runs += 1
                 values = []
                 # Warmup exercises startup and the fixture but does not enter the reported sample.
                 invoke(binary, probe, args.loader, temporary, fixtures.port, args, "benchmark", True)
@@ -229,12 +241,28 @@ def main():
                     values.append(sample["sendmsgMilliseconds"])
                 report["benchmark"][name] = {"samplesMilliseconds": values,
                                              "medianMilliseconds": statistics.median(values)}
+            # Same candidate executable and workload; only the runtime option
+            # changes. These host ptrace timings never establish device FPS.
+            for fast_sendto in (False, True):
+                values = []
+                invoke(args.candidate, probe, args.loader, temporary, fixtures.port, args,
+                       "sendto-benchmark", True, fast_sendto)
+                for _ in range(args.runs):
+                    sample = invoke(args.candidate, probe, args.loader, temporary, fixtures.port,
+                                    args, "sendto-benchmark", True, fast_sendto)
+                    values.append(sample["connectedSendtoMilliseconds"])
+                name = "connectedSendtoFast" if fast_sendto else "connectedSendtoTrapped"
+                report["benchmark"][name] = {"samplesMilliseconds": values,
+                                               "medianMilliseconds": statistics.median(values)}
             fixtures.verify(policy_runs)
             report["fixtureRedirectedConnections"] = fixtures.redirected
             report["fixtureRaceDatagrams"] = fixtures.received[b"R"]
         baseline = report["benchmark"]["baseline"]["medianMilliseconds"]
         candidate = report["benchmark"]["candidate"]["medianMilliseconds"]
         report["benchmark"]["candidateChangePercent"] = 100 * (candidate - baseline) / baseline
+        trapped = report["benchmark"]["connectedSendtoTrapped"]["medianMilliseconds"]
+        fast = report["benchmark"]["connectedSendtoFast"]["medianMilliseconds"]
+        report["benchmark"]["connectedSendtoChangePercent"] = 100 * (fast - trapped) / trapped
         rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)

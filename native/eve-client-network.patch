@@ -1,56 +1,8 @@
---- a/src/cli/proot.c
-+++ b/src/cli/proot.c
-@@ -331,6 +331,12 @@
-         return 0;
- }
- 
-+static int handle_option_eve_client_network(Tracee *tracee, const Cli *cli UNUSED, const char *value UNUSED)
-+{
-+	/* Fail closed instead of silently dropping this opt-in policy. */
-+	return initialize_extension(tracee, eve_client_network_callback, NULL);
-+}
-+
- static int handle_option_p(Tracee *tracee, const Cli *cli UNUSED, const char *value UNUSED)
- {
-         (void) initialize_extension(tracee, port_switch_callback, NULL);
---- a/src/cli/proot.h
-+++ b/src/cli/proot.h
-@@ -65,6 +65,7 @@
- static int handle_option_ashmem_memfd(Tracee *tracee, const Cli *cli, const char *value);
- #endif /* defined(__ANDROID__) || defined(__BIONIC__) */
- static int handle_option_sysvipc(Tracee *tracee, const Cli *cli, const char *value);
-+static int handle_option_eve_client_network(Tracee *tracee, const Cli *cli, const char *value);
- static int handle_option_kill_on_exit(Tracee *tracee, const Cli *cli, const char *value);
- static int handle_option_L(Tracee *tracee, const Cli *cli, const char *value);
- static int handle_option_H(Tracee *tracee, const Cli *cli, const char *value);
-@@ -243,6 +244,14 @@
- 	  .description = "Replace hard links with symlinks, pretending they are really hardlinks",
- 	  .detail = "\tEmulates hard links with symbolic links when SELinux policies\n\
- \tdo not allow hard links.",
-+	},
-+	{ .class = "Extension options",
-+	  .arguments = {
-+		{ .name = "--eve-client-network", .separator = '\0', .value = NULL },
-+		{ .name = NULL, .separator = '\0', .value = NULL } },
-+	  .handler = handle_option_eve_client_network,
-+	  .description = "Restrict EVE client sockets to loopback; map localhost TLS 443 to 26003.",
-+	  .detail = "\tApplies to all traced child processes; ordinary/server sessions are unchanged.",
- 	},
- 	{ .class = "Extension options",
- 	  .arguments = {
---- a/src/extension/extension.h
-+++ b/src/extension/extension.h
-@@ -208,6 +208,7 @@
- }
- 
- /* Built-in extensions.  */
-+extern int eve_client_network_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);
- extern int kompat_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);
- extern int fake_id0_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);
- extern int hidden_files_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);
+diff --git a/src/GNUmakefile b/src/GNUmakefile
+index 5ade279..47993b1 100644
 --- a/src/GNUmakefile
 +++ b/src/GNUmakefile
-@@ -60,6 +60,7 @@
+@@ -60,6 +60,7 @@ OBJECTS += \
  	ptrace/user.o		\
  	ptrace/wait.o		\
  	extension/extension.o	\
@@ -58,19 +10,238 @@
  	extension/ashmem_memfd/ashmem_memfd.o \
  	extension/kompat/kompat.o \
  	extension/fake_id0/chown.o \
---- a/src/syscall/sysnums.list
-+++ b/src/syscall/sysnums.list
-@@ -447,3 +447,7 @@
- SYSNUM(x32_vmsplice)
- SYSNUM(x32_waitid)
- SYSNUM(x32_writev)
+diff --git a/src/cli/proot.c b/src/cli/proot.c
+index eb92071..7b7f3d7 100644
+--- a/src/cli/proot.c
++++ b/src/cli/proot.c
+@@ -331,6 +331,31 @@ static int handle_option_H(Tracee *tracee, const Cli *cli UNUSED, const char *va
+         return 0;
+ }
+ 
++static int configure_eve_client_network(Tracee *tracee, const char *mode)
++{
++	Extension *extension = get_extension(tracee, eve_client_network_callback);
++	/* Reuse one policy object when the statistics option is combined with
++	 * either network option. Failure never silently drops containment. */
++	if (extension != NULL)
++		return eve_client_network_callback(extension, INITIALIZATION, (intptr_t)mode, 0);
++	return initialize_extension(tracee, eve_client_network_callback, mode);
++}
 +
-+SYSNUM(io_uring_setup)
-+SYSNUM(io_uring_enter)
-+SYSNUM(io_uring_register)
++static int handle_option_eve_client_network(Tracee *tracee, const Cli *cli UNUSED, const char *value UNUSED)
++{
++	return configure_eve_client_network(tracee, NULL);
++}
++
++static int handle_option_eve_client_network_fast_sendto(Tracee *tracee, const Cli *cli UNUSED, const char *value UNUSED)
++{
++	return configure_eve_client_network(tracee, "fast-sendto");
++}
++
++static int handle_option_eve_client_network_stats(Tracee *tracee, const Cli *cli UNUSED, const char *value UNUSED)
++{
++	return configure_eve_client_network(tracee, "stats");
++}
++
+ static int handle_option_p(Tracee *tracee, const Cli *cli UNUSED, const char *value UNUSED)
+ {
+         (void) initialize_extension(tracee, port_switch_callback, NULL);
+diff --git a/src/cli/proot.h b/src/cli/proot.h
+index 6ec5036..a8f048e 100644
+--- a/src/cli/proot.h
++++ b/src/cli/proot.h
+@@ -65,6 +65,9 @@ static int handle_option_link2symlink(Tracee *tracee, const Cli *cli, const char
+ static int handle_option_ashmem_memfd(Tracee *tracee, const Cli *cli, const char *value);
+ #endif /* defined(__ANDROID__) || defined(__BIONIC__) */
+ static int handle_option_sysvipc(Tracee *tracee, const Cli *cli, const char *value);
++static int handle_option_eve_client_network(Tracee *tracee, const Cli *cli, const char *value);
++static int handle_option_eve_client_network_fast_sendto(Tracee *tracee, const Cli *cli, const char *value);
++static int handle_option_eve_client_network_stats(Tracee *tracee, const Cli *cli, const char *value);
+ static int handle_option_kill_on_exit(Tracee *tracee, const Cli *cli, const char *value);
+ static int handle_option_L(Tracee *tracee, const Cli *cli, const char *value);
+ static int handle_option_H(Tracee *tracee, const Cli *cli, const char *value);
+@@ -244,6 +247,30 @@ Copyright (C) 2015 STMicroelectronics, licensed under GPL v2 or later.",
+ 	  .detail = "\tEmulates hard links with symbolic links when SELinux policies\n\
+ \tdo not allow hard links.",
+ 	},
++	{ .class = "Extension options",
++	  .arguments = {
++		{ .name = "--eve-client-network", .separator = '\0', .value = NULL },
++		{ .name = NULL, .separator = '\0', .value = NULL } },
++	  .handler = handle_option_eve_client_network,
++	  .description = "Restrict EVE client sockets to loopback; map localhost TLS 443 to 26003.",
++	  .detail = "\tApplies to all traced child processes; ordinary/server sessions are unchanged.",
++	},
++	{ .class = "Extension options",
++	  .arguments = {
++		{ .name = "--eve-client-network-fast-sendto", .separator = '\0', .value = NULL },
++		{ .name = NULL, .separator = '\0', .value = NULL } },
++	  .handler = handle_option_eve_client_network_fast_sendto,
++	  .description = "Loopback policy with in-kernel connected sendto(NULL, 0).",
++	  .detail = "\tKeeps all socket/connect/bind and explicit destination checks enabled.",
++	},
++	{ .class = "Extension options",
++	  .arguments = {
++		{ .name = "--eve-client-network-stats", .separator = '\0', .value = NULL },
++		{ .name = NULL, .separator = '\0', .value = NULL } },
++	  .handler = handle_option_eve_client_network_stats,
++	  .description = "Loopback policy with ten-second cumulative send trap diagnostics.",
++	  .detail = "\tKeeps all socket/connect/bind and explicit destination checks enabled.",
++	},
+ 	{ .class = "Extension options",
+ 	  .arguments = {
+ 		{ .name = "--sysvipc", .separator = '\0', .value = NULL },
+diff --git a/src/extension/extension.h b/src/extension/extension.h
+index 827d9cf..805044c 100644
+--- a/src/extension/extension.h
++++ b/src/extension/extension.h
+@@ -208,6 +208,7 @@ static inline int notify_extensions(Tracee *tracee, ExtensionEvent event,
+ }
+ 
+ /* Built-in extensions.  */
++extern int eve_client_network_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);
+ extern int kompat_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);
+ extern int fake_id0_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);
+ extern int hidden_files_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);
+diff --git a/src/syscall/seccomp.c b/src/syscall/seccomp.c
+index 2f8930e..50ca3d1 100644
+--- a/src/syscall/seccomp.c
++++ b/src/syscall/seccomp.c
+@@ -40,6 +40,7 @@
+ #include <assert.h>        /* assert(3), */
+ 
+ #include "syscall/seccomp.h"
++#include "syscall/eve-sendto-filter.h"
+ #include "tracee/tracee.h"
+ #include "syscall/syscall.h"
+ #include "syscall/sysnum.h"
+@@ -112,6 +113,13 @@ static int add_trace_syscall(struct sock_fprog *program, word_t syscall, int fla
+ 		BPF_STMT(BPF_RET + BPF_K, SECCOMP_RET_TRACE + flag)
+ 	};
+ 
++	if (flag & FILTER_EVE_CONNECTED_SENDTO) {
++		struct sock_filter connected[EVE_SENDTO_FILTER_LENGTH] = {
++			EVE_SENDTO_FILTER(syscall, flag & ~FILTER_EVE_CONNECTED_SENDTO)
++		};
++		return add_statements(program, EVE_SENDTO_FILTER_LENGTH, connected);
++	}
++
+ 	DEBUG_FILTER("FILTER:     trace if syscall == %ld\n", syscall);
+ 
+ 	status = add_statements(program, LENGTH_TRACE_SYSCALL, statements);
+@@ -123,11 +131,11 @@ static int add_trace_syscall(struct sock_fprog *program, word_t syscall, int fla
+ 
+ /**
+  * Append to @program->filter the statements that allow anything (if
+- * unfiltered).  Note that @nb_traced_syscalls is used to make a
++ * unfiltered).  Note that @nb_traced_statements is used to make a
+  * sanity check.  This function returns -errno if an error occurred,
+  * otherwise 0.
+  */
+-static int end_arch_section(struct sock_fprog *program, size_t nb_traced_syscalls)
++static int end_arch_section(struct sock_fprog *program, size_t nb_traced_statements)
+ {
+ 	int status;
+ 
+@@ -144,7 +152,7 @@ static int end_arch_section(struct sock_fprog *program, size_t nb_traced_syscall
+ 
+ 	/* Sanity check, see start_arch_section().  */
+ 	if (   talloc_array_length(program->filter) - program->len
+-	    != LENGTH_END_SECTION + nb_traced_syscalls * LENGTH_TRACE_SYSCALL)
++	    != LENGTH_END_SECTION + nb_traced_statements)
+ 		return -ERANGE;
+ 
+ 	return 0;
+@@ -152,16 +160,16 @@ static int end_arch_section(struct sock_fprog *program, size_t nb_traced_syscall
+ 
+ /**
+  * Append to @program->filter the statements that check the current
+- * @architecture.  Note that @nb_traced_syscalls is used to make a
++ * @architecture.  Note that @nb_traced_statements is used to make a
+  * sanity check.  This function returns -errno if an error occurred,
+  * otherwise 0.
+  */
+-static int start_arch_section(struct sock_fprog *program, uint32_t arch, size_t nb_traced_syscalls)
++static int start_arch_section(struct sock_fprog *program, uint32_t arch, size_t nb_traced_statements)
+ {
+ 	const size_t arch_offset    = offsetof(struct seccomp_data, arch);
+ 	const size_t syscall_offset = offsetof(struct seccomp_data, nr);
+ 	const size_t section_length = LENGTH_END_SECTION +
+-					nb_traced_syscalls * LENGTH_TRACE_SYSCALL;
++					nb_traced_statements;
+ 	int status;
+ 
+ 	/* Sanity checks.  */
+@@ -191,7 +199,7 @@ static int start_arch_section(struct sock_fprog *program, uint32_t arch, size_t
+ 	};
+ 
+ 	DEBUG_FILTER("FILTER: if arch == %ld, up to %zdth statement\n",
+-		arch, nb_traced_syscalls);
++		arch, nb_traced_statements);
+ 
+ 	status = add_statements(program, LENGTH_START_SECTION, statements);
+ 	if (status < 0)
+@@ -256,7 +264,7 @@ static int set_seccomp_filters(const FilteredSysnum *sysnums)
+ 	size_t nb_archs = sizeof(seccomp_archs) / sizeof(SeccompArch);
+ 
+ 	struct sock_fprog program = { .len = 0, .filter = NULL };
+-	size_t nb_traced_syscalls;
++	size_t nb_traced_statements;
+ 	size_t i, j, k;
+ 	int status;
+ 
+@@ -268,19 +276,20 @@ static int set_seccomp_filters(const FilteredSysnum *sysnums)
+ 	for (i = 0; i < nb_archs; i++) {
+ 		word_t syscall;
+ 
+-		nb_traced_syscalls = 0;
++		nb_traced_statements = 0;
+ 
+-		/* Pre-compute the number of traced syscalls for this architecture.  */
++		/* Pre-compute the exact instruction count for this architecture.  */
+ 		for (j = 0; j < seccomp_archs[i].nb_abis; j++) {
+ 			for (k = 0; sysnums[k].value != PR_void; k++) {
+ 				syscall = detranslate_sysnum(seccomp_archs[i].abis[j], sysnums[k].value);
+ 				if (syscall != SYSCALL_AVOIDER)
+-					nb_traced_syscalls++;
++					nb_traced_statements += (sysnums[k].flags & FILTER_EVE_CONNECTED_SENDTO)
++					? EVE_SENDTO_FILTER_LENGTH : LENGTH_TRACE_SYSCALL;
+ 			}
+ 		}
+ 
+ 		/* Filter: if handled architecture */
+-		status = start_arch_section(&program, seccomp_archs[i].value, nb_traced_syscalls);
++		status = start_arch_section(&program, seccomp_archs[i].value, nb_traced_statements);
+ 		if (status < 0)
+ 			goto end;
+ 
+@@ -299,7 +308,7 @@ static int set_seccomp_filters(const FilteredSysnum *sysnums)
+ 		}
+ 
+ 		/* Filter: allow untraced syscalls for this architecture */
+-		status = end_arch_section(&program, nb_traced_syscalls);
++		status = end_arch_section(&program, nb_traced_statements);
+ 		if (status < 0)
+ 			goto end;
+ 	}
+diff --git a/src/syscall/seccomp.h b/src/syscall/seccomp.h
+index 3d5ba40..cb7bb5a 100644
+--- a/src/syscall/seccomp.h
++++ b/src/syscall/seccomp.h
+@@ -42,6 +42,8 @@ typedef struct {
+ #define FILTERED_SYSNUM_END { PR_void, 0 }
+ 
+ #define FILTER_SYSEXIT  0x1
++/* Internal builder marker; never passed in SECCOMP_RET_DATA. */
++#define FILTER_EVE_CONNECTED_SENDTO 0x10000
+ 
+ extern int enable_syscall_filtering(const Tracee *tracee);
+ 
+diff --git a/src/syscall/sysnums-arm64.h b/src/syscall/sysnums-arm64.h
+index 15cfe4f..7fecd7a 100644
 --- a/src/syscall/sysnums-arm64.h
 +++ b/src/syscall/sysnums-arm64.h
-@@ -281,4 +281,7 @@
+@@ -281,4 +281,7 @@ static const Sysnum sysnums_arm64[] = {
  	[ 435 ] = PR_clone3,
  	[ 437 ] = PR_openat2,
  	[ 439 ] = PR_faccessat2,
@@ -78,9 +249,11 @@
 +	[ 426 ] = PR_io_uring_enter,
 +	[ 427 ] = PR_io_uring_register,
  };
+diff --git a/src/syscall/sysnums-x86_64.h b/src/syscall/sysnums-x86_64.h
+index b4601c1..ded6d30 100644
 --- a/src/syscall/sysnums-x86_64.h
 +++ b/src/syscall/sysnums-x86_64.h
-@@ -337,4 +337,7 @@
+@@ -337,4 +337,7 @@ static const Sysnum sysnums_x86_64[] = {
          [ 435 ] = PR_clone3,
  	[ 437 ] = PR_openat2,
  	[ 439 ] = PR_faccessat2,
@@ -88,3 +261,15 @@
 +	[ 426 ] = PR_io_uring_enter,
 +	[ 427 ] = PR_io_uring_register,
  };
+diff --git a/src/syscall/sysnums.list b/src/syscall/sysnums.list
+index d99e231..4e9a984 100644
+--- a/src/syscall/sysnums.list
++++ b/src/syscall/sysnums.list
+@@ -447,3 +447,7 @@ SYSNUM(x32_timer_create)
+ SYSNUM(x32_vmsplice)
+ SYSNUM(x32_waitid)
+ SYSNUM(x32_writev)
++
++SYSNUM(io_uring_setup)
++SYSNUM(io_uring_enter)
++SYSNUM(io_uring_register)

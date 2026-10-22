@@ -162,6 +162,12 @@ static void datagrams(int port) {
     REQUIRE(denied_batch[0].msg_len == 0 && denied_batch[1].msg_len == 0, "mixed blocked batch leaves caller outputs alone");
     REQUIRE(sendmmsg(fd, NULL, 0, 0) == 0, "empty sendmmsg");
     REQUIRE(connect(fd, (void *)&local, sizeof(local)) == 0, "local UDP connect");
+    REQUIRE(sendto(fd, "connected-sendto", 16, 0, NULL, 0) == 16, "connected sendto succeeds without destination");
+    errno = 0;
+    rejected(sendto(fd, "invalid-null-length", 19, 0, NULL, 1), EFAULT, "NULL sendto with nonzero length remains rejected");
+    struct iovec connected_message_vector = { .iov_base = (void *)"connected-sendmsg", .iov_len = 17 };
+    struct msghdr connected_message = { .msg_iov = &connected_message_vector, .msg_iovlen = 1 };
+    REQUIRE(sendmsg(fd, &connected_message, 0) == 17, "connected sendmsg remains supported and trapped");
     const char *connected = "connected-sendmmsg";
     struct iovec connected_vector = { .iov_base = (void *)connected, .iov_len = strlen(connected) };
     struct mmsghdr connected_batch = { .msg_hdr = { .msg_iov = &connected_vector, .msg_iovlen = 1 } };
@@ -224,14 +230,17 @@ static void *reader(void *data) {
     for (int i = 0; i < request->count; i++) REQUIRE(recvmsg(request->fd, &message, 0) == 1, "benchmark receive");
     return NULL;
 }
-static double benchmark(int count) {
+static double benchmark(int count, int connected_sendto) {
     int pair[2]; REQUIRE(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0, "benchmark pair");
     pthread_t thread; struct reader_data request = { .fd = pair[1], .count = count };
     REQUIRE(pthread_create(&thread, NULL, reader, &request) == 0, "benchmark reader");
     char payload = 'b'; struct iovec vector = { .iov_base = &payload, .iov_len = 1 };
     struct msghdr message = { .msg_iov = &vector, .msg_iovlen = 1 };
     struct timespec start, end; REQUIRE(clock_gettime(CLOCK_MONOTONIC, &start) == 0, "benchmark clock");
-    for (int i = 0; i < count; i++) REQUIRE(sendmsg(pair[0], &message, 0) == 1, "benchmark send");
+    for (int i = 0; i < count; i++) {
+        int sent = connected_sendto ? sendto(pair[0], &payload, 1, 0, NULL, 0) : sendmsg(pair[0], &message, 0);
+        REQUIRE(sent == 1, "benchmark send");
+    }
     REQUIRE(pthread_join(thread, NULL) == 0, "benchmark join");
     REQUIRE(clock_gettime(CLOCK_MONOTONIC, &end) == 0, "benchmark clock end");
     close(pair[0]); close(pair[1]);
@@ -249,9 +258,13 @@ int main(int argc, char **argv) {
     } else if (!strcmp(argv[4], "inherited")) {
         external_rejections();
     } else {
-        REQUIRE(!strcmp(argv[4], "benchmark"), "known mode");
-        double duration = benchmark(count);
-        printf("{\"sendmsgIterations\":%d,\"sendmsgMilliseconds\":%.6f}\n", count, duration);
+        int connected_sendto = !strcmp(argv[4], "sendto-benchmark");
+        REQUIRE(connected_sendto || !strcmp(argv[4], "benchmark"), "known mode");
+        double duration = benchmark(count, connected_sendto);
+        if (connected_sendto)
+            printf("{\"connectedSendtoIterations\":%d,\"connectedSendtoMilliseconds\":%.6f}\n", count, duration);
+        else
+            printf("{\"sendmsgIterations\":%d,\"sendmsgMilliseconds\":%.6f}\n", count, duration);
     }
     return 0;
 }

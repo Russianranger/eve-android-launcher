@@ -7,6 +7,8 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <stdint.h>
+#include <inttypes.h>
+#include <time.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -87,6 +89,32 @@ static int eve_socket(int domain, int type, int protocol)
 #include "tracee/abi.h"
 #include "tracee/mem.h"
 #include "syscall/sysnum.h"
+#include <talloc.h>
+
+/* All descendants share one counter set in the PRoot tracer process. */
+struct eve_network_config {
+	int fast_sendto;
+	int stats;
+	uint64_t sendto_traps, sendmsg_traps, sendmmsg_traps;
+	struct timespec last_report;
+	FilteredSysnum filtered[12];
+};
+
+static void eve_count_send(struct eve_network_config *config, Sysnum syscall)
+{
+	struct timespec now;
+	if (config == NULL || !config->stats) return;
+	if (syscall == PR_sendto && config->sendto_traps < UINT64_MAX) config->sendto_traps++;
+	if (syscall == PR_sendmsg && config->sendmsg_traps < UINT64_MAX) config->sendmsg_traps++;
+	if (syscall == PR_sendmmsg && config->sendmmsg_traps < UINT64_MAX) config->sendmmsg_traps++;
+	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return;
+	if (now.tv_sec - config->last_report.tv_sec < 10) return;
+	config->last_report = now;
+	fprintf(stderr, "EVE client network stats: monotonicSeconds=%ld sendtoTraps=%" PRIu64
+		" sendmsgTraps=%" PRIu64 " sendmmsgTraps=%" PRIu64 " fastSendto=%d\n",
+		(long)now.tv_sec, config->sendto_traps, config->sendmsg_traps,
+		config->sendmmsg_traps, config->fast_sendto);
+}
 
 static int eve_check_address(Tracee *tracee, word_t address, word_t length,
 		int binding, word_t *replacement)
@@ -129,14 +157,14 @@ static int eve_check_message(Tracee *tracee, struct msghdr *message)
 }
 
 int eve_client_network_callback(Extension *extension, ExtensionEvent event,
-		intptr_t data1 UNUSED, intptr_t data2 UNUSED)
+		intptr_t data1, intptr_t data2 UNUSED)
 {
 	Tracee *tracee = TRACEE(extension);
+	struct eve_network_config *config = extension->config;
 	static FilteredSysnum filtered[] = {
 		{ PR_socket, FILTER_SYSEXIT }, { PR_socketpair, FILTER_SYSEXIT },
-		/* These checks only replace immutable input arguments at entry. PRoot
-		 * restores the stack before the next syscall without an exit stop.
-		 * sendmmsg still needs exit notification for msg_len copyback. */
+		/* Preserve the accepted entry-only input validation. sendmmsg
+		 * retains its exit stop for caller msg_len copyback. */
 		{ PR_connect, 0 }, { PR_bind, 0 },
 		{ PR_sendto, 0 }, { PR_sendmsg, 0 },
 		{ PR_sendmmsg, FILTER_SYSEXIT }, { PR_socketcall, FILTER_SYSEXIT },
@@ -144,13 +172,34 @@ int eve_client_network_callback(Extension *extension, ExtensionEvent event,
 		{ PR_io_uring_register, FILTER_SYSEXIT }, FILTERED_SYSNUM_END
 	};
 	if (event == INITIALIZATION) {
-		extension->filtered_sysnums = filtered;
-		fprintf(stderr, "EVE client network: loopback gate active; localhost:443 -> 26003\n");
+		const char *mode = (const char *)data1;
+		if (config == NULL) {
+			config = talloc_zero(extension, struct eve_network_config);
+			if (config == NULL) return -ENOMEM;
+			extension->config = config;
+			memcpy(config->filtered, filtered, sizeof(filtered));
+		}
+		if (mode != NULL && strcmp(mode, "fast-sendto") == 0) config->fast_sendto = 1;
+		else if (mode != NULL && strcmp(mode, "stats") == 0) config->stats = 1;
+		else if (mode != NULL) return -EINVAL;
+		if (config->fast_sendto)
+			config->filtered[4].flags |= FILTER_EVE_CONNECTED_SENDTO;
+		extension->filtered_sysnums = config->filtered;
+		fprintf(stderr, "EVE client network: loopback gate active; localhost:443 -> 26003; fastSendto=%d stats=%d\n",
+			config->fast_sendto, config->stats);
 		return 0;
 	}
 	if (event == INHERIT_PARENT) return 1;
 	if (event == INHERIT_CHILD) {
+		Extension *parent = (Extension *)data1;
+		/* PRoot ignores inheritance callback errors. Preserve a complete
+		 * trapping policy even if the optional shared config cannot attach. */
 		extension->filtered_sysnums = filtered;
+		if (parent == NULL || parent->config == NULL) return -EINVAL;
+		extension->config = talloc_reference(extension, parent->config);
+		if (extension->config == NULL) return -ENOMEM;
+		config = extension->config;
+		extension->filtered_sysnums = config->filtered;
 		return 0;
 	}
 	if (event == SYSCALL_EXIT_START && get_sysnum(tracee, ORIGINAL) == PR_sendmmsg) {
@@ -173,6 +222,9 @@ int eve_client_network_callback(Extension *extension, ExtensionEvent event,
 		return 0;
 	}
 	if (event != SYSCALL_ENTER_START) return 0;
+	if (get_sysnum(tracee, ORIGINAL) == PR_sendto || get_sysnum(tracee, ORIGINAL) == PR_sendmsg
+	    || get_sysnum(tracee, ORIGINAL) == PR_sendmmsg)
+		eve_count_send(config, get_sysnum(tracee, ORIGINAL));
 	switch (get_sysnum(tracee, ORIGINAL)) {
 	case PR_socket:
 		return eve_socket(peek_reg(tracee, ORIGINAL, SYSARG_1),

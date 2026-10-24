@@ -5,7 +5,7 @@ on:
   pull_request:
   workflow_dispatch:
 env:
-  EVE_APP_VERSION: '0.1.23'
+  EVE_APP_VERSION: '0.1.24'
 permissions:
   contents: read
 defaults:
@@ -41,6 +41,13 @@ jobs:
           python3 tests/check-arm64ec-parser.py 2>&1 | tee -a out/backend-tests.log
           python3 -m compileall -q backend scripts tests
           find scripts backend -type f -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Qualify bounded import with the guest Python minor version
+        run: |
+          python -m unittest discover -s tests -p test_client_prepare.py -v 2>&1 | tee -a out/backend-tests.log
+          python -m unittest discover -s tests -p test_client_archive_memory.py -v 2>&1 | tee -a out/backend-tests.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -386,6 +393,6 @@ jobs:
           git archive --format=zip --output="dist/EVE-Android-Launcher-$EVE_APP_VERSION-source.zip" HEAD
           cp docs/TESTING.md "dist/EVE-Android-Launcher-$EVE_APP_VERSION-Testing.md"
           (cd dist && sha256sum *.apk *.zip *.tar.gz *.json *.md) > dist/SHA256SUMS.txt
-          gh release create "$tag" --target "$GITHUB_SHA" --draft --prerelease --title "EVE Android Launcher $EVE_APP_VERSION — client performance" --notes-file docs/RELEASE-NOTES.md
+          gh release create "$tag" --target "$GITHUB_SHA" --draft --prerelease --title "EVE Android Launcher $EVE_APP_VERSION — client import memory" --notes-file docs/RELEASE-NOTES.md
           gh release upload "$tag" dist/*
           gh release edit "$tag" --draft=false

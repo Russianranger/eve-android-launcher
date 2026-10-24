@@ -7,6 +7,7 @@ tools/ClientSETUP (AGPL-3.0). See docs/CLIENT-RUNTIME.md and upstream source.
 import argparse
 import base64
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -374,23 +375,152 @@ def validate_content(content, recipes=None, apply=False, progress=None):
             "client_launch_qualified": False, "network_policy": "loopback_configuration_only", "validated_at": int(time.time())}
 
 
+def safe_zip_member(item):
+    name = item.orig_filename
+    path = PurePosixPath(name)
+    if not name or "\\" in name or ":" in name or path.is_absolute() or any(part in (".", "..") for part in name.split("/")) or "\0" in name:
+        raise ValueError("Unsafe ZIP path: " + name)
+    mode = item.external_attr >> 16
+    if mode and stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR):
+        raise ValueError("ZIP links or special files are unsupported: " + name)
+    if item.flag_bits & 1:
+        raise ValueError("Encrypted ZIPs are unsupported")
+    if item.volume:
+        raise ValueError("Multi-disk ZIPs are unsupported")
+    return "/".join(path.parts).casefold()
+
+
+class DiskZipFile(zipfile.ZipFile):
+    """Read-only ZIP with disk-backed directory and duplicate/offset indexes.
+
+    CPython eagerly reads the entire central directory before constructing all
+    ZipInfo objects and its name dictionary. Instead, parse one bounded record
+    through the standard library, preserving its ZIP64/encoding/extra checks.
+    ZipFile.open still performs local-header, overlap, decompression and CRC
+    checks. No retail payload is loaded while indexing. Only ZipInfo reads are
+    supported; this deliberately does not expose a name lookup dictionary.
+    """
+    def __init__(self, path, progress=None):
+        self.index_progress = progress
+        self.index = None
+        self.index_directory = tempfile.TemporaryDirectory(prefix="eve-zip-index-")
+        try:
+            super().__init__(path, "r")
+        except BaseException:
+            self.close()
+            raise
+
+    @staticmethod
+    def record_info(record):
+        # A single-entry central-directory envelope delegates decoding to the
+        # installed CPython version, without copying its private parser.
+        end = struct.pack(zipfile.structEndArchive, zipfile.stringEndArchive,
+                          0, 0, 1, 1, len(record), 0, 0)
+        with zipfile.ZipFile(io.BytesIO(record + end)) as one:
+            return one.infolist()[0]
+
+    def _RealGetContents(self):
+        end = zipfile._EndRecData(self.fp)
+        if not end:
+            raise zipfile.BadZipFile("File is not a ZIP file")
+        count, size = end[zipfile._ECD_ENTRIES_TOTAL], end[zipfile._ECD_SIZE]
+        if (end[zipfile._ECD_DISK_NUMBER] or end[zipfile._ECD_DISK_START]
+                or end[zipfile._ECD_ENTRIES_THIS_DISK] != count):
+            raise ValueError("Multi-disk ZIPs are unsupported")
+        if count > MAX_FILES or size > MAX_FILES * (zipfile.sizeCentralDir + 3 * 65535):
+            raise ValueError("Client ZIP exceeds file count or size limits")
+        directory_end = end[zipfile._ECD_LOCATION]
+        if end[zipfile._ECD_SIGNATURE] == zipfile.stringEndArchive64:
+            self.fp.seek(directory_end)
+            if self.fp.read(4) != zipfile.stringEndArchive64:
+                # Older pinned Python 3.11 returns the ordinary EOCD position;
+                # current Python returns the ZIP64 EOCD position directly.
+                directory_end -= zipfile.sizeEndCentDir64 + zipfile.sizeEndCentDir64Locator
+                self.fp.seek(directory_end)
+                if self.fp.read(4) != zipfile.stringEndArchive64:
+                    raise zipfile.BadZipFile("Invalid ZIP64 directory boundary")
+        self.start_dir = directory_end - size
+        self.offset_adjustment = self.start_dir - end[zipfile._ECD_OFFSET]
+        if self.start_dir < 0 or self.offset_adjustment < 0:
+            raise zipfile.BadZipFile("Bad offset for central directory")
+        self._comment = end[zipfile._ECD_COMMENT]
+        self.index = sqlite3.connect(str(Path(self.index_directory.name) / "entries.sqlite"))
+        self.index.execute("PRAGMA cache_size=-2048")
+        self.index.execute("PRAGMA mmap_size=0")
+        self.index.execute("PRAGMA journal_mode=OFF")
+        self.index.execute("PRAGMA temp_store=FILE")
+        self.index.execute("CREATE TABLE entries(offset INTEGER PRIMARY KEY, name TEXT UNIQUE, record BLOB)")
+        self.count, self.total = 0, 0
+        self.cache_candidates = []
+        self.fp.seek(self.start_dir)
+        while self.fp.tell() < directory_end:
+            header = self.fp.read(zipfile.sizeCentralDir)
+            if len(header) != zipfile.sizeCentralDir or not header.startswith(zipfile.stringCentralDir):
+                raise zipfile.BadZipFile("Invalid central directory record")
+            lengths = struct.unpack_from("<HHH", header, 28)
+            length = sum(lengths)
+            if self.fp.tell() + length > directory_end:
+                raise zipfile.BadZipFile("Truncated central directory record")
+            record = header + self.fp.read(length)
+            item = self.record_info(record)
+            key = safe_zip_member(item)
+            path = PurePosixPath(item.filename)
+            if not item.is_dir() and path.parts[-3:] == ("tq", "bin64", "exefile.exe") and len(self.cache_candidates) < 2:
+                self.cache_candidates.append(path.parent.parent.parent)
+            offset = item.header_offset + self.offset_adjustment
+            if offset < 0 or offset + zipfile.sizeFileHeader + item.compress_size > self.start_dir:
+                raise zipfile.BadZipFile("Invalid ZIP entry extent")
+            self.count += 1
+            self.total += item.file_size
+            if self.count > MAX_FILES or self.total > MAX_BYTES or item.file_size > MAX_BYTES:
+                raise ValueError("Client ZIP exceeds file count or size limits")
+            try:
+                self.index.execute("INSERT INTO entries VALUES (?, ?, ?)", (offset, key, record))
+            except sqlite3.IntegrityError:
+                raise ValueError("Duplicate ZIP path or overlapping entry: " + item.filename) from None
+            if self.count % 1000 == 0 and shutil.disk_usage(self.index_directory.name).free < 512 * 1024**2:
+                raise ValueError("Not enough free internal storage for client ZIP index")
+            if self.index_progress and self.count % 1000 == 0:
+                self.index_progress("extracting", "Indexed " + str(self.count) + " client ZIP entries",
+                                    stage="indexing_archive", processed_files=self.count, total_files=count)
+        if self.count != count:
+            raise zipfile.BadZipFile("ZIP directory entry count differs from header")
+        self.index.commit()
+
+    def __len__(self):
+        return self.count
+
+    def __iter__(self):
+        cursor = self.index.execute("SELECT offset, record FROM entries ORDER BY offset")
+        current = cursor.fetchone()
+        while current is not None:
+            following = cursor.fetchone()
+            offset, record = current
+            item = self.record_info(record)
+            item.header_offset = offset
+            item._end_offset = following[0] if following is not None else self.start_dir
+            yield item
+            current = following
+
+    def close(self):
+        try:
+            super().close()
+        finally:
+            if self.index is not None:
+                self.index.close()
+                self.index = None
+            self.index_directory.cleanup()
+
+
 def zip_members(archive):
+    if isinstance(archive, DiskZipFile):
+        return archive, archive.total
     members, names, total = [], set(), 0
     for item in archive.infolist():
-        name = item.filename
-        path = PurePosixPath(name)
-        if not name or "\\" in name or ":" in name or path.is_absolute() or any(part in (".", "..") for part in name.split("/")) or "\0" in name:
-            raise ValueError("Unsafe ZIP path: " + name)
-        normalized = "/".join(path.parts)
-        key = normalized.casefold()
+        key = safe_zip_member(item)
         if key in names:
-            raise ValueError("Duplicate ZIP path (including case variants): " + name)
+            raise ValueError("Duplicate ZIP path (including case variants): " + item.filename)
         names.add(key)
-        mode = item.external_attr >> 16
-        if mode and stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR):
-            raise ValueError("ZIP links or special files are unsupported: " + name)
-        if item.flag_bits & 1:
-            raise ValueError("Encrypted ZIPs are unsupported")
         total += item.file_size
         if len(names) > MAX_FILES or total > MAX_BYTES or item.file_size > MAX_BYTES:
             raise ValueError("Client ZIP exceeds file count or size limits")
@@ -406,9 +536,17 @@ def recover_previous(content):
 
 
 def archive_cache_root(members):
-    candidates = [PurePosixPath(item.filename).parent.parent.parent
-                  for item in members if not item.is_dir()
-                  and PurePosixPath(item.filename).parts[-3:] == ("tq", "bin64", "exefile.exe")]
+    if isinstance(members, DiskZipFile):
+        if len(members.cache_candidates) != 1:
+            raise ValueError("ZIP must contain one tq/bin64/exefile.exe and sibling ResFiles")
+        return members.cache_candidates[0]
+    candidates = []
+    for item in members:
+        path = PurePosixPath(item.filename)
+        if not item.is_dir() and path.parts[-3:] == ("tq", "bin64", "exefile.exe"):
+            candidates.append(path.parent.parent.parent)
+            if len(candidates) > 1:
+                break
     if len(candidates) != 1:
         raise ValueError("ZIP must contain one tq/bin64/exefile.exe and sibling ResFiles")
     return candidates[0]
@@ -442,6 +580,8 @@ def ensure_import_directory(staging, directory, checked):
         current.mkdir(exist_ok=True)
         if not current.is_dir():
             raise ValueError("Invalid import directory: " + str(relative))
+        if len(checked) >= 1024:
+            checked.clear()
         checked.add(current)
 
 
@@ -473,7 +613,7 @@ def import_zip(archive_path, content, recipes=None, resume=False, progress=None,
     trusted_extraction = (resume and previous_session.get("archive") == identity
                           and previous_session.get("staging") == staging.name
                           and previous_session.get("phase") == "extracted")
-    with zipfile.ZipFile(archive_path) as archive:
+    with DiskZipFile(archive_path, progress) as archive:
         members, total = zip_members(archive)
         relative_cache = archive_cache_root(members)
         if not trusted_extraction:

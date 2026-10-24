@@ -1,3 +1,25 @@
+# 0.1.24 — bound memory during large client ZIP imports
+
+The importer previously loaded the entire ZIP central directory, all ZipInfo
+objects and multiple per-entry collections before extraction. This could exhaust
+its memory budget for a complete shared cache. Index entries and duplicate names
+in a private disk-backed SQLite database with a 2 MiB page cache instead; parse
+one bounded entry record at a time. Bound the extraction directory cache too.
+Report archive-indexing progress, retaining CRC, ZIP64, overlap, traversal/link,
+exact build/hash/patch, storage and Android memory-reserve checks.
+
+Update in place; no runtime/client/server reset or renderer change is needed.
+Use **Resume interrupted client import** if a complete saved ZIP is available;
+otherwise select the original ZIP again. Existing validated content remains in
+place until the staged replacement passes all checks. No new third-party asset
+or retail client content is included. VersionCode 25, unchanged signing identity.
+
+A synthetic 600,000-entry ZIP64 regression succeeds under a 128 MiB process
+address-space limit; the former eager reader fails with MemoryError under the
+same limit. This isolates directory memory, not whole-import peak memory or a
+physical Thor low-memory-kill reproduction. Backend, native and Android CI must
+pass before publication. See TESTING.md for the single device import test.
+
 # 0.1.23 — integrate FPS controls on the current development source
 
 Continue `codex/wine-localhost-tls` at `6fcf6b2` (delivered 0.1.22/code 23),

@@ -1,3 +1,30 @@
+# 0.1.24 — one client import recovery test
+
+Install 0.1.24/code 25 over the existing app, preserving its data and settings.
+Stop the server and client. Choose **Resume interrupted client import** if offered;
+if no complete saved ZIP exists, choose **Import client ZIP** and the same original
+complete build3396210 cache. No graphics/FPS setting changes are required.
+
+Let import reach **Exact client and asset cache prepared**. Then start the server
+and client once to confirm the imported cache still launches. This is the single
+physical milestone; do not repeat the earlier FPS comparisons for this repair.
+If Android closes the app again, reopen it and export support logs before retrying;
+include whether it was copying, indexing or extracting. Existing exit-history,
+preparation-memory, import-session and status receipts distinguish those stages.
+
+Host regression: `python3 -m unittest discover -s tests -p test_client_archive_memory.py -v`.
+Generate an original 600,000-entry ZIP64 fixture without loading its directory
+into memory; index/iterate it and CRC-read the first/last entries under a 128 MiB
+address-space limit. The old eager reader must fail under that same limit.
+Also exercise stored/deflate/bzip2/LZMA, UTF-8/comments, forced ZIP64 headers,
+old/current Python ZIP64 boundaries, truncated records, wrong counts/extents,
+NUL/traversal/links/encryption, duplicate names/offsets, CRC and local-header
+mismatches, overlap and bounded directory-cache rechecks. Existing complete-cache,
+interrupted-extraction and extracted-receipt tests must still pass. CI repeats
+import tests under Python 3.11, the shipped guest minor version, in addition to
+the full default-Python suite. Memory numbers cover directory parsing only;
+whole import and Android low-memory survival remain physical-device checks.
+
 # EVE Android Launcher 0.1.23: current-source integration test
 
 Install **EVE-Android-Launcher-0.1.23.apk** in place after stopping client/server.

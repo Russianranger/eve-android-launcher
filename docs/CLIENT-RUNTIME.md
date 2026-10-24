@@ -1,3 +1,27 @@
+# 0.1.24 client import memory repair
+
+Client import now uses a private disk-backed ZIP directory instead of CPython's
+archive-sized in-memory directory, name map and additional entry/name collections.
+A 2 MiB SQLite page cache holds the directory; only the current and next bounded
+central record are resident. Standard-library parsing of a one-record envelope
+retains ZIP64/name/extra-field rules; the original ZipFile.open still checks local
+headers, overlap, decompression and CRC. Disk indexes enforce case-folded duplicate
+paths and distinct local offsets before extraction. The extraction directory
+cache is capped at 1,024 entries, rechecking parents after eviction.
+
+The existing 512 MiB preparation-worker limit and Android reserve policy remain.
+Indexing also checks the 512 MiB free-storage reserve. The index uses the existing
+private disk-backed /tmp bind, not a RAM filesystem, and is removed on normal
+completion/failure. An OS kill can leave temporary index files; the saved ZIP and
+staging recovery remain authoritative, and each resumed index is rebuilt fresh.
+Progress/status/support logs identify indexing separately from extraction.
+
+No evidence from the failing Thor session was supplied, so the exact Android
+kill stage is not established. The regression demonstrates a specific avoidable
+memory failure with 600,000 entries, while existing tests retain CRC resume and
+promotion-after-validation. Install in place and resume a saved complete import;
+reselect the ZIP only if copying never completed. Do not delete existing content.
+
 # Current 0.1.23 runtime integration
 
 The authoritative application baseline is `codex/wine-localhost-tls` at `6fcf6b2`,

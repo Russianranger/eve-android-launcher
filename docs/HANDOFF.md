@@ -1,3 +1,21 @@
+# Current 0.1.24: client import memory repair
+
+Continue only `codex/wine-localhost-tls` from published 0.1.23 (`ff5bb809`). The
+user reports Android killing the app for low memory during client import. No new
+support export was attached, so the precise kill stage is unconfirmed. Fix the
+source-confirmed archive-cardinality problem: eager CPython ZIP directory plus
+additional lists/sets before extraction. A private disk index and bounded entry
+parser remove that scaling; preserve all exact-client, containment, reserve,
+CRC/recovery and promotion checks. Keep all existing graphics/icons/settings.
+
+Version 0.1.24/code 25. A synthetic 600,000-entry ZIP64 test under 128 MiB succeeds
+with the new reader and reproduces MemoryError with the former reader. Existing
+resume tests still apply; no client data is fetched or committed. Publish only
+after normal branch push CI passes; verify the actual APK and original signing
+identity. The next device milestone is one preserved-data import/resume and
+client launch in TESTING.md, not another FPS experiment. All existing push and
+publication authorization remains in force.
+
 # Current integration: 0.1.23 on the delivered development baseline
 
 The user reported that main's separately published 0.1.8 omitted the actual
